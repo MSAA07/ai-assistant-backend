@@ -1,0 +1,65 @@
+// Prisma schema for AI Study Assistant
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String      @id @default(uuid())
+  clerkId       String      @unique
+  email         String      @unique
+  name          String?
+  documentsUsed Int         @default(0)
+  monthlyLimit  Int         @default(10)
+  lastReset     DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  documents     Document[]
+}
+
+model Document {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  filename    String
+  originalName String
+  fileType    String
+  fileSize    Int
+  language    String   @default("english")
+  summary     String @db.Text
+  flashcards  Json
+  examQuestions Json
+  uploadDate  DateTime @default(now())
+  
+  @@index([userId])
+}
+
+model ExamAttempt {
+  id          String   @id @default(uuid())
+  documentId  String
+  userId      String
+  score       Int
+  totalQuestions Int
+  answers     Json
+  completedAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([documentId])
+}
+
+model FlashcardProgress {
+  id          String   @id @default(uuid())
+  documentId  String
+  userId      String
+  cardIndex   Int
+  mastered    Boolean  @default(false)
+  lastReviewed DateTime @default(now())
+  
+  @@unique([userId, documentId, cardIndex])
+  @@index([userId])
+}
