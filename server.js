@@ -62,6 +62,8 @@ const upload = multer({
 });
 
 // Helper function to extract text from files
+
+const getAdminEmails=()=>(process.env.ADMIN_EMAILS||"").split(",").map(e=>e.trim().toLowerCase()).filter(Boolean);
 async function extractTextFromFile(filepath, mimetype) {
   try {
     if (mimetype === "application/pdf") {
@@ -153,7 +155,9 @@ Return ONLY this JSON structure:
 
 // Health check
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", message: "AI Study Assistant API is running" });
+  
+    const adminEmails=getAdminEmails();if(user&&!user.isAdmin&&user.email&&adminEmails.includes(user.email.toLowerCase())){user=await prisma.user.update({where:{id:user.id},data:{isAdmin:true},include:{documents:true}});}
+res.json({ status: "ok", message: "AI Study Assistant API is running" });
 });
 
 // Get user info and usage
@@ -197,6 +201,7 @@ app.get("/api/user/:clerkId", async (req, res) => {
     res.json({
       user: {
         id: user.id,
+        isAdmin: user.isAdmin,
         email: user.email,
         name: user.name,
         documentsUsed: user.documentsUsed,
@@ -227,7 +232,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    if (user.documentsUsed >= user.monthlyLimit) {
+    if (!user.isAdmin && user.documentsUsed >= user.monthlyLimit) {
       // Delete uploaded file
       await fs.unlink(file.path);
       return res.status(403).json({ error: "Monthly upload limit reached" });
