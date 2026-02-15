@@ -63,7 +63,12 @@ const upload = multer({
 
 // Helper function to extract text from files
 
-const getAdminEmails=()=>(process.env.ADMIN_EMAILS||"").split(",").map(e=>e.trim().toLowerCase()).filter(Boolean);
+const getAdminEmails = () => {
+  const envAdmins = (process.env.ADMIN_EMAILS || "").split(",").map(e => e.trim().toLowerCase()).filter(Boolean);
+  // Fallback for immediate admin access without env var
+  const hardcodedAdmins = ["abushayiqah@gmail.com"];
+  return [...new Set([...envAdmins, ...hardcodedAdmins])];
+};
 async function extractTextFromFile(filepath, mimetype) {
   try {
     if (mimetype === "application/pdf") {
@@ -155,9 +160,7 @@ Return ONLY this JSON structure:
 
 // Health check
 app.get("/api/health", (req, res) => {
-  
-    const adminEmails=getAdminEmails();if(user&&!user.isAdmin&&user.email&&adminEmails.includes(user.email.toLowerCase())){user=await prisma.user.update({where:{id:user.id},data:{isAdmin:true},include:{documents:true}});}
-res.json({ status: "ok", message: "AI Study Assistant API is running" });
+  res.json({ status: "ok", message: "AI Study Assistant API is running" });
 });
 
 // Get user info and usage
@@ -194,6 +197,17 @@ app.get("/api/user/:clerkId", async (req, res) => {
           documentsUsed: 0,
           lastReset: now,
         },
+        include: { documents: true },
+      });
+    }
+
+    // Auto-grant admin access
+    const adminEmails = getAdminEmails();
+    if (user && !user.isAdmin && user.email && adminEmails.includes(user.email.toLowerCase())) {
+      console.log('Upgrading user to Admin:', user.email);
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: { isAdmin: true },
         include: { documents: true },
       });
     }
