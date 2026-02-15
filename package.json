@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "start": "node server.js",
     "dev": "node server.js",
     "db:push": "prisma db push",
     "db:studio": "prisma studio"
