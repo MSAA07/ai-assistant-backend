@@ -4,6 +4,7 @@
 
 **Application**: Backend API for the AI Study Assistant. Handles file processing (PDF, DOCX), database operations, and AI generation via OpenAI.
 **Architecture**: REST API built with Express.js and Prisma ORM.
+**Deployment Status**: ✅ Deployed on Railway (`https://ai-assistant-backend-production-ddf0.up.railway.app`)
 
 | Component | Tech Stack |
 |-----------|------------|
@@ -99,6 +100,6 @@ app.post('/api/resource', async (req, res) => {
 
 ## 5. Deployment Notes
 
-*   **Port**: defaults to `3001` unless `process.env.PORT` is set.
-*   **CORS**: Configured to allow requests from frontend (default: `*` or specific origin).
-*   **Database**: Ensure `DATABASE_URL` is a valid PostgreSQL connection string (e.g., Supabase, Neon, Railway).
+*   **Port**: defaults to `3001` unless `process.env.PORT` is set (Railway sets this automatically).
+*   **CORS**: Configured to allow requests from frontend.
+*   **Database**: Ensure `DATABASE_URL` is a valid PostgreSQL connection string (Provided by Railway).
