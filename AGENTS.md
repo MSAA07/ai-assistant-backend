@@ -30,6 +30,8 @@
 *   **Database GUI**: `npm run db:studio`
     *   Opens a web interface to view and edit database records.
 *   **Generate Client**: `npx prisma generate` (Run after schema changes)
+*   **Backfill Storage Usage**: `node backfill-storage.js`
+    *   Recalculates `storageUsed` per user from existing documents.
 
 ### Testing
 *   **Current Status**: ❌ No testing framework configured.
@@ -95,6 +97,9 @@ app.post('/api/resource', async (req, res) => {
     *   Do not import non-existent libraries.
 4.  **Refactoring**:
     *   If refactoring `server.js` into multiple files (e.g., `routes/`, `controllers/`), ensure `app.js` or `server.js` remains the entry point.
+5.  **Admin & Security**:
+    *   All `/api/admin/*` endpoints must enforce admin role.
+    *   All non-auth routes must enforce `requireAuth` and ownership checks.
 
 ---
 
@@ -103,3 +108,6 @@ app.post('/api/resource', async (req, res) => {
 *   **Port**: defaults to `3001` unless `process.env.PORT` is set (Railway sets this automatically).
 *   **CORS**: Configured to allow requests from frontend.
 *   **Database**: Ensure `DATABASE_URL` is a valid PostgreSQL connection string (Provided by Railway).
+*   **OpenAI**:
+    *   `OPENAI_API_KEY` must be set in the deployment environment variables.
+    *   The server logs "OPENAI_API_KEY exists: true/false" and its length on startup for debugging purposes.
