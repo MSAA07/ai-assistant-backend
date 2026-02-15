@@ -111,3 +111,6 @@ app.post('/api/resource', async (req, res) => {
 *   **OpenAI**:
     *   `OPENAI_API_KEY` must be set in the deployment environment variables.
     *   The server logs "OPENAI_API_KEY exists: true/false" and its length on startup for debugging purposes.
+*   **Authentication (Better Auth)**:
+    *   `BETTER_AUTH_SECRET`: A long random string (e.g., generate with `openssl rand -hex 32`). **REQUIRED** for production.
+    *   `BETTER_AUTH_BASE_URL`: The full URL of your backend (e.g., `https://your-app.up.railway.app`). **REQUIRED** for callbacks to work.
