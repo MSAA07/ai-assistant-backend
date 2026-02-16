@@ -36,6 +36,12 @@
 ### Testing
 *   **Current Status**: ❌ No testing framework configured.
 *   **Recommended**: Use `jest` or `supertest` for future API tests.
+*   **Single Test Pattern**: When tests are added, use `npm test -- test-file.js` for individual files.
+
+### Linting & Formatting
+*   **Current Status**: ❌ No linter or formatter configured.
+*   **Recommended**: Add ESLint + Prettier with `npm i -D eslint prettier eslint-config-prettier`
+*   **Standard Pattern**: StandardJS or Airbnb config for consistent code style.
 
 ---
 
@@ -55,12 +61,27 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 ```
 
+### Import Ordering
+1. External packages (express, cors, etc.)
+2. Built-in Node modules (fs, path, etc.)
+3. Internal modules (auth, middleware, routes)
+4. Utility functions
+
+### Naming Conventions
+*   **Variables**: `camelCase` (e.g., `userId`, `fileName`)
+*   **Constants**: `UPPER_SNAKE_CASE` (e.g., `MAX_FILE_SIZE`)
+*   **Functions**: `camelCase` (e.g., `extractTextFromFile`)
+*   **Files**: `kebab-case.js` (e.g., `documents.js`)
+
+### Response Formatting
+*   **Success**: `res.json({ data: ... })` or `res.json(object)`
+*   **Error**: `res.status(code).json({ error: 'Description', details: 'Optional' })`
+*   **HTTP Codes**: 200 (OK), 201 (Created), 400 (Bad Request), 403 (Forbidden), 404 (Not Found), 500 (Server Error)
+
 ### API Route Handlers
 *   **Error Handling**: **MANDATORY** `try/catch` blocks in every async route.
-*   **Responses**:
-    *   Success: `res.json({ data: ... })` or `res.json(object)`
-    *   Error: `res.status(500).json({ error: 'Description' })`
-*   **Validation**: Validate inputs (req.body, req.file) before processing.
+*   **Validation**: Validate inputs (req.body, req.file, req.params) before processing.
+*   **Return Early**: Use guard clauses for error cases to reduce nesting.
 
 ```javascript
 app.post('/api/resource', async (req, res) => {
@@ -81,6 +102,18 @@ app.post('/api/resource', async (req, res) => {
 *   **Prisma**: Use the global `prisma` client instance.
 *   **Schema**: Define models in `prisma/schema.prisma`.
 *   **Relations**: Use relation fields (e.g., `user User @relation(...)`) to maintain referential integrity.
+*   **Transactions**: Use `$transaction` for multi-operation updates.
+
+### File Organization
+*   **routes/**: Route handlers grouped by resource (documents.js, users.js, etc.)
+*   **middleware/**: Authentication, authorization, validation
+*   **utils/**: Shared utility functions (limits.js, etc.)
+*   **uploads/**: Temporary storage for uploaded files (clean up after processing)
+
+### Logging
+*   **Info**: Use for startup, successful operations
+*   **Errors**: Use `console.error()` with full error details including stack traces
+*   **Requests**: Log important request details (userId, fileName, fileSize)
 
 ---
 
@@ -88,10 +121,10 @@ app.post('/api/resource', async (req, res) => {
 
 1.  **Environment Variables**:
     *   NEVER commit `.env` files.
-    *   Required variables: `DATABASE_URL`, `OPENAI_API_KEY`, `PORT`.
+    *   Required variables: `DATABASE_URL`, `OPENAI_API_KEY`, `PORT`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_BASE_URL`.
 2.  **File System**:
-    *   Use absolute paths.
-    *   Clean up uploaded files in `uploads/` after processing (if applicable).
+    *   Use absolute paths with `path.join()`.
+    *   Clean up uploaded files in `uploads/` after processing.
 3.  **No Hallucinations**:
     *   Do not invent scripts like `npm test` if they are not in `package.json`.
     *   Do not import non-existent libraries.
@@ -100,6 +133,7 @@ app.post('/api/resource', async (req, res) => {
 5.  **Admin & Security**:
     *   All `/api/admin/*` endpoints must enforce admin role.
     *   All non-auth routes must enforce `requireAuth` and ownership checks.
+    *   Validate all inputs to prevent injection attacks.
 
 ---
 
@@ -114,3 +148,27 @@ app.post('/api/resource', async (req, res) => {
 *   **Authentication (Better Auth)**:
     *   `BETTER_AUTH_SECRET`: A long random string (e.g., generate with `openssl rand -hex 32`). **REQUIRED** for production.
     *   `BETTER_AUTH_BASE_URL`: The full URL of your backend (e.g., `https://your-app.up.railway.app`). **REQUIRED** for callbacks to work.
+
+---
+
+## 6. Git Guidelines
+
+### .gitignore Essentials
+```
+.env
+.env.local
+.env.*.local
+node_modules/
+uploads/*
+!uploads/.gitkeep
+*.log
+.DS_Store
+.vscode/
+.idea/
+```
+
+### Commit Messages
+*   Use present tense: "Add feature" not "Added feature"
+*   Use imperative mood: "Move cursor to..." not "Moves cursor to..."
+*   Limit first line to 72 characters
+*   Reference issues when applicable: "Fix #123 - resolve upload timeout"
