@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "prisma migrate resolve --applied '20260216073943_init' && prisma migrate deploy && node server.js",
+    "start": "prisma migrate deploy && node server.js",
     "dev": "node server.js",
     "db:push": "prisma db push",
     "db:studio": "prisma studio"
