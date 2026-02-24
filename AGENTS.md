@@ -151,7 +151,30 @@ app.post('/api/resource', async (req, res) => {
 
 ---
 
-## 6. Git Guidelines
+## 6. Git Workflow & Deployment
+
+### Branches
+*   **`production`**: LIVE/STABLE. Real users see this.
+    *   NEVER commit directly here.
+    *   ONLY update via merge from `stage` after testing.
+*   **`stage`**: TESTING.
+    *   Push new features/fixes here first.
+    *   Test on staging URLs.
+    *   If successful -> merge to `production`.
+
+### Workflow Rules
+1.  Develop locally on a feature branch or your working branch.
+2.  Push to `stage` for testing: `git push origin stage`.
+3.  Release to production:
+    ```bash
+    git checkout production
+    git merge stage
+    git push origin production
+    ```
+
+---
+
+## 7. Git Guidelines
 
 ### .gitignore Essentials
 ```
