@@ -1,3 +1,9 @@
+# BACKEND SPECIALIST - AI Assistant Backend
+**Parent Agent**: `C:/Users/Saudp/projects/AGENTS.md` (Project Overseer)
+**Role**: API Development, Database (Prisma/Postgres), OpenAI Integration, Railway Deployment
+
+---
+
 # AI Assistant Backend - Agent Guidelines
 
 ## 1. Project Overview
