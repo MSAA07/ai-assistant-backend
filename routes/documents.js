@@ -24,7 +24,7 @@ if (!hasOpenAIKey) {
   console.warn("OPENAI_API_KEY is not set. Document processing will fail.");
 }
 
-const uploadsDir = path.join(__dirname, "..", "uploads");
+const uploadsDir = "/tmp/uploads";
 mkdirSync(uploadsDir, { recursive: true });
 
 const storage = multer.diskStorage({
