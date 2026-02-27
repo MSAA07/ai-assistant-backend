@@ -3,6 +3,7 @@ import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
+import { mkdirSync } from "fs";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import pdfParse from "pdf-parse";
@@ -23,9 +24,12 @@ if (!hasOpenAIKey) {
   console.warn("OPENAI_API_KEY is not set. Document processing will fail.");
 }
 
+const uploadsDir = "/tmp/uploads";
+mkdirSync(uploadsDir, { recursive: true });
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, "..", "uploads"));
+    cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
