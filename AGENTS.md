@@ -155,6 +155,11 @@ app.post('/api/resource', async (req, res) => {
     *   `BETTER_AUTH_SECRET`: A long random string (e.g., generate with `openssl rand -hex 32`). **REQUIRED** for production.
     *   `BETTER_AUTH_BASE_URL`: The full URL of your backend (e.g., `https://your-app.up.railway.app`). **REQUIRED** for callbacks to work.
 
+### Staging Access & QA Notes
+- QA admin login (Better Auth) for staging: `admin@ai.com` / `admin123`. Use only for preview testing; rotate in production.
+- Run `npm run seed` (backend) to recreate the default admin. Requires staging `DATABASE_URL`, `BETTER_AUTH_SECRET`, and `BETTER_AUTH_BASE_URL`.
+- Staging backend domain: https://ai-assistant-backend-staging.up.railway.app (allows origin https://my-ai-assistant-git-stage-msaa07.vercel.app). Ensure CORS/BetterAuth trusted origins stay in sync with Vercel preview URL.
+
 ### Railway Deployment Configuration
 
 **Production Environment**:

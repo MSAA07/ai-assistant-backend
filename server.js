@@ -29,6 +29,7 @@ app.use(
         "http://localhost:5173",
         "http://localhost:5174",
         "https://my-ai-assistant-ypzx.vercel.app",
+        "https://my-ai-assistant-git-stage-msaa07.vercel.app",
       ];
       
       // Allow requests with no origin (like mobile apps or curl requests)

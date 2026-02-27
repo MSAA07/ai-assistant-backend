@@ -6,7 +6,8 @@
     "start": "prisma migrate deploy && node server.js",
     "dev": "node server.js",
     "db:push": "prisma db push",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "seed": "prisma db seed"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -21,5 +22,8 @@
   },
   "devDependencies": {
     "prisma": "^5.22.0"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   }
 }
