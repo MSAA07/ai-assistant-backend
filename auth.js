@@ -8,7 +8,6 @@ const prisma = new PrismaClient();
 const isProduction = process.env.NODE_ENV === "production";
 
 export const auth = betterAuth({
-  baseURL: process.env.BETTER_AUTH_BASE_URL,
   database: prismaAdapter(prisma, {
     provider: "postgresql", 
   }),
@@ -23,6 +22,7 @@ export const auth = betterAuth({
     "https://my-ai-assistant-ypzx.vercel.app",
     "https://my-ai-assistant-git-stage-msaa07.vercel.app",
     "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
+    "https://my-ai-assistant-git-production-mohammed-abushayiqahs-projects.vercel.app",
   ],
   plugins: [
     admin()
