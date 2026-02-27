@@ -17,6 +17,7 @@ export const auth = betterAuth({
     "http://localhost:5174",
     "https://my-ai-assistant-ypzx.vercel.app",
     "https://my-ai-assistant-git-stage-msaa07.vercel.app",
+    "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
   ],
   plugins: [
     admin()
