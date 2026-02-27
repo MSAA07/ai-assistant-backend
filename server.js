@@ -29,6 +29,8 @@ app.use(
         "http://localhost:5173",
         "http://localhost:5174",
         "https://my-ai-assistant-ypzx.vercel.app",
+        "https://my-ai-assistant-git-stage-msaa07.vercel.app",
+        "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
       ];
       
       // Allow requests with no origin (like mobile apps or curl requests)
@@ -46,6 +48,8 @@ app.use(
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "User-Agent"],
   }),
 );
 app.use(express.json());

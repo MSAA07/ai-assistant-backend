@@ -5,10 +5,15 @@ import { admin } from "better-auth/plugins";
 
 const prisma = new PrismaClient();
 
+const isProduction = process.env.NODE_ENV === "production";
+
 export const auth = betterAuth({
+  baseURL: process.env.BETTER_AUTH_BASE_URL,
   database: prismaAdapter(prisma, {
     provider: "postgresql", 
   }),
+  baseURL:
+    process.env.BETTER_AUTH_URL ?? process.env.BETTER_AUTH_BASE_URL,
   emailAndPassword: {
     enabled: true,
   },
@@ -16,6 +21,8 @@ export const auth = betterAuth({
     "http://localhost:5173",
     "http://localhost:5174",
     "https://my-ai-assistant-ypzx.vercel.app",
+    "https://my-ai-assistant-git-stage-msaa07.vercel.app",
+    "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
   ],
   plugins: [
     admin()
@@ -36,5 +43,12 @@ export const auth = betterAuth({
         defaultValue: 5,
       }
     }
-  }
+  },
+  advanced: {
+    defaultCookieAttributes: {
+      sameSite: isProduction ? "none" : "lax",
+      secure: isProduction,
+      partitioned: isProduction,
+    },
+  },
 });
