@@ -26,7 +26,6 @@ export const auth = betterAuth({
       "https://my-ai-assistant-git-stage-msaa07.vercel.app",
       "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
       "https://my-ai-assistant-git-production-mohammed-abushayiqahs-projects.vercel.app",
-      "https://my-ai-assistant-git-production-msaa07.vercel.app",
       "https://my-ai-assistant.vercel.app",
     ];
     // Also allow any Vercel preview deployment for this project
