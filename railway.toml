@@ -1,0 +1,2 @@
+[deploy]
+startCommand = "prisma migrate deploy && node server.js"
