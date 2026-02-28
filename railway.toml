@@ -1,0 +1,2 @@
+[deploy]
+startCommand = "prisma db push && node server.js"
