@@ -1,2 +1,2 @@
 [deploy]
-startCommand = "npx prisma db push --accept-data-loss && node server.js"
+startCommand = "npx prisma db push --accept-data-loss && npm run seed && node server.js"
