@@ -17,7 +17,6 @@ export const auth = betterAuth({
     enabled: true,
   },
   trustedOrigins: (request) => {
-    const origin = request.headers.get("origin") || "";
     const allowedOrigins = [
       "http://localhost:5173",
       "http://localhost:5174",
@@ -26,9 +25,13 @@ export const auth = betterAuth({
       "https://my-ai-assistant-git-stage-msaa07.vercel.app",
       "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
       "https://my-ai-assistant-git-production-mohammed-abushayiqahs-projects.vercel.app",
-      "https://my-ai-assistant-git-production-msaa07.vercel.app",
       "https://my-ai-assistant.vercel.app",
     ];
+
+    if (!request) return allowedOrigins;
+
+    const origin = request.headers.get("origin") || "";
+    
     // Also allow any Vercel preview deployment for this project
     if (origin.endsWith(".vercel.app") && origin.includes("my-ai-assistant")) {
       return [origin];
