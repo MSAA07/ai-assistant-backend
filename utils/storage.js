@@ -1,5 +1,15 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  GetObjectCommand,
+} from '@aws-sdk/client-s3'
 import fs from 'fs'
+import fsPromises from 'fs/promises'
+import os from 'os'
+import path from 'path'
+import { pipeline } from 'stream/promises'
+import { Readable } from 'stream'
 
 const r2 = process.env.R2_ENDPOINT ? new S3Client({
   region: 'auto',
@@ -47,5 +57,32 @@ export async function deleteFile(key) {
   } catch (error) {
     console.error('[storage] Failed to delete from R2:', error)
     // Don't throw, just log
+  }
+}
+
+async function streamToFile(body, destination) {
+  const writeStream = fs.createWriteStream(destination)
+  const readable = body instanceof Readable ? body : Readable.fromWeb(body)
+  await pipeline(readable, writeStream)
+}
+
+export async function downloadFileToTmp(key) {
+  if (!r2) {
+    throw new Error('R2 not configured but download requested')
+  }
+  const response = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
+  const filename = key.split('/').pop() || `download-${Date.now()}`
+  const tmpPath = path.join(os.tmpdir(), `${Date.now()}-${filename}`)
+  await streamToFile(response.Body, tmpPath)
+  return tmpPath
+}
+
+export async function safeUnlink(filePath) {
+  try {
+    await fsPromises.unlink(filePath)
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('[storage] Failed to clean up temp file:', error.message)
+    }
   }
 }

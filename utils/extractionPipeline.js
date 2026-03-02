@@ -2,9 +2,11 @@ import { PrismaClient } from '@prisma/client'
 import { spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
+import fsPromises from 'fs/promises'
 import pdfParse from 'pdf-parse'
 import mammoth from 'mammoth'
 import { updateJob } from './jobQueue.js'
+import { downloadFileToTmp, safeUnlink } from './storage.js'
 
 const prisma = new PrismaClient()
 
@@ -12,46 +14,64 @@ export async function processExtraction(jobId, userId, payload) {
   const { documentId, filePath } = payload
   
   // Validate filePath - if not in payload, try to reconstruct or fail
-  if (!filePath) {
-      throw new Error("File path missing in job payload");
-  }
-
   const document = await prisma.document.findUnique({ where: { id: documentId } })
   if (!document) throw new Error(`Document ${documentId} not found`)
 
   await updateJob(jobId, { progressPct: 10 })
 
-  // Check if excerpts already cached
-  const existingExcerpts = await prisma.documentExcerpt.count({ where: { documentId } })
-  if (existingExcerpts > 0) {
-    await updateJob(jobId, { progressPct: 100 })
-    return { documentId, cached: true }
+  let workingPath = filePath
+  let downloadedPath
+
+  if (!workingPath) {
+    if (!document.storageKey) {
+      throw new Error('No storage key available for document file')
+    }
+
+    const isLocalKey = document.storageKey.startsWith('/') || document.storageKey.startsWith('C:')
+    if (isLocalKey) {
+      workingPath = document.storageKey
+    } else {
+      downloadedPath = await downloadFileToTmp(document.storageKey)
+      workingPath = downloadedPath
+    }
   }
 
-  const mimeType = document.fileType  // adjust field name to match your actual Document schema
+  try {
+    // Check if excerpts already cached
+    const existingExcerpts = await prisma.documentExcerpt.count({ where: { documentId } })
+    if (existingExcerpts > 0) {
+      await updateJob(jobId, { progressPct: 100 })
+      return { documentId, cached: true }
+    }
 
-  let excerpts = []
+    const mimeType = document.fileType
 
-  if (mimeType.includes('pdf')) {
-    excerpts = await extractPdf(filePath)
-  } else if (mimeType.includes('wordprocessingml') || mimeType.includes('docx')) {
-    excerpts = await extractDocx(filePath)
-  } else if (mimeType.includes('presentationml') || mimeType.includes('pptx')) {
-    excerpts = await extractPptx(filePath)
-  } else {
-    throw new Error(`Unsupported file type: ${mimeType}`)
+    let excerpts = []
+
+    if (mimeType.includes('pdf')) {
+      excerpts = await extractPdf(workingPath)
+    } else if (mimeType.includes('wordprocessingml') || mimeType.includes('docx')) {
+      excerpts = await extractDocx(workingPath)
+    } else if (mimeType.includes('presentationml') || mimeType.includes('pptx')) {
+      excerpts = await extractPptx(workingPath)
+    } else {
+      throw new Error(`Unsupported file type: ${mimeType}`)
+    }
+
+    await updateJob(jobId, { progressPct: 60 })
+
+    await prisma.documentExcerpt.createMany({
+      data: excerpts.map(e => ({ ...e, documentId }))
+    })
+
+    await updateJob(jobId, { progressPct: 90 })
+
+    return { documentId, excerptCount: excerpts.length }
+  } finally {
+    if (downloadedPath) {
+      await safeUnlink(downloadedPath)
+    }
   }
-
-  await updateJob(jobId, { progressPct: 60 })
-
-  // Save excerpts to DB
-  await prisma.documentExcerpt.createMany({
-    data: excerpts.map(e => ({ ...e, documentId }))
-  })
-
-  await updateJob(jobId, { progressPct: 90 })
-
-  return { documentId, excerptCount: excerpts.length }
 }
 
 async function extractPdf(filePath) {
