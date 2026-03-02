@@ -5,24 +5,14 @@ import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import { mkdirSync } from "fs";
 import dotenv from "dotenv";
-import OpenAI from "openai";
-import pdfParse from "pdf-parse";
-import mammoth from "mammoth";
 import { getMonthlyLimit } from "../utils/limits.js";
+import { enqueueJob } from "../utils/jobQueue.js";
+import { uploadFile, deleteFile } from "../utils/storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config();
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-const hasOpenAIKey = Boolean(process.env.OPENAI_API_KEY);
-if (!hasOpenAIKey) {
-  console.warn("OPENAI_API_KEY is not set. Document processing will fail.");
-}
 
 const uploadsDir = "/tmp/uploads";
 mkdirSync(uploadsDir, { recursive: true });
@@ -57,96 +47,6 @@ const upload = multer({
     }
   },
 });
-
-const extractTextFromFile = async (filepath, mimetype) => {
-  try {
-    if (mimetype === "application/pdf") {
-      const dataBuffer = await fs.readFile(filepath);
-      const data = await pdfParse(dataBuffer);
-      return data.text;
-    }
-
-    if (
-      mimetype ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ) {
-      const result = await mammoth.extractRawText({ path: filepath });
-      return result.value;
-    }
-
-    if (
-      mimetype ===
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    ) {
-      return "PowerPoint content extraction - implement with pptx parser library";
-    }
-
-    return "";
-  } catch (error) {
-    console.error("Error extracting text:", error);
-    throw error;
-  }
-};
-
-const generateStudyMaterials = async (text, language) => {
-  const languageName = language === "arabic" ? "Arabic" : "English";
-
-  const prompt = `You are an expert educational content creator. Analyze the following document and create comprehensive study materials in ${languageName}.
-
-Document content:
-${text.substring(0, 8000)} 
-
-Generate the following study materials (respond ONLY with valid JSON, no markdown formatting):
-
-1. A summary (1-4 paragraphs based on content length)
-2. Flashcards (5-20 cards based on content - each with "question" and "answer")
-3. Exam questions (5-10 questions based on content):
-   - Mix of: multiple choice (MCQ), true/false, and short answer
-   - Each question must have: "type", "question", "options" (array for MCQ), "correctAnswer", "explanation"
-
-Important rules:
-- Adapt the number of flashcards and questions to the content length
-- For short content (< 500 words): 5-8 flashcards, 5 questions
-- For medium content (500-2000 words): 10-15 flashcards, 8 questions
-- For long content (> 2000 words): 15-20 flashcards, 10 questions
-- All content must be in ${languageName}
-- For MCQ, provide 4 options as full text strings (NOT letters like A, B, C, D)
-- CRITICAL: "correctAnswer" MUST be the EXACT full text of the correct option from the "options" array, NOT a letter reference
-- For true/false, options should be ["True", "False"] or ["صحيح", "خطأ"] for Arabic
-- Explanations should be brief (1-2 sentences) and reference the material
-
-Return ONLY this JSON structure:
-{
-  "summary": "...",
-  "flashcards": [{"question": "...", "answer": "..."}],
-  "examQuestions": [
-    {
-      "type": "mcq",
-      "question": "What is the main purpose of X?",
-      "options": ["Full text of option 1", "Full text of option 2", "Full text of option 3", "Full text of option 4"],
-      "correctAnswer": "Full text of option 1",
-      "explanation": "Brief explanation here"
-    }
-  ]
-}`;
-
-  try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
-      max_tokens: 3000,
-    });
-
-    const responseText = completion.choices[0].message.content.trim();
-    const cleanedResponse = responseText.replace(/^```json\s*|\s*```$/g, "");
-
-    return JSON.parse(cleanedResponse);
-  } catch (error) {
-    console.error("OpenAI API Error:", error);
-    throw error;
-  }
-};
 
 const resetMonthlyUsageIfNeeded = async (prisma, user) => {
   const now = new Date();
@@ -211,17 +111,10 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         });
       }
 
-      const text = await extractTextFromFile(file.path, file.mimetype);
+      // Upload to R2 (or fallback to local)
+      const { key } = await uploadFile(file.path, user.id, file.originalname, file.mimetype);
 
-      if (!text || text.trim().length < 50) {
-        await fs.unlink(file.path).catch(() => {});
-        return res
-          .status(400)
-          .json({ error: "Could not extract enough text from file" });
-      }
-
-      const studyMaterials = await generateStudyMaterials(text, selectedLanguage);
-
+      // Create Document record immediately
       const document = await prisma.document.create({
         data: {
           userId: user.id,
@@ -230,12 +123,14 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
           fileType: file.mimetype,
           fileSize: file.size,
           language: selectedLanguage,
-          summary: studyMaterials.summary,
-          flashcards: studyMaterials.flashcards,
-          examQuestions: studyMaterials.examQuestions,
+          summary: "", // Will be populated by AI job later
+          flashcards: [], 
+          examQuestions: [],
+          storageKey: key,
         },
       });
 
+      // Update usage stats
       await prisma.user.update({
         where: { id: user.id },
         data: {
@@ -244,24 +139,40 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         },
       });
 
-      await fs.unlink(file.path).catch(() => {});
+      // Delete local temp file immediately after upload (if R2 is used)
+      // If uploadFile returned a key that is the local path (fallback), we KEEP it so worker can find it
+      const isLocalPath = key.startsWith('/') || key.startsWith('C:') || key.includes(path.sep);
+      if (!isLocalPath) {
+          await fs.unlink(file.path).catch(() => {});
+      }
 
-      res.json({
+      // Enqueue extraction job
+      // For R2, we rely on storageKey in Document record
+      // For fallback local, we pass filePath in payload if needed, or rely on storageKey which is the path
+      const jobPayload = { documentId: document.id };
+      if (isLocalPath) {
+          jobPayload.filePath = key; 
+      }
+
+      const job = await enqueueJob(user.id, 'extract_document', jobPayload);
+
+      // Return 202 Accepted
+      res.status(202).json({
         success: true,
-        document: {
-          id: document.id,
-          filename: document.originalName,
-          summary: document.summary,
-          flashcards: document.flashcards,
-          examQuestions: document.examQuestions,
-          uploadDate: document.uploadDate,
-        },
+        jobId: job.id,
+        documentId: document.id,
+        message: "Document uploaded and extraction queued"
       });
+
+
     } catch (error) {
       console.error("Upload error:", error);
       if (error?.stack) {
         console.error(error.stack);
       }
+      // Only unlink if we failed BEFORE creating the job/document
+      // If job was created, worker handles it (or retry). 
+      // But here we are in catch, so likely job wasn't created.
       if (req.file) {
         await fs.unlink(req.file.path).catch(() => {});
       }
@@ -310,6 +221,10 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       }
 
       await prisma.document.delete({ where: { id: document.id } });
+      
+      // Delete from R2
+      await deleteFile(document.storageKey);
+
       const owner = await prisma.user.findUnique({
         where: { id: document.userId },
         select: { storageUsed: true },

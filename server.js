@@ -12,6 +12,7 @@ import { createDocumentsRouter } from "./routes/documents.js";
 import { createFlashcardsRouter } from "./routes/flashcards.js";
 import { createExamsRouter } from "./routes/exams.js";
 import { createAdminRouter } from "./routes/admin.js";
+import { createJobsRouter } from "./routes/jobs.js";
 
 dotenv.config();
 
@@ -69,6 +70,7 @@ app.use("/api/user", createUserRouter({ prisma, requireAuth }));
 app.use("/api", createDocumentsRouter({ prisma, requireAuth }));
 app.use("/api/flashcard", createFlashcardsRouter({ prisma, requireAuth }));
 app.use("/api/exam", createExamsRouter({ prisma, requireAuth }));
+app.use("/api/jobs", createJobsRouter({ requireAuth }));
 app.use(
   "/api/admin",
   createAdminRouter({ prisma, requireAuth, requireAdmin, auth }),

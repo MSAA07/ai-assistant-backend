@@ -35,6 +35,11 @@ model User {
   documents     Document[]
   sessions      Session[]
   accounts      Account[]
+
+  userLimit         UserLimit?
+  costAnomalyAlerts CostAnomalyAlert[]
+  usageEvents       UsageEvent[]
+  jobs              Job[]
   
   @@map("user")
   @@index([lastActive])
@@ -98,6 +103,9 @@ model Document {
   flashcards  Json
   examQuestions Json
   uploadDate  DateTime @default(now())
+
+  excerpts    DocumentExcerpt[]
+  storageKey  String?           // R2 object key — added for P1-S04
   
   @@index([userId])
 }
@@ -140,4 +148,109 @@ model AuditLog {
   @@index([action])
   @@index([createdAt])
   @@map("audit_log")
+}
+
+model DocumentExcerpt {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  slideOrPage  Int
+  excerptType  String   // 'slide_text' | 'speaker_note' | 'image_flag'
+  content      String
+  charOffset   Int      @default(0)
+  createdAt    DateTime @default(now())
+}
+
+model Job {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  jobType      String    // 'extract_document' | 'generate_exam' | 'generate_flashcards' | 'export_pdf'
+  status       String    @default("queued") // 'queued' | 'running' | 'succeeded' | 'failed'
+  progressPct  Int       @default(0)
+  retryCount   Int       @default(0)
+  maxRetries   Int       @default(3)
+  payload      Json      @default("{}")
+  result       Json?
+  errorMessage String?
+  queuedAt     DateTime  @default(now())
+  startedAt    DateTime?
+  completedAt  DateTime?
+}
+
+model FeatureFlag {
+  id            String                  @id @default(cuid())
+  featureKey    String                  @unique
+  enabledGlobal Boolean                 @default(true)
+  description   String?
+  createdAt     DateTime                @default(now())
+  assignments   FeatureFlagAssignment[]
+  auditLogs     FeatureFlagAuditLog[]
+}
+
+model FeatureFlagAssignment {
+  id         String      @id @default(cuid())
+  flagId     String
+  flag       FeatureFlag @relation(fields: [flagId], references: [id])
+  entityType String      // 'tier' | 'user'
+  entityId   String      // 'free' | 'premium' | userId
+  grantedBy  String?
+  grantedAt  DateTime    @default(now())
+  expiresAt  DateTime?
+
+  @@index([flagId, entityType, entityId])
+}
+
+model FeatureFlagAuditLog {
+  id              String      @id @default(cuid())
+  flagId          String
+  flag            FeatureFlag @relation(fields: [flagId], references: [id])
+  changedBy       String?     // nullable — SET NULL on account delete
+  auditActorLabel String?     // '[Deleted user]' written here when changedBy nulled
+  changeType      String      // 'grant' | 'revoke' | 'global_toggle'
+  entityType      String?
+  entityId        String?
+  previousValue   Json?
+  newValue        Json?
+  changedAt       DateTime    @default(now())
+}
+
+model UserLimit {
+  userId          String   @id
+  user            User     @relation(fields: [userId], references: [id])
+  dailyTokenCap   Int      @default(200000)
+  dailyDocCap     Int      @default(10)
+  requestsPerMin  Int      @default(10)
+  tokensUsedToday Int      @default(0)
+  docsUsedToday   Int      @default(0)
+  lastResetDate   DateTime @default(now())
+  overrideBy      String?
+}
+
+model CostAnomalyAlert {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  alertType    String   // 'daily_spend_3x_avg' | 'doc_cap_hit' | 'token_cap_hit'
+  thresholdUsd Decimal  @db.Decimal(10, 4)
+  actualUsd    Decimal  @db.Decimal(10, 4)
+  resolved     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+}
+
+model UsageEvent {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  eventType        String   // 'exam_generated' | 'flashcard_generated' | 'pdf_exported' | 'document_extracted'
+  featureKey       String?
+  aiModelUsed      String?  // 'gpt-4o-mini' | 'gpt-4o'
+  inputTokens      Int?
+  outputTokens     Int?
+  estimatedCostUsd Decimal? @db.Decimal(10, 6)
+  metadata         Json     @default("{}")
+  createdAt        DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([eventType, createdAt])
 }

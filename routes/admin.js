@@ -2,6 +2,7 @@ import express from "express";
 import { createRateLimiter } from "../middleware/rateLimit.js";
 import { logAdminAction } from "../utils/auditLog.js";
 import { serializeUser, toNumber } from "../utils/serializers.js";
+import { deleteFile } from "../utils/storage.js";
 
 const getIpAddress = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -445,6 +446,9 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       }
 
       await prisma.document.delete({ where: { id: documentId } });
+
+      // Delete from R2
+      await deleteFile(document.storageKey);
 
       const owner = await prisma.user.findUnique({
         where: { id },
