@@ -1,2 +1,2 @@
-[deploy]
-startCommand = "npm start"
+[build]
+dockerfilePath = "Dockerfile"
