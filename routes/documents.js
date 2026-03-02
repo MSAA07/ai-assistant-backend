@@ -156,11 +156,19 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
       const job = await enqueueJob(user.id, 'extract_document', jobPayload);
 
-      // Return 202 Accepted
+      // Return 202 Accepted but keep previous response shape for frontend compatibility
       res.status(202).json({
         success: true,
         jobId: job.id,
         documentId: document.id,
+        document: {
+          id: document.id,
+          filename: document.originalName,
+          summary: document.summary,
+          flashcards: document.flashcards,
+          examQuestions: document.examQuestions,
+          uploadDate: document.uploadDate,
+        },
         message: "Document uploaded and extraction queued"
       });
 
