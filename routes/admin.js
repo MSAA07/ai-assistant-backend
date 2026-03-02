@@ -3,6 +3,7 @@ import { createRateLimiter } from "../middleware/rateLimit.js";
 import { logAdminAction } from "../utils/auditLog.js";
 import { serializeUser, toNumber } from "../utils/serializers.js";
 import { deleteFile } from "../utils/storage.js";
+import { toggleGlobalFlag, grantFeature, revokeFeature } from "../utils/featureFlags.js";
 
 const getIpAddress = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -748,6 +749,141 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
     } catch (error) {
       console.error("Error fetching audit logs:", error);
       res.status(500).json({ error: "Failed to fetch audit logs" });
+    }
+  });
+
+  router.get("/features", async (req, res) => {
+    try {
+      const flags = await prisma.featureFlag.findMany({
+        include: {
+          assignments: true,
+          auditLogs: { orderBy: { changedAt: "desc" }, take: 10 },
+        },
+        orderBy: { featureKey: "asc" },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "LIST_FEATURE_FLAGS",
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(flags);
+    } catch (error) {
+      console.error("Error fetching feature flags:", error);
+      res.status(500).json({ error: "Failed to fetch feature flags" });
+    }
+  });
+
+  router.post("/features/:key/toggle", async (req, res) => {
+    try {
+      if (typeof req.body?.enabled !== "boolean") {
+        return res.status(400).json({ error: "enabled boolean is required" });
+      }
+
+      const flag = await toggleGlobalFlag(
+        req.params.key,
+        req.body.enabled,
+        req.session.user.id,
+      );
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "TOGGLE_FEATURE_FLAG",
+        targetId: flag.id,
+        details: { featureKey: flag.featureKey, enabled: req.body.enabled },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(flag);
+    } catch (error) {
+      console.error("Error toggling feature flag:", error);
+      res.status(500).json({ error: "Failed to toggle feature flag" });
+    }
+  });
+
+  router.post("/features/:key/grant", async (req, res) => {
+    try {
+      const { entityType, entityId, expiresAt } = req.body;
+      if (!entityType || !["user", "tier"].includes(entityType)) {
+        return res.status(400).json({ error: "Invalid entity type" });
+      }
+      if (!entityId || typeof entityId !== "string") {
+        return res.status(400).json({ error: "entityId is required" });
+      }
+
+      const assignment = await grantFeature(
+        req.params.key,
+        entityType,
+        entityId,
+        req.session.user.id,
+        expiresAt,
+      );
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "GRANT_FEATURE_FLAG",
+        targetId: assignment.id,
+        details: { featureKey: req.params.key, entityType, entityId, expiresAt },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(assignment);
+    } catch (error) {
+      console.error("Error granting feature flag:", error);
+      res.status(500).json({ error: "Failed to grant feature flag" });
+    }
+  });
+
+  router.post("/features/:key/revoke", async (req, res) => {
+    try {
+      const { entityType, entityId } = req.body;
+      if (!entityType || !["user", "tier"].includes(entityType)) {
+        return res.status(400).json({ error: "Invalid entity type" });
+      }
+      if (!entityId || typeof entityId !== "string") {
+        return res.status(400).json({ error: "entityId is required" });
+      }
+
+      await revokeFeature(
+        req.params.key,
+        entityType,
+        entityId,
+        req.session.user.id,
+      );
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "REVOKE_FEATURE_FLAG",
+        details: { featureKey: req.params.key, entityType, entityId },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error revoking feature flag:", error);
+      res.status(500).json({ error: "Failed to revoke feature flag" });
+    }
+  });
+
+  router.get("/features/audit", async (req, res) => {
+    try {
+      const logs = await prisma.featureFlagAuditLog.findMany({
+        orderBy: { changedAt: "desc" },
+        take: 100,
+        include: { flag: { select: { featureKey: true } } },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "LIST_FEATURE_FLAG_AUDIT",
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(logs);
+    } catch (error) {
+      console.error("Error fetching feature flag audit logs:", error);
+      res.status(500).json({ error: "Failed to fetch feature flag audit logs" });
     }
   });
 

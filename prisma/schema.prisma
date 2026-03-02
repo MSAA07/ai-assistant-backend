@@ -181,38 +181,43 @@ model Job {
 model FeatureFlag {
   id            String                  @id @default(cuid())
   featureKey    String                  @unique
-  enabledGlobal Boolean                 @default(true)
   description   String?
+  enabledGlobal Boolean                 @default(true)
   createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
   assignments   FeatureFlagAssignment[]
   auditLogs     FeatureFlagAuditLog[]
 }
 
 model FeatureFlagAssignment {
-  id         String      @id @default(cuid())
+  id         String             @id @default(cuid())
   flagId     String
-  flag       FeatureFlag @relation(fields: [flagId], references: [id])
-  entityType String      // 'tier' | 'user'
-  entityId   String      // 'free' | 'premium' | userId
+  flag       FeatureFlag        @relation(fields: [flagId], references: [id], onDelete: Cascade)
+  entityType FeatureEntityType
+  entityId   String
   grantedBy  String?
-  grantedAt  DateTime    @default(now())
+  grantedAt  DateTime           @default(now())
   expiresAt  DateTime?
 
-  @@index([flagId, entityType, entityId])
+  @@index([flagId])
+  @@unique([flagId, entityType, entityId])
 }
 
 model FeatureFlagAuditLog {
-  id              String      @id @default(cuid())
+  id              String             @id @default(cuid())
   flagId          String
-  flag            FeatureFlag @relation(fields: [flagId], references: [id])
-  changedBy       String?     // nullable — SET NULL on account delete
-  auditActorLabel String?     // '[Deleted user]' written here when changedBy nulled
-  changeType      String      // 'grant' | 'revoke' | 'global_toggle'
-  entityType      String?
+  flag            FeatureFlag        @relation(fields: [flagId], references: [id], onDelete: Cascade)
+  changedBy       String?
+  auditActorLabel String?
+  changeType      String
+  entityType      FeatureEntityType?
   entityId        String?
   previousValue   Json?
   newValue        Json?
-  changedAt       DateTime    @default(now())
+  changedAt       DateTime           @default(now())
+
+  @@index([flagId])
+  @@index([changedAt])
 }
 
 model UserLimit {
@@ -253,4 +258,9 @@ model UsageEvent {
 
   @@index([userId, createdAt])
   @@index([eventType, createdAt])
+}
+
+enum FeatureEntityType {
+  user
+  tier
 }
