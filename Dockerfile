@@ -8,9 +8,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends python3 python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
-# Install node dependencies
+# Install node dependencies (copy package manifests + prisma schema for postinstall)
 COPY package*.json ./
-RUN npm install
+COPY prisma ./prisma
+RUN npm install && npm cache clean --force
 
 # Install python dependencies
 COPY requirements.txt ./
@@ -19,7 +20,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # Copy remaining source
 COPY . .
 
-# Build prisma client
+# Build prisma client (ensure latest schema)
 RUN npm run postinstall
 
 # Expose default port
