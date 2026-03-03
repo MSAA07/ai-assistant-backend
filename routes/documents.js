@@ -141,10 +141,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
       // Delete local temp file immediately after upload (if R2 is used)
       // If uploadFile returned a key that is the local path (fallback), we KEEP it so worker can find it
-      const isLocalPath = key.startsWith('/')
-        || key.startsWith('\\')
-        || /^[a-zA-Z]:\\/.test(key)
-        || /^[a-zA-Z]:\//.test(key);
+      const isLocalPath = path.isAbsolute(key);
       if (!isLocalPath) {
           await fs.unlink(file.path).catch(() => {});
       }

@@ -19,7 +19,7 @@ export async function processExtraction(jobId, userId, payload) {
 
   await updateJob(jobId, { progressPct: 10 })
 
-  let workingPath = filePath
+  let workingPath = filePath && path.isAbsolute(filePath) ? filePath : null
   let downloadedPath
 
   if (!workingPath) {
@@ -27,7 +27,7 @@ export async function processExtraction(jobId, userId, payload) {
       throw new Error('No storage key available for document file')
     }
 
-    const isLocalKey = document.storageKey.startsWith('/') || document.storageKey.startsWith('C:')
+    const isLocalKey = path.isAbsolute(document.storageKey)
     if (isLocalKey) {
       workingPath = document.storageKey
     } else {
