@@ -225,18 +225,22 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
           orderBy: { queuedAt: 'desc' },
           take: 10
         });
+        
+        console.log(`[API] Debug: Searching for doc ${document.id} in ${recentJobs.length} recent jobs`);
 
         const matchingJob = recentJobs.find(job => {
           // Check payload for documentId
           // payload is Json, so we treat it as an object
-          return job.payload && job.payload.documentId === document.id;
+          const pid = job.payload?.documentId;
+          // console.log(`[API] Debug: Job ${job.id} payload docId: ${pid}`);
+          return pid === document.id;
         });
 
         if (matchingJob) {
           processingStatus = matchingJob.status;
           console.log(`[API] Found active job ${matchingJob.id} for doc ${document.id} status=${processingStatus}`);
         } else {
-             console.log(`[API] No active job found for empty doc ${document.id}`);
+             console.log(`[API] No active job found for empty doc ${document.id} (User: ${req.session.user.id})`);
         }
       }
 
