@@ -208,21 +208,35 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
       // Check for active processing job if content is missing
       let processingStatus = 'complete';
-      if (!document.summary || document.flashcards.length === 0) {
-        const job = await prisma.job.findFirst({
+      // Safe check for empty content
+      const isEmpty = !document.summary || 
+                      (Array.isArray(document.flashcards) && document.flashcards.length === 0);
+
+      if (isEmpty) {
+        // Fetch recent jobs for this user to find the matching extraction job
+        // We filter in memory to avoid Prisma JSON filter compatibility issues
+        const recentJobs = await prisma.job.findMany({
           where: {
-            userId: req.session.user.id, // Optimization: filter by user too
+            userId: req.session.user.id,
             jobType: 'extract_document',
-            payload: {
-              path: ['documentId'],
-              equals: document.id
-            }
+            // Look for active or recently failed jobs
+            status: { in: ['queued', 'running', 'failed'] }
           },
-          orderBy: { queuedAt: 'desc' }
+          orderBy: { queuedAt: 'desc' },
+          take: 10
         });
 
-        if (job) {
-          processingStatus = job.status;
+        const matchingJob = recentJobs.find(job => {
+          // Check payload for documentId
+          // payload is Json, so we treat it as an object
+          return job.payload && job.payload.documentId === document.id;
+        });
+
+        if (matchingJob) {
+          processingStatus = matchingJob.status;
+          console.log(`[API] Found active job ${matchingJob.id} for doc ${document.id} status=${processingStatus}`);
+        } else {
+             console.log(`[API] No active job found for empty doc ${document.id}`);
         }
       }
 
