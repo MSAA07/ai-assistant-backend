@@ -206,7 +206,27 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      res.json({ document });
+      // Check for active processing job if content is missing
+      let processingStatus = 'complete';
+      if (!document.summary || document.flashcards.length === 0) {
+        const job = await prisma.job.findFirst({
+          where: {
+            userId: req.session.user.id, // Optimization: filter by user too
+            jobType: 'extract_document',
+            payload: {
+              path: ['documentId'],
+              equals: document.id
+            }
+          },
+          orderBy: { queuedAt: 'desc' }
+        });
+
+        if (job) {
+          processingStatus = job.status;
+        }
+      }
+
+      res.json({ document: { ...document, processingStatus } });
     } catch (error) {
       console.error("Error fetching document:", error);
       res.status(500).json({ error: "Failed to fetch document" });
