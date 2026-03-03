@@ -7,6 +7,7 @@ import pdfParse from 'pdf-parse'
 import mammoth from 'mammoth'
 import { updateJob } from './jobQueue.js'
 import { downloadFileToTmp, safeUnlink } from './storage.js'
+import { generateStudyMaterialsFromExcerpts } from './studyMaterials.js'
 
 const prisma = new PrismaClient()
 
@@ -64,9 +65,24 @@ export async function processExtraction(jobId, userId, payload) {
       data: excerpts.map(e => ({ ...e, documentId }))
     })
 
+    const studyMaterials = await generateStudyMaterialsFromExcerpts(excerpts, document.language)
+
+    await prisma.document.update({
+      where: { id: documentId },
+      data: {
+        summary: studyMaterials.summary,
+        flashcards: studyMaterials.flashcards,
+        examQuestions: studyMaterials.examQuestions,
+      },
+    })
+
     await updateJob(jobId, { progressPct: 90 })
 
-    return { documentId, excerptCount: excerpts.length }
+    return {
+      documentId,
+      excerptCount: excerpts.length,
+      generated: Boolean(studyMaterials.summary || studyMaterials.flashcards?.length || studyMaterials.examQuestions?.length),
+    }
   } finally {
     if (downloadedPath) {
       await safeUnlink(downloadedPath)
