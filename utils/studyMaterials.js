@@ -79,7 +79,14 @@ export async function generateStudyMaterialsFromExcerpts(excerpts, language = "e
 
     const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
     const parsed = JSON.parse(cleaned);
-    return normalizeOutput(parsed);
+    const normalized = normalizeOutput(parsed);
+    console.info(
+      "[ai] Generated study materials",
+      `summary=${normalized.summary.length}`,
+      `flashcards=${normalized.flashcards.length}`,
+      `examQuestions=${normalized.examQuestions.length}`,
+    );
+    return normalized;
   } catch (error) {
     console.error("[ai] Failed to generate study materials:", error);
     return FALLBACK_RESPONSE;

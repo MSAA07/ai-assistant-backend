@@ -76,6 +76,15 @@ export async function processExtraction(jobId, userId, payload) {
       },
     })
 
+    console.info(
+      "[worker] document",
+      documentId,
+      "updated with",
+      `summary=${studyMaterials.summary.length}`,
+      `flashcards=${studyMaterials.flashcards.length}`,
+      `examQuestions=${studyMaterials.examQuestions.length}`,
+    )
+
     await updateJob(jobId, { progressPct: 90 })
 
     return {
