@@ -35,6 +35,33 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
 
       const monthlyLimit = getMonthlyLimit(user);
 
+      // Normalize documents to ensure flashcards/examQuestions are arrays (or at least have counts)
+      // This handles legacy data where they might be null or malformed
+      const normalizedDocuments = user.documents.map(doc => {
+        let flashcards = [];
+        let examQuestions = [];
+
+        if (Array.isArray(doc.flashcards)) {
+            flashcards = doc.flashcards;
+        } else if (typeof doc.flashcards === 'string') {
+             try { flashcards = JSON.parse(doc.flashcards); } catch (e) {}
+        }
+        
+        if (Array.isArray(doc.examQuestions)) {
+            examQuestions = doc.examQuestions;
+        } else if (typeof doc.examQuestions === 'string') {
+             try { examQuestions = JSON.parse(doc.examQuestions); } catch (e) {}
+        }
+
+        return {
+            ...doc,
+            flashcards,
+            examQuestions,
+            flashcardCount: Array.isArray(flashcards) ? flashcards.length : 0,
+            questionCount: Array.isArray(examQuestions) ? examQuestions.length : 0
+        };
+      });
+
       res.json({
         user: {
           id: user.id,
@@ -48,7 +75,7 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
           storageUsed: toNumber(user.storageUsed),
           lastActive: user.lastActive,
         },
-        documents: user.documents,
+        documents: normalizedDocuments,
       });
     } catch (error) {
       console.error("Error fetching user:", error);
