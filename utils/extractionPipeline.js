@@ -8,6 +8,12 @@ import mammoth from 'mammoth'
 import { updateJob } from './jobQueue.js'
 import { downloadFileToTmp, safeUnlink } from './storage.js'
 import { generateStudyMaterialsFromExcerpts } from './studyMaterials.js'
+import {
+  ensureUserLimitExists,
+  checkAndIncrementDailyDocCap,
+  checkAndIncrementDailyTokenCap,
+} from './limits.js'
+import { recordUsageEvent } from './costGuard.js'
 
 const prisma = new PrismaClient()
 
@@ -17,6 +23,9 @@ export async function processExtraction(jobId, userId, payload) {
   // Validate filePath - if not in payload, try to reconstruct or fail
   const document = await prisma.document.findUnique({ where: { id: documentId } })
   if (!document) throw new Error(`Document ${documentId} not found`)
+
+  await ensureUserLimitExists(userId)
+  await checkAndIncrementDailyDocCap(userId)
 
   await updateJob(jobId, { progressPct: 10 })
 
@@ -65,7 +74,28 @@ export async function processExtraction(jobId, userId, payload) {
       data: excerpts.map(e => ({ ...e, documentId }))
     })
 
+    const estimatedTokens = Math.ceil(
+      excerpts.reduce((sum, excerpt) => sum + (excerpt.content?.length || 0), 0) / 4
+    ) + 500
+    await checkAndIncrementDailyTokenCap(userId, estimatedTokens)
+
     const studyMaterials = await generateStudyMaterialsFromExcerpts(excerpts, document.language)
+
+    if (studyMaterials.usage?.prompt_tokens != null && studyMaterials.usage?.completion_tokens != null) {
+      await recordUsageEvent(
+        userId,
+        'document_extracted',
+        'smart_model_routing',
+        studyMaterials.modelUsed,
+        studyMaterials.usage.prompt_tokens,
+        studyMaterials.usage.completion_tokens,
+        {
+          documentId,
+          jobId,
+          excerptCount: excerpts.length,
+        }
+      )
+    }
 
     await prisma.document.update({
       where: { id: documentId },

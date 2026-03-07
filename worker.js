@@ -1,6 +1,10 @@
 // import * as Sentry from '@sentry/node'  // added in P1-S08 — import safely
+import { PrismaClient } from '@prisma/client'
 import { getNextQueuedJob, updateJob } from './utils/jobQueue.js'
 import { processExtraction } from './utils/extractionPipeline.js'  // created in P1-S03
+import { checkAnomaly } from './utils/costGuard.js'
+
+const prisma = new PrismaClient()
 
 const POLL_INTERVAL_MS = 2000
 const JOB_TIMEOUTS = {
@@ -13,8 +17,25 @@ const JOB_TIMEOUTS = {
 async function runWorker() {
   console.log('[worker] started, polling every 2s')
 
-  // Will be replaced with real anomaly check in P1-S06
-  setInterval(() => {}, 15 * 60 * 1000)
+  setInterval(async () => {
+    try {
+      const recentUsers = await prisma.usageEvent.findMany({
+        where: {
+          createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+        },
+        select: { userId: true },
+        distinct: ['userId']
+      })
+
+      for (const { userId } of recentUsers) {
+        await checkAnomaly(userId).catch(error => {
+          console.error('[anomaly]', error)
+        })
+      }
+    } catch (error) {
+      console.error('[anomaly] sweep failed:', error)
+    }
+  }, 15 * 60 * 1000)
 
   while (true) {
     try {
@@ -41,7 +62,9 @@ async function runWorker() {
         console.log(`[worker] job ${job.id} succeeded`)
       } catch (err) {
         const newRetryCount = (job.retryCount || 0) + 1
-        if (newRetryCount < job.maxRetries) {
+        const shouldRetry = !isNonRetryableJobError(err) && newRetryCount < job.maxRetries
+
+        if (shouldRetry) {
           await updateJob(job.id, { status: 'queued', retryCount: newRetryCount })
           console.log(`[worker] job ${job.id} failed, retrying (${newRetryCount}/${job.maxRetries})`)
         } else {
@@ -74,6 +97,10 @@ function withTimeout(promise, ms) {
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`Job timed out after ${ms}ms`)), ms))
   ])
+}
+
+function isNonRetryableJobError(error) {
+  return error?.code === 'doc_cap_hit' || error?.code === 'token_cap_hit'
 }
 
 function sleep(ms) {

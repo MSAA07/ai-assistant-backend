@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 
 let client;
+const MODEL_NAME = "gpt-4o-mini";
 
 function getClient() {
   if (!process.env.OPENAI_API_KEY) {
@@ -18,7 +19,17 @@ const FALLBACK_RESPONSE = {
   summary: "",
   flashcards: [],
   examQuestions: [],
+  modelUsed: null,
+  usage: null,
 };
+
+function withResponseMetadata(payload, response) {
+  return {
+    ...payload,
+    modelUsed: response?.model || MODEL_NAME,
+    usage: response?.usage || null,
+  };
+}
 
 function normalizeOutput(output = {}) {
   const summary = typeof output.summary === "string" ? output.summary.trim() : "";
@@ -63,7 +74,7 @@ export async function generateStudyMaterialsFromExcerpts(excerpts, language = "e
     const prompt = buildPrompt(truncated, language);
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: MODEL_NAME,
       messages: [
         { role: "system", content: "You convert study material into JSON outputs." },
         { role: "user", content: prompt },
@@ -74,19 +85,24 @@ export async function generateStudyMaterialsFromExcerpts(excerpts, language = "e
     const raw = response.choices?.[0]?.message?.content;
     if (!raw) {
       console.warn("[ai] Empty response from OpenAI");
-      return FALLBACK_RESPONSE;
+      return withResponseMetadata(FALLBACK_RESPONSE, response);
     }
 
-    const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
-    const normalized = normalizeOutput(parsed);
-    console.info(
-      "[ai] Generated study materials",
-      `summary=${normalized.summary.length}`,
-      `flashcards=${normalized.flashcards.length}`,
-      `examQuestions=${normalized.examQuestions.length}`,
-    );
-    return normalized;
+    try {
+      const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+      const parsed = JSON.parse(cleaned);
+      const normalized = normalizeOutput(parsed);
+      console.info(
+        "[ai] Generated study materials",
+        `summary=${normalized.summary.length}`,
+        `flashcards=${normalized.flashcards.length}`,
+        `examQuestions=${normalized.examQuestions.length}`,
+      );
+      return withResponseMetadata(normalized, response);
+    } catch (error) {
+      console.error("[ai] Failed to parse study materials response:", error);
+      return withResponseMetadata(FALLBACK_RESPONSE, response);
+    }
   } catch (error) {
     console.error("[ai] Failed to generate study materials:", error);
     return FALLBACK_RESPONSE;
