@@ -1,10 +1,11 @@
-// import * as Sentry from '@sentry/node'  // added in P1-S08 — import safely
 import { PrismaClient } from '@prisma/client'
 import { getNextQueuedJob, updateJob } from './utils/jobQueue.js'
 import { processExtraction } from './utils/extractionPipeline.js'  // created in P1-S03
 import { checkAnomaly } from './utils/costGuard.js'
+import { captureSentryException, flushSentry, initSentry } from './utils/sentry.js'
 
 const prisma = new PrismaClient()
+initSentry({ serviceName: 'worker', disableProcessHandlers: true })
 
 const POLL_INTERVAL_MS = 2000
 const JOB_TIMEOUTS = {
@@ -13,6 +14,7 @@ const JOB_TIMEOUTS = {
   generate_flashcards: 90000,
   export_pdf: 30000,
 }
+let fatalWorkerShutdownStarted = false
 
 async function runWorker() {
   console.log('[worker] started, polling every 2s')
@@ -30,10 +32,18 @@ async function runWorker() {
       for (const { userId } of recentUsers) {
         await checkAnomaly(userId).catch(error => {
           console.error('[anomaly]', error)
+          captureSentryException(error, {
+            tags: { worker_phase: 'anomaly_check' },
+            extra: { userId },
+            user: { id: userId },
+          })
         })
       }
     } catch (error) {
       console.error('[anomaly] sweep failed:', error)
+      captureSentryException(error, {
+        tags: { worker_phase: 'anomaly_sweep' },
+      })
     }
   }, 15 * 60 * 1000)
 
@@ -74,11 +84,25 @@ async function runWorker() {
             completedAt: new Date()
           })
           console.error(`[worker] job ${job.id} permanently failed:`, err.message)
-          // Sentry capture added in P1-S08
+          captureSentryException(err, {
+            tags: {
+              worker_phase: 'job_failed',
+              jobType: job.jobType,
+            },
+            extra: {
+              jobId: job.id,
+              retryCount: newRetryCount,
+              maxRetries: job.maxRetries,
+            },
+            user: job.userId ? { id: job.userId } : undefined,
+          })
         }
       }
     } catch (err) {
       console.error('[worker] poll error:', err)
+      captureSentryException(err, {
+        tags: { worker_phase: 'poll' },
+      })
       await sleep(POLL_INTERVAL_MS)
     }
   }
@@ -107,7 +131,61 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function normalizeFatalWorkerError(error, fallbackMessage) {
+  if (error instanceof Error) {
+    return error
+  }
+
+  if (error && typeof error === 'object') {
+    const normalizedError = new Error(error.message || fallbackMessage)
+    Object.assign(normalizedError, error)
+    return normalizedError
+  }
+
+  return new Error(typeof error === 'string' ? error : fallbackMessage)
+}
+
+async function shutdownWorkerAfterFatalError(origin, error) {
+  const normalizedError = normalizeFatalWorkerError(error, `[worker] ${origin}`)
+
+  if (fatalWorkerShutdownStarted) {
+    return
+  }
+
+  fatalWorkerShutdownStarted = true
+  console.error(`[worker] ${origin}:`, normalizedError)
+
+  captureSentryException(normalizedError, {
+    level: 'fatal',
+    tags: {
+      worker_phase: 'process',
+      origin,
+    },
+  })
+
+  await flushSentry(2000).catch(() => false)
+  await prisma.$disconnect().catch(() => {})
+  process.exit(1)
+}
+
+process.on('uncaughtException', error => {
+  void shutdownWorkerAfterFatalError('uncaughtException', error)
+})
+
+process.on('unhandledRejection', reason => {
+  void shutdownWorkerAfterFatalError('unhandledRejection', reason)
+})
+
 runWorker().catch(err => {
   console.error('[worker] fatal error:', err)
-  process.exit(1)
+  captureSentryException(err, {
+    level: 'fatal',
+    tags: { worker_phase: 'startup' },
+  })
+  flushSentry(2000)
+    .catch(() => false)
+    .finally(async () => {
+      await prisma.$disconnect().catch(() => {})
+      process.exit(1)
+    })
 })

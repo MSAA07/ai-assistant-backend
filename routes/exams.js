@@ -1,4 +1,5 @@
 import express from "express";
+import { captureSentryException } from "../utils/sentry.js";
 
 export const createExamsRouter = ({ prisma, requireAuth }) => {
   const router = express.Router();
@@ -39,6 +40,7 @@ export const createExamsRouter = ({ prisma, requireAuth }) => {
       res.json({ success: true, attempt });
     } catch (error) {
       console.error("Error saving exam attempt:", error);
+      captureSentryException(error);
       res.status(500).json({ error: "Failed to save exam attempt" });
     }
   });

@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import { getMonthlyLimit } from "../utils/limits.js";
 import { enqueueJob } from "../utils/jobQueue.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
+import { captureSentryException } from "../utils/sentry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -184,6 +185,10 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       if (req.file) {
         await fs.unlink(req.file.path).catch(() => {});
       }
+      captureSentryException(error, {
+        tags: { route: "documents", action: "upload" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+      });
       res.status(500).json({
         error: "Failed to process document",
         details: error.message,
@@ -247,6 +252,10 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       res.json({ document: { ...document, processingStatus } });
     } catch (error) {
       console.error("Error fetching document:", error);
+      captureSentryException(error, {
+        tags: { route: "documents", action: "fetch" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+      });
       res.status(500).json({ error: "Failed to fetch document" });
     }
   });
@@ -287,6 +296,10 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       res.json({ success: true, message: "Document deleted" });
     } catch (error) {
       console.error("Error deleting document:", error);
+      captureSentryException(error, {
+        tags: { route: "documents", action: "delete" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+      });
       res.status(500).json({ error: "Failed to delete document" });
     }
   });

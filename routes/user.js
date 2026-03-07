@@ -1,6 +1,7 @@
 import express from "express";
 import { getMonthlyLimit } from "../utils/limits.js";
 import { toNumber } from "../utils/serializers.js";
+import { captureSentryException } from "../utils/sentry.js";
 
 export const createUserRouter = ({ prisma, requireAuth }) => {
   const router = express.Router();
@@ -79,6 +80,7 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
       });
     } catch (error) {
       console.error("Error fetching user:", error);
+      captureSentryException(error);
       res.status(500).json({ error: "Failed to fetch user data" });
     }
   });

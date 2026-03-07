@@ -13,12 +13,15 @@ import { createFlashcardsRouter } from "./routes/flashcards.js";
 import { createExamsRouter } from "./routes/exams.js";
 import { createAdminRouter } from "./routes/admin.js";
 import { createJobsRouter } from "./routes/jobs.js";
+import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 
 dotenv.config();
 
 // Debugging for Railway deployment
 console.log('OPENAI_API_KEY exists:', !!process.env.OPENAI_API_KEY);
 console.log('OPENAI_API_KEY length:', process.env.OPENAI_API_KEY?.length || 0);
+
+initSentry({ serviceName: "backend" });
 
 const app = express();
 const prisma = new PrismaClient();
@@ -75,6 +78,23 @@ app.use(
   "/api/admin",
   createAdminRouter({ prisma, requireAuth, requireAdmin, auth }),
 );
+
+setupSentryExpressErrorHandler(app);
+
+app.use((error, req, res, next) => {
+  console.error("Unhandled API error:", error);
+
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  const statusCode = getErrorStatusCode(error);
+  const message = statusCode >= 500
+    ? "Internal Server Error"
+    : error?.message || "Request failed";
+
+  return res.status(statusCode).json({ error: message });
+});
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {

@@ -1,5 +1,6 @@
 import express from 'express'
 import { getJobById } from '../utils/jobQueue.js'
+import { captureSentryException } from '../utils/sentry.js'
 
 export const createJobsRouter = ({ requireAuth }) => {
   const router = express.Router()
@@ -20,6 +21,7 @@ export const createJobsRouter = ({ requireAuth }) => {
       })
     } catch (err) {
       console.error("Error fetching job:", err)
+      captureSentryException(err)
       res.status(500).json({ error: 'Failed to fetch job status' })
     }
   })

@@ -2,6 +2,7 @@ import express from "express";
 import { createRateLimiter } from "../middleware/rateLimit.js";
 import { logAdminAction } from "../utils/auditLog.js";
 import { serializeUser, toNumber } from "../utils/serializers.js";
+import { captureSentryException } from "../utils/sentry.js";
 import { deleteFile } from "../utils/storage.js";
 import { toggleGlobalFlag, grantFeature, revokeFeature } from "../utils/featureFlags.js";
 
@@ -105,6 +106,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
     } catch (error) {
       console.error("Error fetching users:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch users" });
     }
   });
@@ -183,6 +185,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ user: serializeUser(createdUser) });
     } catch (error) {
       console.error("Error creating user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to create user" });
     }
   });
@@ -224,6 +227,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
     } catch (error) {
       console.error("Error fetching user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch user" });
     }
   });
@@ -287,6 +291,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ user: serializeUser(updatedUser) });
     } catch (error) {
       console.error("Error updating user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to update user" });
     }
   });
@@ -317,6 +322,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to delete user" });
     }
   });
@@ -357,6 +363,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ user: serializeUser(user) });
     } catch (error) {
       console.error("Error suspending user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to suspend user" });
     }
   });
@@ -392,6 +399,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ user: serializeUser(user) });
     } catch (error) {
       console.error("Error unsuspending user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to unsuspend user" });
     }
   });
@@ -431,6 +439,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ documents });
     } catch (error) {
       console.error("Error fetching user files:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch user files" });
     }
   });
@@ -477,6 +486,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting user file:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to delete file" });
     }
   });
@@ -508,6 +518,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ sessions });
     } catch (error) {
       console.error("Error fetching sessions:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch sessions" });
     }
   });
@@ -528,6 +539,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true, revoked: result.count });
     } catch (error) {
       console.error("Error revoking sessions:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to revoke sessions" });
     }
   });
@@ -556,6 +568,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error revoking session:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to revoke session" });
     }
   });
@@ -590,6 +603,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ total, sessions });
     } catch (error) {
       console.error("Error fetching sessions:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch sessions" });
     }
   });
@@ -618,6 +632,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error revoking session:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to revoke session" });
     }
   });
@@ -668,6 +683,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
     } catch (error) {
       console.error("Error fetching analytics:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch analytics" });
     }
   });
@@ -704,6 +720,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
     } catch (error) {
       console.error("Error fetching storage breakdown:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch storage breakdown" });
     }
   });
@@ -748,6 +765,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ total, logs });
     } catch (error) {
       console.error("Error fetching audit logs:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch audit logs" });
     }
   });
@@ -771,6 +789,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json(flags);
     } catch (error) {
       console.error("Error fetching feature flags:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch feature flags" });
     }
   });
@@ -798,6 +817,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json(flag);
     } catch (error) {
       console.error("Error toggling feature flag:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to toggle feature flag" });
     }
   });
@@ -831,6 +851,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json(assignment);
     } catch (error) {
       console.error("Error granting feature flag:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to grant feature flag" });
     }
   });
@@ -862,6 +883,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error revoking feature flag:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to revoke feature flag" });
     }
   });
@@ -883,6 +905,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json(logs);
     } catch (error) {
       console.error("Error fetching feature flag audit logs:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch feature flag audit logs" });
     }
   });

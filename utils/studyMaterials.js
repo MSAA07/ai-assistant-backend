@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { captureSentryException } from "./sentry.js";
 
 let client;
 const MODEL_NAME = "gpt-4o-mini";
@@ -101,10 +102,16 @@ export async function generateStudyMaterialsFromExcerpts(excerpts, language = "e
       return withResponseMetadata(normalized, response);
     } catch (error) {
       console.error("[ai] Failed to parse study materials response:", error);
+      captureSentryException(error, {
+        tags: { ai_phase: "parse_study_materials_response" },
+      });
       return withResponseMetadata(FALLBACK_RESPONSE, response);
     }
   } catch (error) {
     console.error("[ai] Failed to generate study materials:", error);
+    captureSentryException(error, {
+      tags: { ai_phase: "generate_study_materials" },
+    });
     return FALLBACK_RESPONSE;
   }
 }

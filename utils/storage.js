@@ -10,6 +10,7 @@ import os from 'os'
 import path from 'path'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
+import { captureSentryException } from './sentry.js'
 
 const r2 = process.env.R2_ENDPOINT ? new S3Client({
   region: 'auto',
@@ -56,6 +57,10 @@ export async function deleteFile(key) {
     await r2.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
   } catch (error) {
     console.error('[storage] Failed to delete from R2:', error)
+    captureSentryException(error, {
+      tags: { storage_phase: 'delete_r2_file' },
+      extra: { key },
+    })
     // Don't throw, just log
   }
 }
@@ -83,6 +88,10 @@ export async function safeUnlink(filePath) {
   } catch (error) {
     if (error.code !== 'ENOENT') {
       console.warn('[storage] Failed to clean up temp file:', error.message)
+      captureSentryException(error, {
+        tags: { storage_phase: 'cleanup_tmp_file' },
+        extra: { filePath },
+      })
     }
   }
 }

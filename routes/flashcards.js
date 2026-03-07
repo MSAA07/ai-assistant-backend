@@ -1,4 +1,5 @@
 import express from "express";
+import { captureSentryException } from "../utils/sentry.js";
 
 export const createFlashcardsRouter = ({ prisma, requireAuth }) => {
   const router = express.Router();
@@ -45,6 +46,7 @@ export const createFlashcardsRouter = ({ prisma, requireAuth }) => {
       res.json({ success: true, progress });
     } catch (error) {
       console.error("Error saving flashcard progress:", error);
+      captureSentryException(error);
       res.status(500).json({ error: "Failed to save progress" });
     }
   });
