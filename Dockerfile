@@ -26,4 +26,4 @@ RUN npm run postinstall
 # Expose default port
 EXPOSE 3001
 
-CMD ["npm", "start"]
+CMD ["sh", "-c", "if printf '%s' \"$RAILWAY_SERVICE_NAME\" | grep -qi 'worker'; then node worker.js; else npm start; fi"]
