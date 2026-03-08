@@ -186,7 +186,7 @@ export async function failJob(prisma, job, error) {
         },
         data: {
           processingStatus: DOCUMENT_PROCESSING_STATUS.failed,
-          processingJobId: job.id,
+          processingJobId: null,
           processingError: retryDecision.errorMessage,
           processedAt: null,
         },
@@ -197,7 +197,7 @@ export async function failJob(prisma, job, error) {
   return retryDecision;
 }
 
-export async function completeJob(prisma, job, result, studyMaterials) {
+export async function completeJob(prisma, job, result) {
   const completedAt = new Date();
 
   await prisma.$transaction(async (tx) => {
@@ -210,11 +210,11 @@ export async function completeJob(prisma, job, result, studyMaterials) {
         ],
       },
       data: {
-        summary: studyMaterials.summary,
-        flashcards: studyMaterials.flashcards,
-        examQuestions: studyMaterials.examQuestions,
+        summary: "",
+        flashcards: [],
+        examQuestions: [],
         processingStatus: DOCUMENT_PROCESSING_STATUS.complete,
-        processingJobId: job.id,
+        processingJobId: null,
         processingError: null,
         processedAt: completedAt,
       },

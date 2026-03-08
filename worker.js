@@ -107,7 +107,6 @@ async function runWorker() {
             excerptSource: extractionResult.excerptSource,
             generated: extractionResult.generated,
           },
-          extractionResult.studyMaterials,
         );
 
         console.log(`[worker] job ${job.id} succeeded`);
@@ -177,6 +176,7 @@ function isNonRetryableJobError(error) {
   return error?.code === "doc_cap_hit"
     || error?.code === "token_cap_hit"
     || error?.code === "document_not_found"
+    || error?.code === "no_extractable_content"
     || error?.code === "document_completion_conflict";
 }
 

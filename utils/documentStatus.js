@@ -144,6 +144,19 @@ export function getDocumentExcerptCount(document) {
   return 0;
 }
 
+export function isUsableExcerpt(excerpt) {
+  return normalizeString(excerpt?.content).length > 0
+    && normalizeString(excerpt?.excerptType).toLowerCase() !== "image_flag";
+}
+
+export function countUsableExcerpts(excerpts = []) {
+  if (!Array.isArray(excerpts)) {
+    return 0;
+  }
+
+  return excerpts.filter(isUsableExcerpt).length;
+}
+
 export function getStudyMaterialState(studyMaterials = {}, options = {}) {
   const excerptCount = Number.isFinite(Number(options.excerptCount))
     ? Number(options.excerptCount)
@@ -196,16 +209,14 @@ export function serializeDocument(document, options = {}) {
     ? Number(options.excerptCount)
     : getDocumentExcerptCount(document);
   const studyMaterialState = getStudyMaterialState(document, { excerptCount });
-  let processingStatus = normalizeDocumentProcessingStatus(document?.processingStatus);
-
-  if (processingStatus === DOCUMENT_PROCESSING_STATUS.complete && !studyMaterialState.isComplete) {
-    processingStatus = DOCUMENT_PROCESSING_STATUS.failed;
-  }
-
-  const canExposeContent = processingStatus === DOCUMENT_PROCESSING_STATUS.complete
-    && studyMaterialState.isComplete;
+  const processingStatus = normalizeDocumentProcessingStatus(document?.processingStatus);
+  const canExposeContent = processingStatus === DOCUMENT_PROCESSING_STATUS.complete;
   const processingError = processingStatus === DOCUMENT_PROCESSING_STATUS.failed
     ? normalizeString(document?.processingError) || DOCUMENT_INCOMPLETE_MESSAGE
+    : null;
+  const processingJobId = processingStatus === DOCUMENT_PROCESSING_STATUS.queued
+    || processingStatus === DOCUMENT_PROCESSING_STATUS.processing
+    ? document.processingJobId ?? null
     : null;
 
   return {
@@ -221,7 +232,7 @@ export function serializeDocument(document, options = {}) {
       ? document.processedAt ?? null
       : null,
     processingStatus,
-    processingJobId: document.processingJobId ?? null,
+    processingJobId,
     processingError,
     summary: canExposeContent ? studyMaterialState.summary : "",
     flashcards: canExposeContent ? studyMaterialState.flashcards : [],
@@ -261,6 +272,20 @@ function pickActiveJobByDocumentId(jobs) {
   return jobsByDocumentId;
 }
 
+async function getUsableExcerptCountsByDocumentId(prisma) {
+  const excerptCounts = await prisma.$queryRaw`
+    SELECT "documentId", COUNT(*)::int AS "usableExcerptCount"
+    FROM "DocumentExcerpt"
+    WHERE "excerptType" <> 'image_flag'
+      AND NULLIF(BTRIM("content"), '') IS NOT NULL
+    GROUP BY "documentId"
+  `;
+
+  return new Map(
+    excerptCounts.map((row) => [row.documentId, Number(row.usableExcerptCount || 0)]),
+  );
+}
+
 export async function backfillDocumentProcessingState(prisma) {
   await prisma.$executeRaw`
     UPDATE "Job"
@@ -270,14 +295,8 @@ export async function backfillDocumentProcessingState(prisma) {
       AND payload ? 'documentId'
   `;
 
-  const [documents, activeJobs] = await Promise.all([
-    prisma.document.findMany({
-      include: {
-        _count: {
-          select: { excerpts: true },
-        },
-      },
-    }),
+  const [documents, activeJobs, usableExcerptCountsByDocumentId] = await Promise.all([
+    prisma.document.findMany(),
     prisma.job.findMany({
       where: {
         jobType: "extract_document",
@@ -285,21 +304,20 @@ export async function backfillDocumentProcessingState(prisma) {
       },
       orderBy: [{ queuedAt: "desc" }],
     }),
+    getUsableExcerptCountsByDocumentId(prisma),
   ]);
 
   const activeJobsByDocumentId = pickActiveJobByDocumentId(activeJobs);
 
   for (const document of documents) {
-    const materialState = getStudyMaterialState(document, {
-      excerptCount: document._count?.excerpts ?? 0,
-    });
     const activeJob = activeJobsByDocumentId.get(document.id);
-    const nextStatus = materialState.isComplete
-      ? DOCUMENT_PROCESSING_STATUS.complete
-      : activeJob?.status === "running"
-        ? DOCUMENT_PROCESSING_STATUS.processing
-        : activeJob?.status === "queued"
-          ? DOCUMENT_PROCESSING_STATUS.queued
+    const usableExcerptCount = usableExcerptCountsByDocumentId.get(document.id) ?? 0;
+    const nextStatus = activeJob?.status === "running"
+      ? DOCUMENT_PROCESSING_STATUS.processing
+      : activeJob?.status === "queued"
+        ? DOCUMENT_PROCESSING_STATUS.queued
+        : usableExcerptCount > 0
+          ? DOCUMENT_PROCESSING_STATUS.complete
           : DOCUMENT_PROCESSING_STATUS.failed;
     const nextProcessingJobId = activeJob?.id ?? null;
     const nextProcessingError = nextStatus === DOCUMENT_PROCESSING_STATUS.failed

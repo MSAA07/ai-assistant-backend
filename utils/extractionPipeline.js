@@ -5,20 +5,22 @@ import path from "path";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 
-import {
-  getStudyMaterialState,
-  normalizeStudyMaterials,
-} from "./documentStatus.js";
+import { countUsableExcerpts } from "./documentStatus.js";
 import { updateJobProgress } from "./jobQueue.js";
 import {
   ensureUserLimitExists,
   checkAndIncrementDailyDocCap,
-  checkAndIncrementDailyTokenCap,
 } from "./limits.js";
-import { recordUsageEvent } from "./costGuard.js";
-import { captureSentryException } from "./sentry.js";
 import { downloadFileToTmp, safeUnlink } from "./storage.js";
-import { generateStudyMaterialsFromExcerpts } from "./studyMaterials.js";
+
+function buildExtractionResult(documentId, excerptCount, excerptSource) {
+  return {
+    documentId,
+    excerptCount,
+    excerptSource,
+    generated: false,
+  };
+}
 
 export async function processExtraction(prisma, job, workerId) {
   const documentId = job.documentId ?? job.payload?.documentId;
@@ -32,11 +34,6 @@ export async function processExtraction(prisma, job, workerId) {
 
   const document = await prisma.document.findUnique({
     where: { id: documentId },
-    include: {
-      _count: {
-        select: { excerpts: true },
-      },
-    },
   });
 
   if (!document) {
@@ -78,120 +75,66 @@ export async function processExtraction(prisma, job, workerId) {
         { createdAt: "asc" },
       ],
     });
-    const existingState = getStudyMaterialState(document, {
-      excerptCount: existingExcerpts.length || document._count?.excerpts || 0,
-    });
+    const existingUsableExcerptCount = countUsableExcerpts(existingExcerpts);
 
-    if (existingExcerpts.length > 0 && existingState.isComplete) {
+    if (existingUsableExcerptCount > 0) {
       await updateJobProgress(prisma, job.id, workerId, 100);
+      const result = buildExtractionResult(documentId, existingUsableExcerptCount, "cache");
 
       return {
         documentId,
-        excerptCount: existingExcerpts.length,
+        excerptCount: existingUsableExcerptCount,
         excerptSource: "cache",
         generated: false,
-        studyMaterials: normalizeStudyMaterials(existingState),
+        result,
       };
     }
 
-    let excerpts = existingExcerpts;
-    let excerptSource = existingExcerpts.length > 0 ? "cache" : "fresh";
+    let excerpts = [];
+    const excerptSource = "fresh";
 
-    if (excerpts.length === 0) {
-      const mimeType = document.fileType;
-
-      if (mimeType.includes("pdf")) {
-        excerpts = await extractPdf(workingPath);
-      } else if (mimeType.includes("wordprocessingml") || mimeType.includes("docx")) {
-        excerpts = await extractDocx(workingPath);
-      } else if (mimeType.includes("presentationml") || mimeType.includes("pptx")) {
-        excerpts = await extractPptx(workingPath);
-      } else {
-        throw new Error(`Unsupported file type: ${mimeType}`);
-      }
-
-      if (excerpts.length === 0) {
-        const noContentError = new Error("No extractable content found in document");
-        noContentError.code = "no_extractable_content";
-        throw noContentError;
-      }
-
-      await prisma.documentExcerpt.createMany({
-        data: excerpts.map((excerpt) => ({
-          ...excerpt,
-          documentId,
-        })),
+    if (existingExcerpts.length > 0) {
+      await prisma.documentExcerpt.deleteMany({
+        where: { documentId },
       });
     }
 
-    await updateJobProgress(prisma, job.id, workerId, 60);
+    const mimeType = document.fileType;
 
-    const estimatedTokens = Math.ceil(
-      excerpts.reduce((sum, excerpt) => {
-        if (excerpt.excerptType === "image_flag") {
-          return sum;
-        }
+    if (mimeType.includes("pdf")) {
+      excerpts = await extractPdf(workingPath);
+    } else if (mimeType.includes("wordprocessingml") || mimeType.includes("docx")) {
+      excerpts = await extractDocx(workingPath);
+    } else if (mimeType.includes("presentationml") || mimeType.includes("pptx")) {
+      excerpts = await extractPptx(workingPath);
+    } else {
+      throw new Error(`Unsupported file type: ${mimeType}`);
+    }
 
-        return sum + (excerpt.content?.length || 0);
-      }, 0) / 4,
-    ) + 500;
-    await checkAndIncrementDailyTokenCap(job.userId, estimatedTokens);
+    const usableExcerptCount = countUsableExcerpts(excerpts);
+    if (usableExcerptCount === 0) {
+      const noContentError = new Error("No extractable content found in document");
+      noContentError.code = "no_extractable_content";
+      throw noContentError;
+    }
 
-    const studyMaterialsResponse = await generateStudyMaterialsFromExcerpts(
-      excerpts,
-      document.language,
-    );
-    const normalizedStudyMaterials = getStudyMaterialState(studyMaterialsResponse, {
-      excerptCount: excerpts.length,
+    await prisma.documentExcerpt.createMany({
+      data: excerpts.map((excerpt) => ({
+        ...excerpt,
+        documentId,
+      })),
     });
 
-    if (!normalizedStudyMaterials.isComplete) {
-      const invalidOutputError = new Error("Study material generation returned incomplete content");
-      invalidOutputError.code = "invalid_study_materials";
-      invalidOutputError.details = normalizedStudyMaterials.errors;
-      throw invalidOutputError;
-    }
-
-    if (
-      studyMaterialsResponse.usage?.prompt_tokens != null
-      && studyMaterialsResponse.usage?.completion_tokens != null
-    ) {
-      await recordUsageEvent(
-        job.userId,
-        "document_extracted",
-        "smart_model_routing",
-        studyMaterialsResponse.modelUsed,
-        studyMaterialsResponse.usage.prompt_tokens,
-        studyMaterialsResponse.usage.completion_tokens,
-        {
-          documentId,
-          jobId: job.id,
-          excerptCount: excerpts.length,
-        },
-      ).catch((error) => {
-        console.error("[worker] failed to record usage event:", error);
-        captureSentryException(error, {
-          tags: { worker_phase: "record_usage_event" },
-          extra: { documentId, jobId: job.id },
-          user: { id: job.userId },
-        });
-      });
-    }
-
+    await updateJobProgress(prisma, job.id, workerId, 60);
     await updateJobProgress(prisma, job.id, workerId, 90);
+    const result = buildExtractionResult(documentId, usableExcerptCount, excerptSource);
 
     return {
       documentId,
-      excerptCount: excerpts.length,
+      excerptCount: usableExcerptCount,
       excerptSource,
-      generated: true,
-      studyMaterials: normalizeStudyMaterials(normalizedStudyMaterials),
-      result: {
-        documentId,
-        excerptCount: excerpts.length,
-        excerptSource,
-        generated: true,
-      },
+      generated: false,
+      result,
     };
   } finally {
     if (downloadedPath) {
