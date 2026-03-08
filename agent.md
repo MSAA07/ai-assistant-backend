@@ -27,8 +27,18 @@ This document provides guidelines for AI agents and developers working on the AI
 
 ### Additional Technologies
 - **File Processing**: pdf-parse, mammoth, python-pptx
-- **Job Queue**: Custom in-memory queue with worker process
+- **Job Queue**: Database-backed queue with worker leases and stale-job recovery
 - **Python**: For PPTX extraction (requirements.txt)
+
+## Lifecycle Architecture
+
+- **Document is the lifecycle owner**: the frontend reads `Document.processingStatus`, `processingJobId`, `processingError`, and `processedAt` as the source of truth.
+- **User-visible states**: `queued -> processing -> complete | failed`
+- **Job rows are worker coordination records**: jobs still move through `queued -> running -> succeeded | failed`, but that status is internal to the worker and polling APIs.
+- **Upload is atomic**: the backend uploads to storage, creates the `Document`, increments usage, creates the `Job`, and links `processingJobId` inside one Prisma transaction before returning `202 Accepted`.
+- **Workers use leases**: claiming a queued job sets `workerId`, `leaseExpiresAt`, and `lastHeartbeatAt`; heartbeats extend the lease while extraction and AI generation run.
+- **Startup is schema-safe**: the worker waits for the lifecycle columns to exist, backfills document lifecycle state, then starts polling for queued jobs.
+- **Expired leases recover automatically**: startup recovery and the periodic stale-job sweep requeue or fail abandoned running jobs and keep the owning document status in sync.
 
 ---
 
