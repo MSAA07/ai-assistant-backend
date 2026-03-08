@@ -213,7 +213,7 @@ ai-assistant-backend/
 ├── auth.js                    # Better Auth configuration
 │
 ├── routes/                    # API route handlers
-│   ├── documents.js           # Document upload, get, delete (250 lines)
+│   ├── documents.js           # Atomic upload, document lifecycle, delete
 │   ├── admin.js               # Admin panel API (756 lines)
 │   ├── user.js                # User profile, usage stats
 │   ├── flashcards.js          # Flashcard progress tracking
@@ -226,12 +226,15 @@ ai-assistant-backend/
 │   └── rateLimit.js           # In-memory rate limiting
 │
 ├── utils/                     # Utility functions
-│   ├── storage.js             # R2/S3 file upload and deletion
-│   ├── jobQueue.js            # Job queue operations
-│   ├── extractionPipeline.js  # Document text extraction (160 lines)
+│   ├── storage.js             # R2 upload, download, deletion, tmp cleanup
+│   ├── documentStatus.js      # Document lifecycle ownership + serialization
+│   ├── jobQueue.js            # Job claiming, leases, retries, stale recovery
+│   ├── extractionPipeline.js  # Extraction + study material generation
 │   ├── limits.js              # User quota calculations
 │   ├── auditLog.js            # Admin action logging
-│   └── serializers.js         # JSON serialization (BigInt handling)
+│   ├── sentry.js              # Shared Sentry instrumentation
+│   ├── serializers.js         # JSON serialization (BigInt handling)
+│   └── studyMaterials.js      # OpenAI study material generation
 │
 ├── prisma/                    # Database layer
 │   ├── schema.prisma          # Database schema (17 models, 257 lines)
@@ -262,7 +265,7 @@ ai-assistant-backend/
 - Return JSON responses
 
 **Key Files**:
-- `documents.js` (250 lines) - Document upload, retrieval, deletion
+- `documents.js` - Atomic upload, lifecycle reads, deletion
 - `admin.js` (756 lines) - Comprehensive admin panel API
 - `user.js` - User profile and usage statistics
 - `jobs.js` - Job status polling for async operations
@@ -291,9 +294,10 @@ ai-assistant-backend/
 - Keep routes clean and focused
 
 **Key Files**:
-- `extractionPipeline.js` (160 lines) - Extract text from PDF, DOCX, PPTX
-- `storage.js` - Upload/delete files from Cloudflare R2 (S3-compatible)
-- `jobQueue.js` - Create and query async jobs
+- `extractionPipeline.js` - Extract text, generate study materials, update progress
+- `storage.js` - Upload/download/delete files from Cloudflare R2 (S3-compatible)
+- `documentStatus.js` - Normalize serialized documents and backfill lifecycle state
+- `jobQueue.js` - Claim jobs, heartbeat leases, retry failures, recover stale work
 - `limits.js` - Calculate user quotas (monthly limits, remaining documents)
 
 #### `/prisma/`
@@ -313,10 +317,14 @@ ai-assistant-backend/
 - User, Session, Account (auth)
 - Document, DocumentExcerpt (documents)
 - FlashcardProgress, ExamAttempt (learning)
-- Job (async processing)
+- Job (worker coordination with leases)
 - AuditLog, UserLimit, UsageEvent (admin/monitoring)
 - FeatureFlag, FeatureFlagAssignment (feature management)
 - CostAnomalyAlert (cost monitoring)
+
+**Lifecycle Ownership**:
+- `Document` owns the user-visible lifecycle via `processingStatus`, `processingJobId`, `processingError`, and `processedAt`
+- `Job` tracks worker execution via `status`, `workerId`, `leaseExpiresAt`, `lastHeartbeatAt`, `retryCount`, and `result`
 
 #### `/scripts/`
 **Purpose**: Maintenance and one-off scripts  
@@ -342,14 +350,17 @@ ai-assistant-backend/
 - Mount route handlers
 - Start HTTP server on PORT (default 3001)
 
-##### `worker.js` (87 lines)
+##### `worker.js`
 **Purpose**: Background job processor  
 **Responsibilities**:
+- Wait for lifecycle schema columns before starting normal polling
+- Backfill `Document.processingStatus` from existing data on startup
+- Sweep stale running jobs on startup and every 15 seconds
 - Poll database for queued jobs every 2 seconds
-- Use `SELECT FOR UPDATE SKIP LOCKED` for concurrency
-- Process jobs: extract_document, generate_exam, generate_flashcards
-- Update job status: queued → running → succeeded/failed
-- Retry failed jobs up to 3 times
+- Claim work with `SELECT FOR UPDATE SKIP LOCKED`
+- Set and heartbeat worker leases while a job is running
+- Move the owning document through `queued -> processing -> complete | failed`
+- Requeue retryable failures and fail exhausted or non-retryable jobs
 - Must run as separate process from server
 
 ##### `auth.js` (69 lines)

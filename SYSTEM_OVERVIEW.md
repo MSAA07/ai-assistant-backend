@@ -153,7 +153,7 @@ POST /api/auth/sign-in        # Email/password login
      Returns: { user, session }
      Sets: HTTP-only session cookie
 
-GET  /api/auth/session        # Get current session
+GET  /api/auth/get-session    # Get current session
      Returns: { user, session } or null
 
 POST /api/auth/sign-out       # Logout
@@ -167,10 +167,13 @@ POST /api/auth/sign-out       # Logout
 GET  /api/user/me             # Current user profile + documents
      Auth: Required
      Returns: {
-       user: { id, email, name, plan, role, documentsUsed, monthlyLimit, storageUsed },
-       documents: [{ id, filename, createdAt, flashcards, examQuestions }],
-       remainingDocuments: number
-     }
+        user: { id, email, name, plan, role, documentsUsed, monthlyLimit, storageUsed },
+        documents: [{
+          id, filename, originalName, uploadDate,
+          processingStatus, processingJobId, processingError,
+          summary, flashcards, examQuestions
+        }]
+      }
 ```
 
 ### Document Endpoints
@@ -182,19 +185,28 @@ POST /api/upload              # Upload document
      Body: { file, language }
      Max Size: 25MB
      Allowed: PDF, DOCX, PPTX
-     Returns: { 
-       jobId: string,
-       message: 'Document uploaded, processing started'
-     }
-     Status: 202 Accepted
+      Returns: {
+        jobId: string,
+        documentId: string,
+        document: {
+          id, filename, originalName, uploadDate,
+          processingStatus, processingJobId, processingError,
+          summary, flashcards, examQuestions
+        },
+        message: 'Document uploaded and extraction queued'
+      }
+      Status: 202 Accepted
 
 GET  /api/document/:id        # Get document by ID
      Auth: Required
      Ownership: Must own document or be admin
-     Returns: {
-       id, filename, originalName, fileType, language,
-       summary, flashcards, examQuestions, createdAt
-     }
+      Returns: {
+        document: {
+          id, filename, originalName, fileType, language, uploadDate,
+          processingStatus, processingJobId, processingError, processedAt,
+          summary, flashcards, examQuestions
+        }
+      }
 
 DELETE /api/document/:id      # Delete document
      Auth: Required
@@ -229,10 +241,20 @@ GET  /api/jobs/:id            # Get job status (polling)
      Auth: Required
      Ownership: Must own job or be admin
      Returns: {
-       id, status, progressPct, result, errorMessage
-     }
-     Statuses: 'queued', 'running', 'succeeded', 'failed'
+        id, status, progressPct, result, errorMessage
+      }
+      Statuses: 'queued', 'running', 'succeeded', 'failed'
+     Note: job status is a worker view; the frontend treats Document.processingStatus as authoritative
 ```
+
+### Document Lifecycle Contract
+
+- `Document` is the authoritative lifecycle owner for the UI and API consumers.
+- User-visible lifecycle states are `queued -> processing -> complete | failed`.
+- `Job` records remain worker coordination objects with `queued | running | succeeded | failed`.
+- `processingJobId` links the document to the active extraction job.
+- `processingError` is only populated when the lifecycle ends in `failed`.
+- `/api/user/me` and `/api/document/:id` both serialize the same document-owned lifecycle fields so list/detail views stay consistent across refreshes and direct navigation.
 
 ### Admin Endpoints
 
@@ -365,25 +387,31 @@ model Account {
 **Document**
 ```prisma
 model Document {
-  id              String   @id @default(cuid())
+  id              String   @id @default(uuid())
   userId          String
   filename        String
   originalName    String
-  fileType        String   // "pdf", "docx", "pptx"
-  fileSize        BigInt
-  language        String   @default("en")  // Response language
-  storageKey      String   // R2 storage key or local path
-  summary         String?  @db.Text  // AI-generated
-  flashcards      Json?    // AI-generated array
-  examQuestions   Json?    // AI-generated array
-  createdAt       DateTime @default(now())
-  
+  fileType        String
+  fileSize        Int
+  language        String   @default("english")
+  summary         String   @db.Text
+  flashcards      Json
+  examQuestions   Json
+  uploadDate      DateTime @default(now())
+  processingStatus String  @default("queued")
+  processingJobId String?
+  processingError String?
+  processedAt     DateTime?
+  storageKey      String?  // R2 key or local fallback path
+
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   excerpts        DocumentExcerpt[]
   flashcardProgress FlashcardProgress[]
   examAttempts    ExamAttempt[]
   
   @@index([userId])
+  @@index([userId, processingStatus])
+  @@index([processingJobId])
 }
 ```
 
@@ -449,20 +477,27 @@ model ExamAttempt {
 model Job {
   id           String   @id @default(cuid())
   userId       String
-  jobType      String   // "extract_document", "generate_exam", "generate_flashcards"
+  documentId   String?
+  jobType      String   // "extract_document", "generate_exam", "generate_flashcards", "export_pdf"
   status       String   @default("queued")  // "queued", "running", "succeeded", "failed"
   progressPct  Int      @default(0)
   retryCount   Int      @default(0)
-  payload      Json     // Input data
-  result       Json?    // Output data
+  maxRetries   Int      @default(3)
+  payload      Json     @default("{}")
+  result       Json?
   errorMessage String?  @db.Text
-  createdAt    DateTime @default(now())
+  queuedAt     DateTime @default(now())
   startedAt    DateTime?
   completedAt  DateTime?
+  workerId     String?
+  leaseExpiresAt DateTime?
+  lastHeartbeatAt DateTime?
   
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   
-  @@index([status])
+  @@index([status, queuedAt])
+  @@index([status, leaseExpiresAt])
+  @@index([documentId, jobType, queuedAt])
 }
 ```
 
@@ -693,40 +728,40 @@ await prisma.$transaction([
    ↓
 4. Check user quota (remainingDocuments > 0)
    ↓
-5. XMLHttpRequest uploads with progress tracking
+5. Frontend posts multipart form-data to POST /api/upload
    ↓
-6. POST /api/upload (multipart/form-data) → Backend
+6. Multer saves the upload to /tmp/uploads temporarily
    ↓
-7. Multer saves to /tmp/uploads temporarily
+7. Backend validates file type, quota, and storage accounting
    ↓
-8. Backend validates file type and user quota
-   ↓
-9. Upload to Cloudflare R2 (or local fallback)
+8. Backend uploads the file to Cloudflare R2 (or records a local fallback path)
    • Key: uploads/{userId}/{timestamp}-{filename}
-   • Returns: storageKey
    ↓
-10. Create Document record:
-    • Status: Empty summary/flashcards/exams
-    • storageKey saved
+9. Backend runs one Prisma transaction:
+   • Create Document with processingStatus = "queued"
+   • Increment User.documentsUsed and User.storageUsed
+   • Create extract_document Job with status = "queued"
+   • Link Document.processingJobId to the new Job
    ↓
-11. Update User record:
-    • documentsUsed++
-    • storageUsed += fileSize
+10. Return 202 Accepted with { jobId, documentId, document } → Frontend
    ↓
-12. Create Job record:
-    • jobType: "extract_document"
-    • status: "queued"
-    • payload: { documentId, language }
+11. Frontend polls GET /api/jobs/:jobId and refreshes GET /api/document/:id / GET /api/user/me
+   • The UI treats Document.processingStatus as authoritative
+   • Refresh and direct navigation both read the same serialized document state
    ↓
-13. Return 202 Accepted with jobId → Frontend
+12. Worker startup sequence runs before normal polling:
+   • waitForDocumentLifecycleSchema()
+   • backfillDocumentProcessingState()
+   • recoverStaleJobs()
    ↓
-14. Frontend starts polling GET /api/jobs/:jobId every 2s
+13. Worker claims the queued job with SELECT FOR UPDATE SKIP LOCKED
+   • Job.status = "running"
+   • workerId, leaseExpiresAt, lastHeartbeatAt set
+   • Document.processingStatus = "processing"
    ↓
-15. Worker picks up job (separate process)
+14. Worker heartbeats the lease every 15 seconds while the job runs
    ↓
-16. Worker updates: status = "running", progressPct = 10
-   ↓
-17. Extract text based on file type:
+15. Extract text based on file type:
    
    PDF:
    • Download from R2 to /tmp
@@ -749,59 +784,61 @@ await prisma.$transaction([
    • Returns JSON
    • Parse and store as DocumentExcerpt records
    ↓
-18. Worker updates: progressPct = 50
+16. Worker generates summary, flashcards, and exam questions with OpenAI
+   • Usage is recorded in UsageEvent
+   • Token / document caps are enforced before completion
    ↓
-19. [READY FOR IMPLEMENTATION] Generate with OpenAI:
-   
-   • Combine all DocumentExcerpt.content
-   • Call OpenAI API (gpt-4o-mini):
-     
-     Summary:
-     • Prompt: "Summarize this document in {language}"
-     • Save to Document.summary
-     
-     Flashcards:
-     • Prompt: "Create 10 study flashcards from this content"
-     • Format: [{ front, back }]
-     • Save to Document.flashcards
-     
-     Exam Questions:
-     • Prompt: "Create 5 multiple-choice questions"
-     • Format: [{ question, options, correctIndex }]
-     • Save to Document.examQuestions
-   
-   • Track usage in UsageEvent table
-   • Check UserLimit.dailyTokenCap
+17. completeJob() updates Document and Job in one transaction
+   • Document.processingStatus = "complete"
+   • Document.summary / flashcards / examQuestions persisted
+   • Document.processedAt set
+   • Job.status = "succeeded", progressPct = 100
    ↓
-20. Worker updates Document with AI-generated content
+18. Frontend polling sees Document.processingStatus = "complete"
    ↓
-21. Worker updates Job:
-    • status = "succeeded"
-    • progressPct = 100
-    • result = { success: true }
+19. User refreshes, opens the document directly, or returns from the list
+   • List and detail remain consistent because both read the same document lifecycle fields
    ↓
-22. Frontend polling receives success
-   ↓
-23. Frontend navigates to /document/:id
-   ↓
-24. User views summary, flashcards, exam questions
+20. User views summary, flashcards, and exam questions
 ```
 
 ### Error Handling
 
-**If extraction fails:**
+**If upload transaction fails after storage upload:**
+```
+Backend deletes the uploaded R2 object (unless local fallback is in use)
+   ↓
+No orphaned Document/Job rows are returned to the frontend
+```
+
+**If extraction or generation fails:**
 ```
 Worker catches error
    ↓
-Increments job.retryCount
-   ↓
-If retryCount < 3:
-  • Reset status to "queued"
-  • Worker will retry later
+If retryable and retryCount + 1 < maxRetries:
+  • Requeue Job with status = "queued"
+  • Clear workerId / leaseExpiresAt / lastHeartbeatAt
+  • Reset Document.processingStatus = "queued"
 Else:
-  • Set status = "failed"
-  • Set errorMessage
-  • Frontend shows error to user
+  • Set Job.status = "failed"
+  • Set Document.processingStatus = "failed"
+  • Persist processingError for the frontend
+```
+
+**If a worker dies or stops heartbeating:**
+```
+Job remains in status = "running"
+   ↓
+leaseExpiresAt passes (or heartbeat is absent beyond the lease window)
+   ↓
+recoverStaleJobs() runs on worker startup and every 15 seconds
+   ↓
+If retries remain:
+  • Requeue Job
+  • Move Document back to "queued"
+Else:
+  • Fail Job
+  • Move Document to "failed"
 ```
 
 ---
