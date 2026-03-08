@@ -6,8 +6,8 @@ import fs from "fs/promises";
 import { mkdirSync } from "fs";
 import dotenv from "dotenv";
 import { getMonthlyLimit } from "../utils/limits.js";
-import { enqueueJob } from "../utils/jobQueue.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
+import { serializeDocument } from "../utils/documentStatus.js";
 import { captureSentryException } from "../utils/sentry.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -112,50 +112,76 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         });
       }
 
-      // Upload to R2 (or fallback to local)
       const { key } = await uploadFile(file.path, user.id, file.originalname, file.mimetype);
-
-      // Create Document record immediately
-      const document = await prisma.document.create({
-        data: {
-          userId: user.id,
-          filename: file.filename,
-          originalName: file.originalname,
-          fileType: file.mimetype,
-          fileSize: file.size,
-          language: selectedLanguage,
-          summary: "", // Will be populated by AI job later
-          flashcards: [], 
-          examQuestions: [],
-          storageKey: key,
-        },
-      });
-
-      // Update usage stats
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          documentsUsed: { increment: 1 },
-          storageUsed: { increment: BigInt(file.size) },
-        },
-      });
-
-      // Delete local temp file immediately after upload (if R2 is used)
-      // If uploadFile returned a key that is the local path (fallback), we KEEP it so worker can find it
       const isLocalPath = path.isAbsolute(key);
-      if (!isLocalPath) {
-          await fs.unlink(file.path).catch(() => {});
+
+      let document;
+      let job;
+
+      try {
+        const persisted = await prisma.$transaction(async (tx) => {
+          const createdDocument = await tx.document.create({
+            data: {
+              userId: user.id,
+              filename: file.filename,
+              originalName: file.originalname,
+              fileType: file.mimetype,
+              fileSize: file.size,
+              language: selectedLanguage,
+              summary: "",
+              flashcards: [],
+              examQuestions: [],
+              storageKey: key,
+              processingStatus: "queued",
+              processingError: null,
+            },
+          });
+
+          await tx.user.update({
+            where: { id: user.id },
+            data: {
+              documentsUsed: { increment: 1 },
+              storageUsed: { increment: BigInt(file.size) },
+            },
+          });
+
+          const jobPayload = { documentId: createdDocument.id };
+          if (isLocalPath) {
+            jobPayload.filePath = key;
+          }
+
+          const createdJob = await tx.job.create({
+            data: {
+              userId: user.id,
+              documentId: createdDocument.id,
+              jobType: "extract_document",
+              payload: jobPayload,
+              status: "queued",
+            },
+          });
+
+          const linkedDocument = await tx.document.update({
+            where: { id: createdDocument.id },
+            data: { processingJobId: createdJob.id },
+          });
+
+          return { document: linkedDocument, job: createdJob };
+        });
+
+        document = persisted.document;
+        job = persisted.job;
+      } catch (transactionError) {
+        if (!isLocalPath) {
+          await deleteFile(key);
+        }
+        throw transactionError;
       }
 
-      // Enqueue extraction job
-      // For R2, we rely on storageKey in Document record
-      // For fallback local, we pass filePath in payload if needed, or rely on storageKey which is the path
-      const jobPayload = { documentId: document.id };
       if (isLocalPath) {
-          jobPayload.filePath = key; 
+        console.info(`[upload] Using local storage fallback for document ${document.id}`);
+      } else {
+        await fs.unlink(file.path).catch(() => {});
       }
-
-      const job = await enqueueJob(user.id, 'extract_document', jobPayload);
 
       // Return 202 Accepted but keep previous response shape for frontend compatibility
       res.status(202).json({
@@ -163,12 +189,12 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         jobId: job.id,
         documentId: document.id,
         document: {
-          id: document.id,
-          filename: document.originalName,
-          summary: document.summary,
-          flashcards: document.flashcards,
-          examQuestions: document.examQuestions,
-          uploadDate: document.uploadDate,
+          ...serializeDocument({
+            ...document,
+            originalName: document.originalName,
+            filename: document.originalName,
+            excerptCount: 0,
+          }),
         },
         message: "Document uploaded and extraction queued"
       });
@@ -200,6 +226,11 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
     try {
       const document = await prisma.document.findUnique({
         where: { id: req.params.id },
+        include: {
+          _count: {
+            select: { excerpts: true },
+          },
+        },
       });
 
       if (!document) {
@@ -211,45 +242,11 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Check for active processing job if content is missing
-      let processingStatus = 'complete';
-      // Safe check for empty content
-      const isEmpty = !document.summary || 
-                      (Array.isArray(document.flashcards) && document.flashcards.length === 0);
-
-      if (isEmpty) {
-        // Fetch recent jobs for this user to find the matching extraction job
-        // We filter in memory to avoid Prisma JSON filter compatibility issues
-        const recentJobs = await prisma.job.findMany({
-          where: {
-            userId: req.session.user.id,
-            jobType: 'extract_document',
-            // Look for active or recently failed jobs
-            status: { in: ['queued', 'running', 'failed'] }
-          },
-          orderBy: { queuedAt: 'desc' },
-          take: 10
-        });
-        
-        console.log(`[API] Debug: Searching for doc ${document.id} in ${recentJobs.length} recent jobs`);
-
-        const matchingJob = recentJobs.find(job => {
-          // Check payload for documentId
-          // payload is Json, so we treat it as an object
-          const pid = job.payload?.documentId;
-          // console.log(`[API] Debug: Job ${job.id} payload docId: ${pid}`);
-          return pid === document.id;
-        });
-
-        if (matchingJob) {
-          processingStatus = matchingJob.status;
-          console.log(`[API] Found active job ${matchingJob.id} for doc ${document.id} status=${processingStatus}`);
-        } else {
-             console.log(`[API] No active job found for empty doc ${document.id} (User: ${req.session.user.id})`);
-        }
-      }
-
-      res.json({ document: { ...document, processingStatus } });
+      res.json({
+        document: serializeDocument(document, {
+          excerptCount: document._count?.excerpts ?? 0,
+        }),
+      });
     } catch (error) {
       console.error("Error fetching document:", error);
       captureSentryException(error, {

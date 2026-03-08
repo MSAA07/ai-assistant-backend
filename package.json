@@ -5,7 +5,7 @@
   "scripts": {
     "postinstall": "prisma generate",
     "start": "prisma db push --accept-data-loss && node server.js",
-    "worker": "node worker.js",
+    "worker": "prisma db push --accept-data-loss && node worker.js",
     "dev": "node server.js",
     "db:push": "npx prisma db push --accept-data-loss",
     "db:studio": "prisma studio",

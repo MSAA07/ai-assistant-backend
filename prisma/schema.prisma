@@ -103,11 +103,17 @@ model Document {
   flashcards  Json
   examQuestions Json
   uploadDate  DateTime @default(now())
+  processingStatus String @default("queued")
+  processingJobId String?
+  processingError String?
+  processedAt DateTime?
 
   excerpts    DocumentExcerpt[]
   storageKey  String?           // R2 object key — added for P1-S04
   
   @@index([userId])
+  @@index([userId, processingStatus])
+  @@index([processingJobId])
 }
 
 model ExamAttempt {
@@ -165,6 +171,7 @@ model Job {
   id           String    @id @default(cuid())
   userId       String
   user         User      @relation(fields: [userId], references: [id])
+  documentId   String?
   jobType      String    // 'extract_document' | 'generate_exam' | 'generate_flashcards' | 'export_pdf'
   status       String    @default("queued") // 'queued' | 'running' | 'succeeded' | 'failed'
   progressPct  Int       @default(0)
@@ -176,6 +183,13 @@ model Job {
   queuedAt     DateTime  @default(now())
   startedAt    DateTime?
   completedAt  DateTime?
+  workerId     String?
+  leaseExpiresAt DateTime?
+  lastHeartbeatAt DateTime?
+
+  @@index([status, queuedAt])
+  @@index([status, leaseExpiresAt])
+  @@index([documentId, jobType, queuedAt])
 }
 
 model FeatureFlag {

@@ -1,4 +1,5 @@
 import express from "express";
+import { serializeDocument } from "../utils/documentStatus.js";
 import { getMonthlyLimit } from "../utils/limits.js";
 import { toNumber } from "../utils/serializers.js";
 import { captureSentryException } from "../utils/sentry.js";
@@ -12,7 +13,16 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
 
       let user = await prisma.user.findUnique({
         where: { id: userId },
-        include: { documents: true },
+        include: {
+          documents: {
+            include: {
+              _count: {
+                select: { excerpts: true },
+              },
+            },
+            orderBy: { uploadDate: "desc" },
+          },
+        },
       });
 
       if (!user) {
@@ -30,38 +40,23 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
             documentsUsed: 0,
             lastReset: now,
           },
-          include: { documents: true },
+          include: {
+            documents: {
+              include: {
+                _count: {
+                  select: { excerpts: true },
+                },
+              },
+              orderBy: { uploadDate: "desc" },
+            },
+          },
         });
       }
 
       const monthlyLimit = getMonthlyLimit(user);
-
-      // Normalize documents to ensure flashcards/examQuestions are arrays (or at least have counts)
-      // This handles legacy data where they might be null or malformed
-      const normalizedDocuments = user.documents.map(doc => {
-        let flashcards = [];
-        let examQuestions = [];
-
-        if (Array.isArray(doc.flashcards)) {
-            flashcards = doc.flashcards;
-        } else if (typeof doc.flashcards === 'string') {
-             try { flashcards = JSON.parse(doc.flashcards); } catch (e) {}
-        }
-        
-        if (Array.isArray(doc.examQuestions)) {
-            examQuestions = doc.examQuestions;
-        } else if (typeof doc.examQuestions === 'string') {
-             try { examQuestions = JSON.parse(doc.examQuestions); } catch (e) {}
-        }
-
-        return {
-            ...doc,
-            flashcards,
-            examQuestions,
-            flashcardCount: Array.isArray(flashcards) ? flashcards.length : 0,
-            questionCount: Array.isArray(examQuestions) ? examQuestions.length : 0
-        };
-      });
+      const documents = user.documents.map((document) => serializeDocument(document, {
+        excerptCount: document._count?.excerpts ?? 0,
+      }));
 
       res.json({
         user: {
@@ -76,7 +71,7 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
           storageUsed: toNumber(user.storageUsed),
           lastActive: user.lastActive,
         },
-        documents: normalizedDocuments,
+        documents,
       });
     } catch (error) {
       console.error("Error fetching user:", error);

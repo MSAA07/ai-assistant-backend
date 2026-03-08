@@ -13,6 +13,7 @@ import { createFlashcardsRouter } from "./routes/flashcards.js";
 import { createExamsRouter } from "./routes/exams.js";
 import { createAdminRouter } from "./routes/admin.js";
 import { createJobsRouter } from "./routes/jobs.js";
+import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 
 dotenv.config();
@@ -73,7 +74,7 @@ app.use("/api/user", createUserRouter({ prisma, requireAuth }));
 app.use("/api", createDocumentsRouter({ prisma, requireAuth }));
 app.use("/api/flashcard", createFlashcardsRouter({ prisma, requireAuth }));
 app.use("/api/exam", createExamsRouter({ prisma, requireAuth }));
-app.use("/api/jobs", createJobsRouter({ requireAuth }));
+app.use("/api/jobs", createJobsRouter({ prisma, requireAuth }));
 app.use(
   "/api/admin",
   createAdminRouter({ prisma, requireAuth, requireAdmin, auth }),
@@ -97,9 +98,19 @@ app.use((error, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`AI Study Assistant API running on port ${PORT}`);
-  console.log("Database connected");
+
+async function startServer() {
+  await backfillDocumentProcessingState(prisma);
+
+  app.listen(PORT, () => {
+    console.log(`AI Study Assistant API running on port ${PORT}`);
+    console.log("Database connected");
+  });
+}
+
+startServer().catch((error) => {
+  console.error("Failed to start API server:", error);
+  process.exit(1);
 });
 
 process.on("SIGINT", async () => {

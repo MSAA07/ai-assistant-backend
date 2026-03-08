@@ -48,7 +48,7 @@ Rules:
 - Flashcards should contain 8-15 cards depending on length.
 - Exam questions should include a mix of multiple choice (with 4 options), true/false, and short answer. Use field "type" to denote "mcq", "true_false", or "short".
 - Keep explanations to 1-2 sentences. Do not prefix answers with letters.
-- If you lack enough context, return empty arrays but still return valid JSON.
+- If context is weak, return the best concise materials you can. Do not return empty arrays.
 
 Study Material:
 """
@@ -62,6 +62,7 @@ export async function generateStudyMaterialsFromExcerpts(excerpts, language = "e
     if (!openai) return FALLBACK_RESPONSE;
 
     const combined = excerpts
+      .filter((excerpt) => excerpt.excerptType !== "image_flag")
       .map((excerpt) => excerpt.content?.trim())
       .filter(Boolean)
       .join("\n\n");
