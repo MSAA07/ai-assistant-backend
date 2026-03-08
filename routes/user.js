@@ -1,6 +1,8 @@
 import express from "express";
+import { serializeDocument } from "../utils/documentStatus.js";
 import { getMonthlyLimit } from "../utils/limits.js";
 import { toNumber } from "../utils/serializers.js";
+import { captureSentryException } from "../utils/sentry.js";
 
 export const createUserRouter = ({ prisma, requireAuth }) => {
   const router = express.Router();
@@ -11,7 +13,16 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
 
       let user = await prisma.user.findUnique({
         where: { id: userId },
-        include: { documents: true },
+        include: {
+          documents: {
+            include: {
+              _count: {
+                select: { excerpts: true },
+              },
+            },
+            orderBy: { uploadDate: "desc" },
+          },
+        },
       });
 
       if (!user) {
@@ -29,11 +40,23 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
             documentsUsed: 0,
             lastReset: now,
           },
-          include: { documents: true },
+          include: {
+            documents: {
+              include: {
+                _count: {
+                  select: { excerpts: true },
+                },
+              },
+              orderBy: { uploadDate: "desc" },
+            },
+          },
         });
       }
 
       const monthlyLimit = getMonthlyLimit(user);
+      const documents = user.documents.map((document) => serializeDocument(document, {
+        excerptCount: document._count?.excerpts ?? 0,
+      }));
 
       res.json({
         user: {
@@ -48,10 +71,11 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
           storageUsed: toNumber(user.storageUsed),
           lastActive: user.lastActive,
         },
-        documents: user.documents,
+        documents,
       });
     } catch (error) {
       console.error("Error fetching user:", error);
+      captureSentryException(error);
       res.status(500).json({ error: "Failed to fetch user data" });
     }
   });

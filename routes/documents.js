@@ -5,24 +5,15 @@ import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import { mkdirSync } from "fs";
 import dotenv from "dotenv";
-import OpenAI from "openai";
-import pdfParse from "pdf-parse";
-import mammoth from "mammoth";
 import { getMonthlyLimit } from "../utils/limits.js";
+import { uploadFile, deleteFile } from "../utils/storage.js";
+import { serializeDocument } from "../utils/documentStatus.js";
+import { captureSentryException } from "../utils/sentry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config();
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-const hasOpenAIKey = Boolean(process.env.OPENAI_API_KEY);
-if (!hasOpenAIKey) {
-  console.warn("OPENAI_API_KEY is not set. Document processing will fail.");
-}
 
 const uploadsDir = "/tmp/uploads";
 mkdirSync(uploadsDir, { recursive: true });
@@ -57,96 +48,6 @@ const upload = multer({
     }
   },
 });
-
-const extractTextFromFile = async (filepath, mimetype) => {
-  try {
-    if (mimetype === "application/pdf") {
-      const dataBuffer = await fs.readFile(filepath);
-      const data = await pdfParse(dataBuffer);
-      return data.text;
-    }
-
-    if (
-      mimetype ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ) {
-      const result = await mammoth.extractRawText({ path: filepath });
-      return result.value;
-    }
-
-    if (
-      mimetype ===
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    ) {
-      return "PowerPoint content extraction - implement with pptx parser library";
-    }
-
-    return "";
-  } catch (error) {
-    console.error("Error extracting text:", error);
-    throw error;
-  }
-};
-
-const generateStudyMaterials = async (text, language) => {
-  const languageName = language === "arabic" ? "Arabic" : "English";
-
-  const prompt = `You are an expert educational content creator. Analyze the following document and create comprehensive study materials in ${languageName}.
-
-Document content:
-${text.substring(0, 8000)} 
-
-Generate the following study materials (respond ONLY with valid JSON, no markdown formatting):
-
-1. A summary (1-4 paragraphs based on content length)
-2. Flashcards (5-20 cards based on content - each with "question" and "answer")
-3. Exam questions (5-10 questions based on content):
-   - Mix of: multiple choice (MCQ), true/false, and short answer
-   - Each question must have: "type", "question", "options" (array for MCQ), "correctAnswer", "explanation"
-
-Important rules:
-- Adapt the number of flashcards and questions to the content length
-- For short content (< 500 words): 5-8 flashcards, 5 questions
-- For medium content (500-2000 words): 10-15 flashcards, 8 questions
-- For long content (> 2000 words): 15-20 flashcards, 10 questions
-- All content must be in ${languageName}
-- For MCQ, provide 4 options as full text strings (NOT letters like A, B, C, D)
-- CRITICAL: "correctAnswer" MUST be the EXACT full text of the correct option from the "options" array, NOT a letter reference
-- For true/false, options should be ["True", "False"] or ["صحيح", "خطأ"] for Arabic
-- Explanations should be brief (1-2 sentences) and reference the material
-
-Return ONLY this JSON structure:
-{
-  "summary": "...",
-  "flashcards": [{"question": "...", "answer": "..."}],
-  "examQuestions": [
-    {
-      "type": "mcq",
-      "question": "What is the main purpose of X?",
-      "options": ["Full text of option 1", "Full text of option 2", "Full text of option 3", "Full text of option 4"],
-      "correctAnswer": "Full text of option 1",
-      "explanation": "Brief explanation here"
-    }
-  ]
-}`;
-
-  try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
-      max_tokens: 3000,
-    });
-
-    const responseText = completion.choices[0].message.content.trim();
-    const cleanedResponse = responseText.replace(/^```json\s*|\s*```$/g, "");
-
-    return JSON.parse(cleanedResponse);
-  } catch (error) {
-    console.error("OpenAI API Error:", error);
-    throw error;
-  }
-};
 
 const resetMonthlyUsageIfNeeded = async (prisma, user) => {
   const now = new Date();
@@ -211,60 +112,109 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         });
       }
 
-      const text = await extractTextFromFile(file.path, file.mimetype);
+      const { key } = await uploadFile(file.path, user.id, file.originalname, file.mimetype);
+      const isLocalPath = path.isAbsolute(key);
 
-      if (!text || text.trim().length < 50) {
-        await fs.unlink(file.path).catch(() => {});
-        return res
-          .status(400)
-          .json({ error: "Could not extract enough text from file" });
+      let document;
+      let job;
+
+      try {
+        const persisted = await prisma.$transaction(async (tx) => {
+          const createdDocument = await tx.document.create({
+            data: {
+              userId: user.id,
+              filename: file.filename,
+              originalName: file.originalname,
+              fileType: file.mimetype,
+              fileSize: file.size,
+              language: selectedLanguage,
+              summary: "",
+              flashcards: [],
+              examQuestions: [],
+              storageKey: key,
+              processingStatus: "queued",
+              processingError: null,
+            },
+          });
+
+          await tx.user.update({
+            where: { id: user.id },
+            data: {
+              documentsUsed: { increment: 1 },
+              storageUsed: { increment: BigInt(file.size) },
+            },
+          });
+
+          const jobPayload = { documentId: createdDocument.id };
+          if (isLocalPath) {
+            jobPayload.filePath = key;
+          }
+
+          const createdJob = await tx.job.create({
+            data: {
+              userId: user.id,
+              documentId: createdDocument.id,
+              jobType: "extract_document",
+              payload: jobPayload,
+              status: "queued",
+            },
+          });
+
+          const linkedDocument = await tx.document.update({
+            where: { id: createdDocument.id },
+            data: { processingJobId: createdJob.id },
+          });
+
+          return { document: linkedDocument, job: createdJob };
+        });
+
+        document = persisted.document;
+        job = persisted.job;
+      } catch (transactionError) {
+        if (!isLocalPath) {
+          await deleteFile(key);
+        }
+        throw transactionError;
       }
 
-      const studyMaterials = await generateStudyMaterials(text, selectedLanguage);
+      if (isLocalPath) {
+        console.info(`[upload] Using local storage fallback for document ${document.id}`);
+      } else {
+        await fs.unlink(file.path).catch(() => {});
+      }
 
-      const document = await prisma.document.create({
-        data: {
-          userId: user.id,
-          filename: file.filename,
-          originalName: file.originalname,
-          fileType: file.mimetype,
-          fileSize: file.size,
-          language: selectedLanguage,
-          summary: studyMaterials.summary,
-          flashcards: studyMaterials.flashcards,
-          examQuestions: studyMaterials.examQuestions,
-        },
-      });
-
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          documentsUsed: { increment: 1 },
-          storageUsed: { increment: BigInt(file.size) },
-        },
-      });
-
-      await fs.unlink(file.path).catch(() => {});
-
-      res.json({
+      // Return 202 Accepted but keep previous response shape for frontend compatibility
+      res.status(202).json({
         success: true,
+        jobId: job.id,
+        documentId: document.id,
         document: {
-          id: document.id,
-          filename: document.originalName,
-          summary: document.summary,
-          flashcards: document.flashcards,
-          examQuestions: document.examQuestions,
-          uploadDate: document.uploadDate,
+          ...serializeDocument({
+            ...document,
+            originalName: document.originalName,
+            filename: document.originalName,
+            excerptCount: 0,
+          }),
         },
+        message: "Document uploaded and extraction queued"
       });
+
+
     } catch (error) {
       console.error("Upload error:", error);
       if (error?.stack) {
         console.error(error.stack);
       }
+      // Only unlink if we failed BEFORE creating the job/document
+      // If job was created, worker handles it (or retry). 
+      // But here we are in catch, so likely job wasn't created.
       if (req.file) {
         await fs.unlink(req.file.path).catch(() => {});
       }
+      captureSentryException(error, {
+        tags: { route: "documents", action: "upload" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+      });
       res.status(500).json({
         error: "Failed to process document",
         details: error.message,
@@ -276,6 +226,11 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
     try {
       const document = await prisma.document.findUnique({
         where: { id: req.params.id },
+        include: {
+          _count: {
+            select: { excerpts: true },
+          },
+        },
       });
 
       if (!document) {
@@ -287,9 +242,17 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      res.json({ document });
+      res.json({
+        document: serializeDocument(document, {
+          excerptCount: document._count?.excerpts ?? 0,
+        }),
+      });
     } catch (error) {
       console.error("Error fetching document:", error);
+      captureSentryException(error, {
+        tags: { route: "documents", action: "fetch" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+      });
       res.status(500).json({ error: "Failed to fetch document" });
     }
   });
@@ -310,6 +273,10 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       }
 
       await prisma.document.delete({ where: { id: document.id } });
+      
+      // Delete from R2
+      await deleteFile(document.storageKey);
+
       const owner = await prisma.user.findUnique({
         where: { id: document.userId },
         select: { storageUsed: true },
@@ -326,6 +293,10 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       res.json({ success: true, message: "Document deleted" });
     } catch (error) {
       console.error("Error deleting document:", error);
+      captureSentryException(error, {
+        tags: { route: "documents", action: "delete" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+      });
       res.status(500).json({ error: "Failed to delete document" });
     }
   });

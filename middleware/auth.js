@@ -1,3 +1,5 @@
+import { captureSentryException } from "../utils/sentry.js";
+
 const parseAdminEmails = () => {
   const raw = process.env.ADMIN_EMAILS || "";
   return new Set(
@@ -41,11 +43,17 @@ export const createRequireAuth = ({ auth, prisma }) => {
         });
       } catch (error) {
         console.error("Failed to update lastActive:", error);
+        captureSentryException(error, {
+          tags: { middleware: "auth", phase: "last_active_update" },
+        });
       }
 
       next();
     } catch (error) {
       console.error("Auth check failed:", error);
+      captureSentryException(error, {
+        tags: { middleware: "auth", phase: "session_check" },
+      });
       res.status(500).json({ error: "Auth check failed" });
     }
   };

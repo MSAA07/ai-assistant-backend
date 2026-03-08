@@ -14,6 +14,38 @@ const unwrapAuthResult = async (result) => {
   return result;
 };
 
+const FLAGS = [
+  { featureKey: "pdf_export", description: "Export exams as PDF (Phase 5)" },
+  {
+    featureKey: "vision_model",
+    description: "Image/diagram question generation (Phase 6)",
+  },
+  {
+    featureKey: "anki_export",
+    description: "Export flashcards to Anki format (Phase 4)",
+  },
+  {
+    featureKey: "advanced_exam_types",
+    description: "Fill-in-blank, matching, essay question types (Phase 3A)",
+  },
+  {
+    featureKey: "exam_timer",
+    description: "Countdown timer during exam (Phase 3B)",
+  },
+  {
+    featureKey: "exam_review",
+    description: "Review answers before submit (Phase 3B)",
+  },
+  {
+    featureKey: "spaced_repetition",
+    description: "SM-2 spaced repetition for flashcards (Phase 4)",
+  },
+  {
+    featureKey: "smart_model_routing",
+    description: "Automatic gpt-4o-mini vs gpt-4o routing (Phase 2)",
+  },
+];
+
 async function ensureAdminUser() {
   const adminEmail = "admin@ai.com";
   const adminPassword = "admin123";
@@ -77,9 +109,22 @@ async function ensureAdminUser() {
   console.log(`✅ Admin user created: ${adminEmail} / ${adminPassword}`);
 }
 
+async function seedFeatureFlags() {
+  for (const flag of FLAGS) {
+    await prisma.featureFlag.upsert({
+      where: { featureKey: flag.featureKey },
+      update: {},
+      create: { ...flag, enabledGlobal: true },
+    });
+  }
+
+  console.log("✅ Feature flags ensured");
+}
+
 async function main() {
   try {
     await ensureAdminUser();
+    await seedFeatureFlags();
   } finally {
     await prisma.$disconnect();
   }

@@ -1,0 +1,284 @@
+import os from "os";
+
+import { PrismaClient } from "@prisma/client";
+
+import { processExtraction } from "./utils/extractionPipeline.js";
+import {
+  claimNextQueuedJob,
+  completeJob,
+  failJob,
+  heartbeatJobLease,
+  HEARTBEAT_INTERVAL_MS,
+  requeueJob,
+  recoverStaleJobs,
+  STALE_JOB_SWEEP_INTERVAL_MS,
+} from "./utils/jobQueue.js";
+import { checkAnomaly } from "./utils/costGuard.js";
+import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
+import { captureSentryException, flushSentry, initSentry } from "./utils/sentry.js";
+
+const prisma = new PrismaClient();
+const WORKER_ID = `${os.hostname()}-${process.pid}`;
+const POLL_INTERVAL_MS = 2000;
+const SCHEMA_WAIT_INTERVAL_MS = 5000;
+const SCHEMA_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
+const JOB_TIMEOUTS = {
+  extract_document: 60_000,
+  generate_exam: 90_000,
+  generate_flashcards: 90_000,
+  export_pdf: 30_000,
+};
+
+let fatalWorkerShutdownStarted = false;
+
+initSentry({ serviceName: "worker", disableProcessHandlers: true });
+
+async function runWorker() {
+  console.log(`[worker] started as ${WORKER_ID}, polling every 2s`);
+
+  await waitForDocumentLifecycleSchema(prisma);
+  await backfillDocumentProcessingState(prisma);
+  await recoverStaleJobs(prisma);
+
+  setInterval(() => {
+    void recoverStaleJobs(prisma).catch((error) => {
+      console.error("[worker] stale job sweep failed:", error);
+      captureSentryException(error, {
+        tags: { worker_phase: "recover_stale_jobs" },
+      });
+    });
+  }, STALE_JOB_SWEEP_INTERVAL_MS);
+
+  setInterval(async () => {
+    try {
+      const recentUsers = await prisma.usageEvent.findMany({
+        where: {
+          createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+        },
+        select: { userId: true },
+        distinct: ["userId"],
+      });
+
+      for (const { userId } of recentUsers) {
+        await checkAnomaly(userId).catch((error) => {
+          console.error("[anomaly]", error);
+          captureSentryException(error, {
+            tags: { worker_phase: "anomaly_check" },
+            extra: { userId },
+            user: { id: userId },
+          });
+        });
+      }
+    } catch (error) {
+      console.error("[anomaly] sweep failed:", error);
+      captureSentryException(error, {
+        tags: { worker_phase: "anomaly_sweep" },
+      });
+    }
+  }, 15 * 60 * 1000);
+
+  while (true) {
+    try {
+      const job = await claimNextQueuedJob(prisma, WORKER_ID);
+
+      if (!job) {
+        await sleep(POLL_INTERVAL_MS);
+        continue;
+      }
+
+      console.log(`[worker] processing job ${job.id} type=${job.jobType}`);
+
+      const timeout = JOB_TIMEOUTS[job.jobType] || 60_000;
+      const heartbeatHandle = startLeaseHeartbeat(job.id);
+
+      try {
+        const extractionResult = await withTimeout(
+          processExtraction(prisma, job, WORKER_ID),
+          timeout,
+        );
+        clearInterval(heartbeatHandle);
+
+        await completeJob(
+          prisma,
+          job,
+          extractionResult.result ?? {
+            documentId: extractionResult.documentId,
+            excerptCount: extractionResult.excerptCount,
+            excerptSource: extractionResult.excerptSource,
+            generated: extractionResult.generated,
+          },
+          extractionResult.studyMaterials,
+        );
+
+        console.log(`[worker] job ${job.id} succeeded`);
+      } catch (error) {
+        clearInterval(heartbeatHandle);
+
+        const nextRetryCount = (job.retryCount || 0) + 1;
+        const shouldRetry = !isNonRetryableJobError(error) && nextRetryCount < job.maxRetries;
+
+        if (shouldRetry) {
+          await requeueJob(prisma, job, error, true);
+          console.log(
+            `[worker] job ${job.id} failed, retrying (${nextRetryCount}/${job.maxRetries})`,
+          );
+        } else {
+          await failJob(prisma, job, error);
+          console.error(
+            `[worker] job ${job.id} permanently failed:`,
+            error instanceof Error ? error.message : error,
+          );
+          captureSentryException(error, {
+            tags: {
+              worker_phase: "job_failed",
+              jobType: job.jobType,
+            },
+            extra: {
+              jobId: job.id,
+              retryCount: nextRetryCount,
+              maxRetries: job.maxRetries,
+            },
+            user: job.userId ? { id: job.userId } : undefined,
+          });
+        }
+      }
+    } catch (error) {
+      console.error("[worker] poll error:", error);
+      captureSentryException(error, {
+        tags: { worker_phase: "poll" },
+      });
+      await sleep(POLL_INTERVAL_MS);
+    }
+  }
+}
+
+function startLeaseHeartbeat(jobId) {
+  return setInterval(() => {
+    void heartbeatJobLease(prisma, jobId, WORKER_ID).catch((error) => {
+      console.error("[worker] failed to heartbeat job lease:", error);
+      captureSentryException(error, {
+        tags: { worker_phase: "heartbeat" },
+        extra: { jobId },
+      });
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`Job timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
+function isNonRetryableJobError(error) {
+  return error?.code === "doc_cap_hit"
+    || error?.code === "token_cap_hit"
+    || error?.code === "document_not_found"
+    || error?.code === "document_completion_conflict";
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForDocumentLifecycleSchema(prisma) {
+  const startedAt = Date.now();
+
+  while (true) {
+    const schemaReady = await hasRequiredDocumentLifecycleSchema(prisma);
+
+    if (schemaReady) {
+      return;
+    }
+
+    if (Date.now() - startedAt >= SCHEMA_WAIT_TIMEOUT_MS) {
+      throw new Error("Document lifecycle schema was not ready before worker startup timeout");
+    }
+
+    console.warn("[worker] waiting for document lifecycle schema to become available");
+    await sleep(SCHEMA_WAIT_INTERVAL_MS);
+  }
+}
+
+async function hasRequiredDocumentLifecycleSchema(prisma) {
+  const [documentColumns, jobColumns] = await Promise.all([
+    prisma.$queryRaw`
+      SELECT "column_name"
+      FROM "information_schema"."columns"
+      WHERE "table_schema" = 'public'
+        AND "table_name" = 'Document'
+        AND "column_name" IN ('processingStatus', 'processingJobId', 'processingError', 'processedAt')
+    `,
+    prisma.$queryRaw`
+      SELECT "column_name"
+      FROM "information_schema"."columns"
+      WHERE "table_schema" = 'public'
+        AND "table_name" = 'Job'
+        AND "column_name" IN ('documentId', 'workerId', 'leaseExpiresAt', 'lastHeartbeatAt')
+    `,
+  ]);
+
+  return documentColumns.length === 4 && jobColumns.length === 4;
+}
+
+function normalizeFatalWorkerError(error, fallbackMessage) {
+  if (error instanceof Error) {
+    return error;
+  }
+
+  if (error && typeof error === "object") {
+    const normalizedError = new Error(error.message || fallbackMessage);
+    Object.assign(normalizedError, error);
+    return normalizedError;
+  }
+
+  return new Error(typeof error === "string" ? error : fallbackMessage);
+}
+
+async function shutdownWorkerAfterFatalError(origin, error) {
+  const normalizedError = normalizeFatalWorkerError(error, `[worker] ${origin}`);
+
+  if (fatalWorkerShutdownStarted) {
+    return;
+  }
+
+  fatalWorkerShutdownStarted = true;
+  console.error(`[worker] ${origin}:`, normalizedError);
+
+  captureSentryException(normalizedError, {
+    level: "fatal",
+    tags: {
+      worker_phase: "process",
+      origin,
+    },
+  });
+
+  await flushSentry(2000).catch(() => false);
+  await prisma.$disconnect().catch(() => {});
+  process.exit(1);
+}
+
+process.on("uncaughtException", (error) => {
+  void shutdownWorkerAfterFatalError("uncaughtException", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  void shutdownWorkerAfterFatalError("unhandledRejection", reason);
+});
+
+runWorker().catch((error) => {
+  console.error("[worker] fatal error:", error);
+  captureSentryException(error, {
+    level: "fatal",
+    tags: { worker_phase: "startup" },
+  });
+  flushSentry(2000)
+    .catch(() => false)
+    .finally(async () => {
+      await prisma.$disconnect().catch(() => {});
+      process.exit(1);
+    });
+});

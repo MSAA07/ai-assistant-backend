@@ -2,6 +2,9 @@ import express from "express";
 import { createRateLimiter } from "../middleware/rateLimit.js";
 import { logAdminAction } from "../utils/auditLog.js";
 import { serializeUser, toNumber } from "../utils/serializers.js";
+import { captureSentryException } from "../utils/sentry.js";
+import { deleteFile } from "../utils/storage.js";
+import { toggleGlobalFlag, grantFeature, revokeFeature } from "../utils/featureFlags.js";
 
 const getIpAddress = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -16,6 +19,181 @@ const parseNumber = (value, fallback) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+
+const MAX_PAGE_SIZE = 100;
+
+const getQueryValue = (value) => (Array.isArray(value) ? value[0] : value);
+
+const parseIntegerInput = (value, minimum = 0) => {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= minimum ? value : null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isInteger(parsed) && parsed >= minimum ? parsed : null;
+};
+
+const parsePositiveInteger = (value, fallback) => {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  return parseIntegerInput(value, 1);
+};
+
+const parsePageSize = (value, fallback = 50) => {
+  const parsed = parsePositiveInteger(value, fallback);
+  if (parsed === null) {
+    return null;
+  }
+
+  return Math.min(parsed, MAX_PAGE_SIZE);
+};
+
+const parseDateInput = (value, { endOfDay = false } = {}) => {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+    ? `${trimmed}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`
+    : trimmed;
+
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const buildPagination = (query) => {
+  const page = parsePositiveInteger(getQueryValue(query.page), 1);
+  const limit = parsePageSize(getQueryValue(query.limit), 50);
+
+  if (page === null || limit === null) {
+    return { error: "page and limit must be positive integers" };
+  }
+
+  return {
+    page,
+    limit,
+    skip: (page - 1) * limit,
+  };
+};
+
+const buildDateRangeFilter = (query) => {
+  const fromRaw = getQueryValue(query.from);
+  const toRaw = getQueryValue(query.to);
+  const from = parseDateInput(fromRaw);
+  const to = parseDateInput(toRaw, { endOfDay: true });
+
+  if (fromRaw && !from) {
+    return { error: "Invalid from date" };
+  }
+
+  if (toRaw && !to) {
+    return { error: "Invalid to date" };
+  }
+
+  if (from && to && from > to) {
+    return { error: "from must be before or equal to to" };
+  }
+
+  return {
+    filter: from || to
+      ? {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lte: to } : {}),
+      }
+      : undefined,
+    fromRaw,
+    toRaw,
+  };
+};
+
+const createPaginationMeta = (page, limit, total) => ({
+  page,
+  limit,
+  total,
+  totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+});
+
+const toNumericValue = (value, fallback = 0) => {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "number" || typeof value === "bigint") {
+    return Number(value);
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const serializeAdminUserRef = (user) => {
+  if (!user) return null;
+
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+  };
+};
+
+const serializeUsageEvent = (event) => ({
+  id: event.id,
+  userId: event.userId,
+  eventType: event.eventType,
+  featureKey: event.featureKey,
+  aiModelUsed: event.aiModelUsed,
+  inputTokens: event.inputTokens,
+  outputTokens: event.outputTokens,
+  estimatedCostUsd:
+    event.estimatedCostUsd === null || event.estimatedCostUsd === undefined
+      ? null
+      : toNumericValue(event.estimatedCostUsd),
+  metadata: event.metadata,
+  createdAt: event.createdAt,
+  user: serializeAdminUserRef(event.user),
+});
+
+const serializeUserLimit = (userLimit) => ({
+  userId: userLimit.userId,
+  dailyTokenCap: userLimit.dailyTokenCap,
+  dailyDocCap: userLimit.dailyDocCap,
+  requestsPerMin: userLimit.requestsPerMin,
+  tokensUsedToday: userLimit.tokensUsedToday,
+  docsUsedToday: userLimit.docsUsedToday,
+  lastResetDate: userLimit.lastResetDate,
+  overrideBy: userLimit.overrideBy,
+});
+
+const serializeAnomalyAlert = (alert) => ({
+  id: alert.id,
+  userId: alert.userId,
+  alertType: alert.alertType,
+  thresholdUsd: toNumericValue(alert.thresholdUsd),
+  actualUsd: toNumericValue(alert.actualUsd),
+  resolved: alert.resolved,
+  createdAt: alert.createdAt,
+  user: serializeAdminUserRef(alert.user),
+});
 
 const unwrapAuthResult = async (result) => {
   if (!result) return null;
@@ -103,6 +281,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
     } catch (error) {
       console.error("Error fetching users:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch users" });
     }
   });
@@ -181,6 +360,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ user: serializeUser(createdUser) });
     } catch (error) {
       console.error("Error creating user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to create user" });
     }
   });
@@ -222,6 +402,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
     } catch (error) {
       console.error("Error fetching user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch user" });
     }
   });
@@ -285,6 +466,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ user: serializeUser(updatedUser) });
     } catch (error) {
       console.error("Error updating user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to update user" });
     }
   });
@@ -315,6 +497,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to delete user" });
     }
   });
@@ -355,6 +538,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ user: serializeUser(user) });
     } catch (error) {
       console.error("Error suspending user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to suspend user" });
     }
   });
@@ -390,6 +574,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ user: serializeUser(user) });
     } catch (error) {
       console.error("Error unsuspending user:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to unsuspend user" });
     }
   });
@@ -429,6 +614,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ documents });
     } catch (error) {
       console.error("Error fetching user files:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch user files" });
     }
   });
@@ -445,6 +631,9 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       }
 
       await prisma.document.delete({ where: { id: documentId } });
+
+      // Delete from R2
+      await deleteFile(document.storageKey);
 
       const owner = await prisma.user.findUnique({
         where: { id },
@@ -472,6 +661,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting user file:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to delete file" });
     }
   });
@@ -503,6 +693,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ sessions });
     } catch (error) {
       console.error("Error fetching sessions:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch sessions" });
     }
   });
@@ -523,6 +714,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true, revoked: result.count });
     } catch (error) {
       console.error("Error revoking sessions:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to revoke sessions" });
     }
   });
@@ -551,6 +743,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error revoking session:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to revoke session" });
     }
   });
@@ -585,6 +778,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ total, sessions });
     } catch (error) {
       console.error("Error fetching sessions:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch sessions" });
     }
   });
@@ -613,7 +807,392 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ success: true });
     } catch (error) {
       console.error("Error revoking session:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to revoke session" });
+    }
+  });
+
+  router.get("/usage", async (req, res) => {
+    try {
+      const pagination = buildPagination(req.query);
+      if (pagination.error) {
+        return res.status(400).json({ error: pagination.error });
+      }
+
+      const dateRange = buildDateRangeFilter(req.query);
+      if (dateRange.error) {
+        return res.status(400).json({ error: dateRange.error });
+      }
+
+      const userId = getQueryValue(req.query.userId);
+      const where = {};
+
+      if (userId) {
+        where.userId = userId;
+      }
+
+      if (dateRange.filter) {
+        where.createdAt = dateRange.filter;
+      }
+
+      const [total, usageEvents] = await prisma.$transaction([
+        prisma.usageEvent.count({ where }),
+        prisma.usageEvent.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          skip: pagination.skip,
+          take: pagination.limit,
+          include: {
+            user: {
+              select: { id: true, email: true, name: true },
+            },
+          },
+        }),
+      ]);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_USAGE_EVENTS",
+        details: {
+          page: pagination.page,
+          limit: pagination.limit,
+          userId: userId || null,
+          from: dateRange.fromRaw || null,
+          to: dateRange.toRaw || null,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        ...createPaginationMeta(pagination.page, pagination.limit, total),
+        usageEvents: usageEvents.map(serializeUsageEvent),
+      });
+    } catch (error) {
+      console.error("Error fetching usage events:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch usage events" });
+    }
+  });
+
+  router.get("/usage/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const pagination = buildPagination(req.query);
+      if (pagination.error) {
+        return res.status(400).json({ error: pagination.error });
+      }
+
+      const dateRange = buildDateRangeFilter(req.query);
+      if (dateRange.error) {
+        return res.status(400).json({ error: dateRange.error });
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, email: true, name: true },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const where = {
+        userId,
+        ...(dateRange.filter ? { createdAt: dateRange.filter } : {}),
+      };
+
+      const [total, usageEvents] = await prisma.$transaction([
+        prisma.usageEvent.count({ where }),
+        prisma.usageEvent.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          skip: pagination.skip,
+          take: pagination.limit,
+          include: {
+            user: {
+              select: { id: true, email: true, name: true },
+            },
+          },
+        }),
+      ]);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_USER_USAGE_EVENTS",
+        targetId: userId,
+        details: {
+          page: pagination.page,
+          limit: pagination.limit,
+          from: dateRange.fromRaw || null,
+          to: dateRange.toRaw || null,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        user: serializeAdminUserRef(user),
+        ...createPaginationMeta(pagination.page, pagination.limit, total),
+        usageEvents: usageEvents.map(serializeUsageEvent),
+      });
+    } catch (error) {
+      console.error("Error fetching user usage events:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch user usage events" });
+    }
+  });
+
+  router.get("/costs/summary", async (req, res) => {
+    try {
+      const [totalUsageEvents, totals, modelGroups] = await prisma.$transaction([
+        prisma.usageEvent.count(),
+        prisma.usageEvent.aggregate({
+          _sum: {
+            estimatedCostUsd: true,
+            inputTokens: true,
+            outputTokens: true,
+          },
+        }),
+        prisma.usageEvent.groupBy({
+          by: ["aiModelUsed"],
+          where: {
+            aiModelUsed: {
+              not: null,
+            },
+          },
+          _count: {
+            _all: true,
+          },
+          _sum: {
+            estimatedCostUsd: true,
+            inputTokens: true,
+            outputTokens: true,
+          },
+        }),
+      ]);
+
+      const inputTokens = totals._sum?.inputTokens || 0;
+      const outputTokens = totals._sum?.outputTokens || 0;
+      const modelBreakdown = modelGroups
+        .map((group) => {
+          const modelInputTokens = group._sum?.inputTokens || 0;
+          const modelOutputTokens = group._sum?.outputTokens || 0;
+
+          return {
+            model: group.aiModelUsed,
+            usageEvents: group._count?._all || 0,
+            estimatedCostUsd: toNumericValue(group._sum?.estimatedCostUsd),
+            inputTokens: modelInputTokens,
+            outputTokens: modelOutputTokens,
+            totalTokens: modelInputTokens + modelOutputTokens,
+          };
+        })
+        .sort((left, right) => right.estimatedCostUsd - left.estimatedCostUsd);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_COST_SUMMARY",
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        totals: {
+          usageEvents: totalUsageEvents,
+          estimatedCostUsd: toNumericValue(totals._sum?.estimatedCostUsd),
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
+        },
+        modelBreakdown,
+      });
+    } catch (error) {
+      console.error("Error fetching cost summary:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch cost summary" });
+    }
+  });
+
+  router.get("/users/:id/limits", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await prisma.user.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const userLimit = await prisma.userLimit.upsert({
+        where: { userId: id },
+        update: {},
+        create: { userId: id },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_USER_LIMITS",
+        targetId: id,
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ userLimit: serializeUserLimit(userLimit) });
+    } catch (error) {
+      console.error("Error fetching user limits:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch user limits" });
+    }
+  });
+
+  router.patch("/users/:id/limits", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await prisma.user.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const updates = {};
+      const editableFields = ["dailyTokenCap", "dailyDocCap", "requestsPerMin"];
+
+      for (const field of editableFields) {
+        if (req.body?.[field] === undefined) {
+          continue;
+        }
+
+        const parsed = parseIntegerInput(req.body[field], 0);
+        if (parsed === null) {
+          return res.status(400).json({
+            error: `${field} must be a non-negative integer`,
+          });
+        }
+
+        updates[field] = parsed;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: "No valid limit updates provided" });
+      }
+
+      const existingLimit = await prisma.userLimit.findUnique({
+        where: { userId: id },
+      });
+
+      const userLimit = await prisma.userLimit.upsert({
+        where: { userId: id },
+        update: {
+          ...updates,
+          overrideBy: req.session.user.id,
+        },
+        create: {
+          userId: id,
+          ...updates,
+          overrideBy: req.session.user.id,
+        },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "UPDATE_USER_LIMITS",
+        targetId: id,
+        details: {
+          before: existingLimit ? serializeUserLimit(existingLimit) : null,
+          after: serializeUserLimit(userLimit),
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ userLimit: serializeUserLimit(userLimit) });
+    } catch (error) {
+      console.error("Error updating user limits:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to update user limits" });
+    }
+  });
+
+  router.get("/anomalies", async (req, res) => {
+    try {
+      const pagination = buildPagination(req.query);
+      if (pagination.error) {
+        return res.status(400).json({ error: pagination.error });
+      }
+
+      const [total, anomalies] = await prisma.$transaction([
+        prisma.costAnomalyAlert.count(),
+        prisma.costAnomalyAlert.findMany({
+          orderBy: [{ resolved: "asc" }, { createdAt: "desc" }],
+          skip: pagination.skip,
+          take: pagination.limit,
+          include: {
+            user: {
+              select: { id: true, email: true, name: true },
+            },
+          },
+        }),
+      ]);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_COST_ANOMALIES",
+        details: {
+          page: pagination.page,
+          limit: pagination.limit,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        ...createPaginationMeta(pagination.page, pagination.limit, total),
+        anomalies: anomalies.map(serializeAnomalyAlert),
+      });
+    } catch (error) {
+      console.error("Error fetching cost anomalies:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch anomalies" });
+    }
+  });
+
+  router.patch("/anomalies/:id/resolve", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const existingAlert = await prisma.costAnomalyAlert.findUnique({
+        where: { id },
+      });
+
+      if (!existingAlert) {
+        return res.status(404).json({ error: "Anomaly alert not found" });
+      }
+
+      const alert = await prisma.costAnomalyAlert.update({
+        where: { id },
+        data: { resolved: true },
+        include: {
+          user: {
+            select: { id: true, email: true, name: true },
+          },
+        },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "RESOLVE_COST_ANOMALY",
+        targetId: id,
+        details: {
+          alertType: existingAlert.alertType,
+          previouslyResolved: existingAlert.resolved,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ anomaly: serializeAnomalyAlert(alert) });
+    } catch (error) {
+      console.error("Error resolving anomaly alert:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to resolve anomaly alert" });
     }
   });
 
@@ -663,6 +1242,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
     } catch (error) {
       console.error("Error fetching analytics:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch analytics" });
     }
   });
@@ -699,6 +1279,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
     } catch (error) {
       console.error("Error fetching storage breakdown:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch storage breakdown" });
     }
   });
@@ -743,7 +1324,148 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       res.json({ total, logs });
     } catch (error) {
       console.error("Error fetching audit logs:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch audit logs" });
+    }
+  });
+
+  router.get("/features", async (req, res) => {
+    try {
+      const flags = await prisma.featureFlag.findMany({
+        include: {
+          assignments: true,
+          auditLogs: { orderBy: { changedAt: "desc" }, take: 10 },
+        },
+        orderBy: { featureKey: "asc" },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "LIST_FEATURE_FLAGS",
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(flags);
+    } catch (error) {
+      console.error("Error fetching feature flags:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch feature flags" });
+    }
+  });
+
+  router.post("/features/:key/toggle", async (req, res) => {
+    try {
+      if (typeof req.body?.enabled !== "boolean") {
+        return res.status(400).json({ error: "enabled boolean is required" });
+      }
+
+      const flag = await toggleGlobalFlag(
+        req.params.key,
+        req.body.enabled,
+        req.session.user.id,
+      );
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "TOGGLE_FEATURE_FLAG",
+        targetId: flag.id,
+        details: { featureKey: flag.featureKey, enabled: req.body.enabled },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(flag);
+    } catch (error) {
+      console.error("Error toggling feature flag:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to toggle feature flag" });
+    }
+  });
+
+  router.post("/features/:key/grant", async (req, res) => {
+    try {
+      const { entityType, entityId, expiresAt } = req.body;
+      if (!entityType || !["user", "tier"].includes(entityType)) {
+        return res.status(400).json({ error: "Invalid entity type" });
+      }
+      if (!entityId || typeof entityId !== "string") {
+        return res.status(400).json({ error: "entityId is required" });
+      }
+
+      const assignment = await grantFeature(
+        req.params.key,
+        entityType,
+        entityId,
+        req.session.user.id,
+        expiresAt,
+      );
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "GRANT_FEATURE_FLAG",
+        targetId: assignment.id,
+        details: { featureKey: req.params.key, entityType, entityId, expiresAt },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(assignment);
+    } catch (error) {
+      console.error("Error granting feature flag:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to grant feature flag" });
+    }
+  });
+
+  router.post("/features/:key/revoke", async (req, res) => {
+    try {
+      const { entityType, entityId } = req.body;
+      if (!entityType || !["user", "tier"].includes(entityType)) {
+        return res.status(400).json({ error: "Invalid entity type" });
+      }
+      if (!entityId || typeof entityId !== "string") {
+        return res.status(400).json({ error: "entityId is required" });
+      }
+
+      await revokeFeature(
+        req.params.key,
+        entityType,
+        entityId,
+        req.session.user.id,
+      );
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "REVOKE_FEATURE_FLAG",
+        details: { featureKey: req.params.key, entityType, entityId },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error revoking feature flag:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to revoke feature flag" });
+    }
+  });
+
+  router.get("/features/audit", async (req, res) => {
+    try {
+      const logs = await prisma.featureFlagAuditLog.findMany({
+        orderBy: { changedAt: "desc" },
+        take: 100,
+        include: { flag: { select: { featureKey: true } } },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "LIST_FEATURE_FLAG_AUDIT",
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(logs);
+    } catch (error) {
+      console.error("Error fetching feature flag audit logs:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch feature flag audit logs" });
     }
   });
 

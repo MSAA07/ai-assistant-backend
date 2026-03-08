@@ -1,3 +1,5 @@
+import { captureSentryException } from "../utils/sentry.js";
+
 export const createRequireAdmin = ({ prisma }) => {
   return async (req, res, next) => {
     try {
@@ -17,6 +19,9 @@ export const createRequireAdmin = ({ prisma }) => {
       next();
     } catch (error) {
       console.error("Admin guard failed:", error);
+      captureSentryException(error, {
+        tags: { middleware: "admin_guard" },
+      });
       res.status(500).json({ error: "Admin guard failed" });
     }
   };
