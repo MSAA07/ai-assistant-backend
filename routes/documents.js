@@ -137,6 +137,15 @@ function jsonError(res, error, fallbackMessage) {
   });
 }
 
+function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(parsed, min), max);
+}
+
 async function queueGenerationJob(tx, { documentId, userId, generationType, options, regenerate }) {
   await tx.$queryRaw`
     SELECT "id"
@@ -503,6 +512,80 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
       });
       return jsonError(res, error, "Failed to fetch document");
+    }
+  });
+
+  router.get("/document/:id/excerpts", requireAuth, async (req, res) => {
+    try {
+      const page = normalizePositiveInteger(req.query?.page, 1, { min: 1, max: 10_000 });
+      const limit = normalizePositiveInteger(req.query?.limit, 25, { min: 1, max: 100 });
+      const skip = (page - 1) * limit;
+
+      const document = await getAuthorizedDocument(prisma, req.params.id, req.session.user, {
+        select: {
+          id: true,
+          userId: true,
+          processingStatus: true,
+        },
+      });
+
+      if (document.processingStatus !== "complete") {
+        throw createHttpError(
+          409,
+          "Document extraction must be complete before reading excerpts",
+          "document_not_ready",
+        );
+      }
+
+      const where = {
+        documentId: document.id,
+        excerptType: { not: "image_flag" },
+        content: { not: "" },
+      };
+
+      const [total, excerpts] = await Promise.all([
+        prisma.documentExcerpt.count({ where }),
+        prisma.documentExcerpt.findMany({
+          where,
+          orderBy: [
+            { slideOrPage: "asc" },
+            { excerptType: "asc" },
+            { charOffset: "asc" },
+            { createdAt: "asc" },
+          ],
+          skip,
+          take: limit,
+          select: {
+            id: true,
+            slideOrPage: true,
+            excerptType: true,
+            content: true,
+            charOffset: true,
+            createdAt: true,
+          },
+        }),
+      ]);
+
+      return res.json({
+        documentId: document.id,
+        excerpts,
+        pagination: {
+          page,
+          limit,
+          total,
+          hasMore: skip + excerpts.length < total,
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching document excerpts:", error);
+      captureSentryException(error, {
+        tags: { route: "documents", action: "fetch_excerpts" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+        extra: {
+          documentId: req.params.id,
+        },
+      });
+      return jsonError(res, error, "Failed to fetch document excerpts");
     }
   });
 
