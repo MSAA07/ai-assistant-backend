@@ -1,268 +1,107 @@
-# BACKEND SPECIALIST - AI Assistant Backend
-**Parent Agent**: `C:/Users/Saudp/projects/AGENTS.md` (Project Overseer)
-**Role**: API Development, Database (Prisma/Postgres), OpenAI Integration, Railway Deployment
-
----
-
-# AI Assistant Backend - Agent Guidelines
+﻿# BACKEND SPECIALIST - AI Assistant Backend
+Parent Agent: `C:/Users/Saudp/projects/AGENTS.md`
+Role: API, Prisma/Postgres, OpenAI generation pipeline, Railway deploys
 
 ## 1. Project Overview
 
-**Application**: Backend API for the AI Study Assistant. Handles file processing (PDF, DOCX, PPTX), database operations, and extraction lifecycle management.
-**Architecture**: REST API built with Express.js and Prisma ORM.
-**Deployment Status**: ✅ Deployed on Railway (`https://ai-assistant-backend-production-ddf0.up.railway.app`)
+Backend API for the AI Study Assistant.
 
-**Current Document Pipeline**: `Upload -> Job(extract_document) -> Worker -> DocumentExcerpt -> Document complete`
-**Generation Pipeline**: `POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> Document mirrors updated`
+Current pipelines:
+- Extraction: `Upload -> Job(extract_document) -> Worker -> DocumentExcerpt -> Document complete`
+- Generation: `POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> Document mirror fields`
 
-| Component | Tech Stack |
-|-----------|------------|
-| **Runtime** | Node.js (v18+) |
-| **Framework** | Express.js (v4.21+) |
-| **Database** | PostgreSQL (managed via Prisma ORM) |
-| **AI Integration** | OpenAI API (GPT-4o-mini, on-demand summary/flashcards/exam generation) |
-| **File Handling** | Multer (Uploads), pdf-parse, mammoth |
+Current deployment:
+- Production: `https://ai-assistant-backend-production-ddf0.up.railway.app`
+- Staging: `https://ai-assistant-backend-staging.up.railway.app`
 
----
+## 2. Commands
 
-## 2. Build & Development Commands
+Setup and run:
+- `npm install`
+- `npm start` (runs `prisma db push --accept-data-loss && node server.js`)
+- `npm run worker` (runs `prisma db push --accept-data-loss && node worker.js`)
+- `npm run dev` (server only)
 
-### Setup & Run
-*   **Install Dependencies**: `npm install`
-*   **Start Server**: `npm start` (Runs `node server.js` on port 3001)
-*   **Development**: `npm run dev` (Currently same as start, intended for nodemon if added)
+Database:
+- `npm run db:push`
+- `npm run db:studio`
+- `npx prisma generate`
+- `npm run seed`
+- `node backfill-storage.js`
 
-### Database Management (Prisma)
-*   **Sync Schema**: `npm run db:push`
-    *   *Note*: Updates the database schema to match `prisma/schema.prisma`.
-    *   *Warning*: Can result in data loss if schema changes are destructive.
-*   **Database GUI**: `npm run db:studio`
-    *   Opens a web interface to view and edit database records.
-*   **Generate Client**: `npx prisma generate` (Run after schema changes)
-*   **Backfill Storage Usage**: `node backfill-storage.js`
-    *   Recalculates `storageUsed` per user from existing documents.
+## 3. Coding Rules
 
-### Testing
-*   **Current Status**: ❌ No testing framework configured.
-*   **Recommended**: Use `jest` or `supertest` for future API tests.
-*   **Single Test Pattern**: When tests are added, use `npm test -- test-file.js` for individual files.
+- Use ES modules only (`import`/`export`)
+- Use `async/await` and route-level `try/catch`
+- Validate `req.body`, `req.params`, and uploaded files before processing
+- Return JSON errors as `{ error: string }`
+- Use Prisma for all data access
+- Use transactions for multi-step state updates
 
-### Linting & Formatting
-*   **Current Status**: ❌ No linter or formatter configured.
-*   **Recommended**: Add ESLint + Prettier with `npm i -D eslint prettier eslint-config-prettier`
-*   **Standard Pattern**: StandardJS or Airbnb config for consistent code style.
+## 4. Security and Auth Rules
 
----
+- Never commit `.env` values or secrets
+- Require `requireAuth` for non-public routes
+- Require admin guard for all `/api/admin/*`
+- Enforce ownership checks for user document/job access
+- Keep `credentials: include` compatibility for browser clients
 
-## 3. Code Style Guidelines
+## 5. API Snapshot
 
-### General JavaScript
-*   **Type**: Use **ES Modules** (`import`/`export`) exclusively. Set `"type": "module"` in `package.json`.
-*   **Variables**: Prefer `const`, use `let` only when reassignment is needed.
-*   **Async**: Use `async`/`await` for all database and API calls.
-*   **Paths**: Use `path` and `fileURLToPath` for file system operations to ensure cross-platform compatibility.
+Public:
+- `GET /api/health`
 
-```javascript
-import path from 'path';
-import { fileURLToPath } from 'url';
+Auth:
+- `POST /api/auth/sign-up/email`
+- `POST /api/auth/sign-in/email`
+- `GET /api/auth/get-session`
+- `POST /api/auth/sign-out`
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-```
+Core:
+- `GET /api/user/me`
+- `POST /api/upload`
+- `GET /api/document/:id`
+- `DELETE /api/document/:id`
+- `GET /api/document/:id/excerpts`
+- `POST /api/document/:id/generations`
+- `GET /api/document/:id/generations`
+- `POST /api/flashcard/progress`
+- `POST /api/exam/attempt`
+- `GET /api/jobs/:id`
 
-### Import Ordering
-1. External packages (express, cors, etc.)
-2. Built-in Node modules (fs, path, etc.)
-3. Internal modules (auth, middleware, routes)
-4. Utility functions
+Admin:
+- User/session/file operations
+- Usage/cost analytics endpoints
+- Per-user limits endpoints
+- Cost anomaly endpoints
+- Feature-flag management endpoints
 
-### Naming Conventions
-*   **Variables**: `camelCase` (e.g., `userId`, `fileName`)
-*   **Constants**: `UPPER_SNAKE_CASE` (e.g., `MAX_FILE_SIZE`)
-*   **Functions**: `camelCase` (e.g., `extractTextFromFile`)
-*   **Files**: `kebab-case.js` (e.g., `documents.js`)
+## 6. Deployment and Env
 
-### Response Formatting
-*   **Success**: `res.json({ data: ... })` or `res.json(object)`
-*   **Error**: `res.status(code).json({ error: 'Description', details: 'Optional' })`
-*   **HTTP Codes**: 200 (OK), 201 (Created), 400 (Bad Request), 403 (Forbidden), 404 (Not Found), 500 (Server Error)
+Required env vars:
+- `DATABASE_URL`
+- `BETTER_AUTH_SECRET`
+- `BETTER_AUTH_BASE_URL` (or `BETTER_AUTH_URL`)
+- `OPENAI_API_KEY`
 
-### API Route Handlers
-*   **Error Handling**: **MANDATORY** `try/catch` blocks in every async route.
-*   **Validation**: Validate inputs (req.body, req.file, req.params) before processing.
-*   **Return Early**: Use guard clauses for error cases to reduce nesting.
+Optional env vars:
+- `ADMIN_EMAILS`
+- R2 vars: `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`
 
-```javascript
-app.post('/api/resource', async (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'Missing ID' });
+## 7. Git Workflow
 
-    const result = await prisma.resource.create({ data: { id } });
-    res.json(result);
-  } catch (error) {
-    console.error('API Error:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-```
+Current project workflow:
+1. Work on `stage`
+2. Commit focused changes
+3. Push `stage` to trigger staging deploys
+4. Promote to `production` only when explicitly requested
 
-### Database Interactions
-*   **Prisma**: Use the global `prisma` client instance.
-*   **Schema**: Define models in `prisma/schema.prisma`.
-*   **Relations**: Use relation fields (e.g., `user User @relation(...)`) to maintain referential integrity.
-*   **Transactions**: Use `$transaction` for multi-operation updates.
+## 8. Documentation Maintenance
 
-### File Organization
-*   **routes/**: Route handlers grouped by resource (documents.js, users.js, etc.)
-*   **middleware/**: Authentication, authorization, validation
-*   **utils/**: Shared utility functions (limits.js, etc.)
-*   **uploads/**: Temporary storage for uploaded files (clean up after processing)
+Update docs in the same commit when changing:
+- API contracts
+- Job lifecycle behavior
+- Schema models
+- Deployment/env requirements
 
-### Logging
-*   **Info**: Use for startup, successful operations
-*   **Errors**: Use `console.error()` with full error details including stack traces
-*   **Requests**: Log important request details (userId, fileName, fileSize)
-
----
-
-## 4. Agent Operational Rules
-
-1.  **Environment Variables**:
-    *   NEVER commit `.env` files.
-    *   Required variables: `DATABASE_URL`, `OPENAI_API_KEY`, `PORT`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_BASE_URL`.
-2.  **File System**:
-    *   Use absolute paths with `path.join()`.
-    *   Clean up uploaded files in `uploads/` after processing.
-3.  **No Hallucinations**:
-    *   Do not invent scripts like `npm test` if they are not in `package.json`.
-    *   Do not import non-existent libraries.
-4.  **Refactoring**:
-    *   If refactoring `server.js` into multiple files (e.g., `routes/`, `controllers/`), ensure `app.js` or `server.js` remains the entry point.
-5.  **Admin & Security**:
-    *   All `/api/admin/*` endpoints must enforce admin role.
-    *   All non-auth routes must enforce `requireAuth` and ownership checks.
-    *   Validate all inputs to prevent injection attacks.
-
----
-
-## 5. Deployment Notes
-
-*   **Port**: defaults to `3001` unless `process.env.PORT` is set (Railway sets this automatically).
-*   **CORS**: Configured to allow requests from frontend.
-*   **Database**: Ensure `DATABASE_URL` is a valid PostgreSQL connection string (Provided by Railway).
-*   **OpenAI**:
-    *   `OPENAI_API_KEY` must be set in the deployment environment variables.
-    *   The server logs "OPENAI_API_KEY exists: true/false" and its length on startup for debugging purposes.
-*   **Authentication (Better Auth)**:
-    *   `BETTER_AUTH_SECRET`: A long random string (e.g., generate with `openssl rand -hex 32`). **REQUIRED** for production.
-    *   `BETTER_AUTH_BASE_URL`: The full URL of your backend (e.g., `https://your-app.up.railway.app`). **REQUIRED** for callbacks to work.
-
-### Staging Access & QA Notes
-- QA admin login (Better Auth) for staging: `admin@ai.com` / `admin123`. Use only for preview testing; rotate in production.
-- Run `npm run seed` (backend) to recreate the default admin. Requires staging `DATABASE_URL`, `BETTER_AUTH_SECRET`, and `BETTER_AUTH_BASE_URL`.
-- Staging backend domain: https://ai-assistant-backend-staging.up.railway.app (allows origin https://my-ai-assistant-git-stage-msaa07.vercel.app). Ensure CORS/BetterAuth trusted origins stay in sync with Vercel preview URL.
-
-### Railway Deployment Configuration
-
-**Production Environment**:
-*   Project: `ai-assistant-backend`
-*   Branch: `production`
-*   URL: `https://ai-assistant-backend-production-<id>.up.railway.app`
-*   Database: Production Postgres (contains real user data)
-*   Environment Variables: Production values
-*   Auto-deploys: When `production` branch is updated
-
-**Staging Environment**:
-*   Project: `ai-assistant-backend-staging`
-*   Branch: `stage`
-*   URL: `https://ai-assistant-backend-staging-<id>.up.railway.app`
-*   Database: Staging Postgres (test data, can be reset)
-*   Environment Variables: Staging values (different `BETTER_AUTH_BASE_URL`)
-*   Auto-deploys: When `stage` branch is updated
-
-**Key Differences**:
-*   Each environment has its own isolated database
-*   Staging database can be wiped/reset without affecting production
-*   `BETTER_AUTH_BASE_URL` must match the environment's actual URL
-
----
-
-## 6. Git Workflow & Branch Strategy
-
-### Branch Structure
-```
-production  <- Live environment (real users)
-stage       <- Testing environment (pre-production)
-feature/*   <- Development branches (temporary)
-```
-
-### Branch Purposes
-*   **`production`**: Production-ready code. Auto-deploys to live environment. Protected - requires PR.
-*   **`stage`**: Pre-production testing. Auto-deploys to staging environment. Protected - requires PR.
-*   **`feature/*`**: Individual features or fixes. Merged into `stage` for testing.
-
-### Standard Workflow
-```bash
-# 1. Start new feature from stage
-git checkout stage
-git pull origin stage
-git checkout -b feature/my-feature
-
-# 2. Develop and commit
-git add .
-git commit -m "Add my feature"
-git push origin feature/my-feature
-
-# 3. Create PR: feature/my-feature -> stage
-# 4. Merge and test on staging environment
-# 5. If tests pass: Create PR: stage -> production
-# 6. Merge to deploy to production
-```
-
-### Critical Rules
-*   DO NOT push directly to `production` (branch protection prevents this)
-*   DO NOT push directly to `stage` (branch protection prevents this)
-*   ALWAYS create feature branches
-*   ALWAYS test on staging before merging to production
-*   ALWAYS use Pull Requests for merging
-
-### Emergency Hotfix Workflow
-```bash
-# For urgent production fixes only
-git checkout production
-git pull origin production
-git checkout -b hotfix/urgent-fix
-
-# Make minimal fix
-git add .
-git commit -m "Hotfix: description"
-git push origin hotfix/urgent-fix
-
-# Create PR: hotfix -> production (review and merge immediately)
-# Then backport: Create PR: hotfix -> stage (to keep stage synced)
-```
-
----
-
-## 7. Git Guidelines
-
-### .gitignore Essentials
-```
-.env
-.env.local
-.env.*.local
-node_modules/
-uploads/*
-!uploads/.gitkeep
-*.log
-.DS_Store
-.vscode/
-.idea/
-```
-
-### Commit Messages
-*   Use present tense: "Add feature" not "Added feature"
-*   Use imperative mood: "Move cursor to..." not "Moves cursor to..."
-*   Limit first line to 72 characters
-*   Reference issues when applicable: "Fix #123 - resolve upload timeout"
+Last Updated: March 9, 2026
