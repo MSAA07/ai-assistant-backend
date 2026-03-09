@@ -82,6 +82,30 @@ This document describes the backend architecture, API surface, and data flow for
 - `POST /api/flashcard/progress`
 - `POST /api/exam/attempt`
 
+### Canonical Phase 2 APIs (additive, no frontend switch yet)
+
+Flashcards:
+- `GET /api/document/:id/flashcard-sets`
+- `GET /api/flashcard-sets/:setId`
+- `PATCH /api/flashcard-sets/:setId/cards/:cardId/state`
+- `GET /api/flashcard-sets/:setId/incorrect-session`
+
+Exams:
+- `GET /api/document/:id/exams`
+- `GET /api/exams/:examId`
+- `POST /api/exams/:examId/attempts`
+- `GET /api/exams/:examId/attempts/current`
+- `POST /api/exam-attempts/:attemptId/save`
+- `POST /api/exam-attempts/:attemptId/submit`
+- `POST /api/exam-attempts/:attemptId/restart`
+- `GET /api/exam-attempts/:attemptId/review`
+
+Exports:
+- `POST /api/exports/exams`
+- `GET /api/exports`
+- `GET /api/exports/:id`
+- `GET /api/exports/:id/download`
+
 ### Jobs
 
 - `GET /api/jobs/:id`
@@ -156,6 +180,7 @@ Lifecycle ownership:
 - Generation lifecycle/history: `DocumentGeneration.status`, `isLatest`, `output`, `options`, `errorMessage`
 - Phase 2 foundations (additive, not yet active in routes): flashcard sets/cards/state, exam records/questions, export artifacts, and expanded `ExamAttempt` fields for in-progress lifecycle
 - Phase 2 milestone 2 data migration: `npm run phase2:backfill` backfills canonical flashcards/exams/progress/attempt links from legacy mirrors and runs reconciliation validation
+- Phase 2 milestone 3 APIs: canonical study artifacts are readable through additive endpoints while legacy `/api/document/:id` payload remains the frontend contract
 
 ## Worker Safety and Recovery
 

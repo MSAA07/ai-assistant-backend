@@ -9,8 +9,9 @@ import { createRequireAuth } from "./middleware/auth.js";
 import { createRequireAdmin } from "./middleware/adminGuard.js";
 import { createUserRouter } from "./routes/user.js";
 import { createDocumentsRouter } from "./routes/documents.js";
-import { createFlashcardsRouter } from "./routes/flashcards.js";
-import { createExamsRouter } from "./routes/exams.js";
+import { createFlashcardsRouter, createFlashcardSetsRouter } from "./routes/flashcards.js";
+import { createExamsRouter, createCanonicalExamsRouter } from "./routes/exams.js";
+import { createExportsRouter } from "./routes/exports.js";
 import { createAdminRouter } from "./routes/admin.js";
 import { createJobsRouter } from "./routes/jobs.js";
 import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
@@ -75,6 +76,9 @@ app.use("/api/user", createUserRouter({ prisma, requireAuth }));
 app.use("/api", createDocumentsRouter({ prisma, requireAuth }));
 app.use("/api/flashcard", createFlashcardsRouter({ prisma, requireAuth }));
 app.use("/api/exam", createExamsRouter({ prisma, requireAuth }));
+app.use("/api", createFlashcardSetsRouter({ prisma, requireAuth }));
+app.use("/api", createCanonicalExamsRouter({ prisma, requireAuth }));
+app.use("/api/exports", createExportsRouter({ prisma, requireAuth }));
 app.use("/api/jobs", createJobsRouter({ prisma, requireAuth }));
 app.use(
   "/api/admin",
