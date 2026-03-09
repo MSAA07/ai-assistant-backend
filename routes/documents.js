@@ -77,10 +77,12 @@ const latestGenerationInclude = {
 };
 
 const documentDetailsInclude = {
-  _count: {
-    select: { excerpts: true },
+  include: {
+    _count: {
+      select: { excerpts: true },
+    },
+    ...latestGenerationInclude,
   },
-  ...latestGenerationInclude,
 };
 
 const resetMonthlyUsageIfNeeded = async (prisma, user) => {
