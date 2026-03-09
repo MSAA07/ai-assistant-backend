@@ -49,6 +49,19 @@ export async function isFeatureEnabled(featureKey, userId, userPlan) {
   return true;
 }
 
+export async function isFeatureEnabledIfConfigured(featureKey, userId, userPlan) {
+  const flag = await prisma.featureFlag.findUnique({
+    where: { featureKey },
+    select: { id: true },
+  });
+
+  if (!flag) {
+    return true;
+  }
+
+  return isFeatureEnabled(featureKey, userId, userPlan);
+}
+
 export function invalidateCache(featureKey) {
   for (const key of cache.keys()) {
     if (key.endsWith(`:${featureKey}`)) {

@@ -8,16 +8,19 @@
 
 ## 1. Project Overview
 
-**Application**: Backend API for the AI Study Assistant. Handles file processing (PDF, DOCX), database operations, and AI generation via OpenAI.
+**Application**: Backend API for the AI Study Assistant. Handles file processing (PDF, DOCX, PPTX), database operations, and extraction lifecycle management.
 **Architecture**: REST API built with Express.js and Prisma ORM.
 **Deployment Status**: ✅ Deployed on Railway (`https://ai-assistant-backend-production-ddf0.up.railway.app`)
+
+**Current Document Pipeline**: `Upload -> Job(extract_document) -> Worker -> DocumentExcerpt -> Document complete`
+**Generation Pipeline**: `POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> Document mirrors updated`
 
 | Component | Tech Stack |
 |-----------|------------|
 | **Runtime** | Node.js (v18+) |
 | **Framework** | Express.js (v4.21+) |
 | **Database** | PostgreSQL (managed via Prisma ORM) |
-| **AI Integration** | OpenAI API (GPT-4o-mini) |
+| **AI Integration** | OpenAI API (GPT-4o-mini, on-demand summary/flashcards/exam generation) |
 | **File Handling** | Multer (Uploads), pdf-parse, mammoth |
 
 ---

@@ -19,6 +19,10 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
               _count: {
                 select: { excerpts: true },
               },
+              generations: {
+                where: { isLatest: true },
+                orderBy: [{ generationType: "asc" }, { createdAt: "desc" }],
+              },
             },
             orderBy: { uploadDate: "desc" },
           },
@@ -45,6 +49,10 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
               include: {
                 _count: {
                   select: { excerpts: true },
+                },
+                generations: {
+                  where: { isLatest: true },
+                  orderBy: [{ generationType: "asc" }, { createdAt: "desc" }],
                 },
               },
               orderBy: { uploadDate: "desc" },

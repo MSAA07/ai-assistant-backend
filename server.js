@@ -13,6 +13,7 @@ import { createFlashcardsRouter } from "./routes/flashcards.js";
 import { createExamsRouter } from "./routes/exams.js";
 import { createAdminRouter } from "./routes/admin.js";
 import { createJobsRouter } from "./routes/jobs.js";
+import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 
@@ -100,6 +101,7 @@ app.use((error, req, res, next) => {
 const PORT = process.env.PORT || 3001;
 
 async function startServer() {
+  await ensureDocumentGenerationSchema(prisma);
   await backfillDocumentProcessingState(prisma);
 
   app.listen(PORT, () => {

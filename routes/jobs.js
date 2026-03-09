@@ -10,10 +10,14 @@ export const createJobsRouter = ({ prisma, requireAuth }) => {
       const job = await getJobById(prisma, req.params.id)
       if (!job) return res.status(404).json({ error: 'Job not found' })
       // Users can only see their own jobs
-      if (job.userId !== req.session.user.id) return res.status(403).json({ error: 'Forbidden' })
+      const isAdmin = req.session.user.role === 'admin'
+      if (!isAdmin && job.userId !== req.session.user.id) return res.status(403).json({ error: 'Forbidden' })
 
       res.json({
         id: job.id,
+        jobType: job.jobType,
+        documentId: job.documentId ?? job.payload?.documentId ?? null,
+        generationId: job.payload?.generationId ?? null,
         status: job.status,
         progressPct: job.progressPct,
         result: job.status === 'succeeded' ? job.result : null,

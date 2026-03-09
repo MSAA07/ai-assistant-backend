@@ -229,12 +229,12 @@ ai-assistant-backend/
 │   ├── storage.js             # R2 upload, download, deletion, tmp cleanup
 │   ├── documentStatus.js      # Document lifecycle ownership + serialization
 │   ├── jobQueue.js            # Job claiming, leases, retries, stale recovery
-│   ├── extractionPipeline.js  # Extraction + study material generation
+│   ├── extractionPipeline.js  # Extraction only: file text -> DocumentExcerpt
 │   ├── limits.js              # User quota calculations
 │   ├── auditLog.js            # Admin action logging
 │   ├── sentry.js              # Shared Sentry instrumentation
 │   ├── serializers.js         # JSON serialization (BigInt handling)
-│   └── studyMaterials.js      # OpenAI study material generation
+│   └── studyMaterials.js      # On-demand summary/flashcard/exam generation helper
 │
 ├── prisma/                    # Database layer
 │   ├── schema.prisma          # Database schema (17 models, 257 lines)
@@ -286,15 +286,16 @@ ai-assistant-backend/
 
 #### `/utils/`
 **Purpose**: Business logic and helper functions  
-**Contents**: 6 utility files  
+**Contents**: Utility files for lifecycle, generation, storage, limits, and monitoring
 **Responsibility**:
 - Implement core business logic
 - Abstract complex operations
 - Provide reusable functions
 - Keep routes clean and focused
+- Extraction ends after `DocumentExcerpt` records are stored; study material generation is a separate on-demand worker phase
 
 **Key Files**:
-- `extractionPipeline.js` - Extract text, generate study materials, update progress
+- `extractionPipeline.js` - Extract text, persist `DocumentExcerpt`, update job progress
 - `storage.js` - Upload/download/delete files from Cloudflare R2 (S3-compatible)
 - `documentStatus.js` - Normalize serialized documents and backfill lifecycle state
 - `jobQueue.js` - Claim jobs, heartbeat leases, retry failures, recover stale work
@@ -325,6 +326,8 @@ ai-assistant-backend/
 **Lifecycle Ownership**:
 - `Document` owns the user-visible lifecycle via `processingStatus`, `processingJobId`, `processingError`, and `processedAt`
 - `Job` tracks worker execution via `status`, `workerId`, `leaseExpiresAt`, `lastHeartbeatAt`, `retryCount`, and `result`
+- `DocumentGeneration` owns current/history generation state per document and feature; only one row per feature is marked `isLatest = true`
+- `extract_document` completes after usable `DocumentExcerpt` rows exist; `generate_summary`, `generate_flashcards`, and `generate_exam` are separate on-demand jobs
 
 #### `/scripts/`
 **Purpose**: Maintenance and one-off scripts  
@@ -355,11 +358,12 @@ ai-assistant-backend/
 **Responsibilities**:
 - Wait for lifecycle schema columns before starting normal polling
 - Backfill `Document.processingStatus` from existing data on startup
+- Ensure the partial unique index for latest `DocumentGeneration` rows exists
 - Sweep stale running jobs on startup and every 15 seconds
 - Poll database for queued jobs every 2 seconds
 - Claim work with `SELECT FOR UPDATE SKIP LOCKED`
 - Set and heartbeat worker leases while a job is running
-- Move the owning document through `queued -> processing -> complete | failed`
+- Move extraction jobs through `Document.processingStatus` and generation jobs through `DocumentGeneration.status`
 - Requeue retryable failures and fail exhausted or non-retryable jobs
 - Must run as separate process from server
 

@@ -21,7 +21,7 @@ This document provides guidelines for AI agents and developers working on the AI
 - **Database**: PostgreSQL (Railway managed)
 - **Authentication**: Better Auth 1.4.18 (server)
 - **File Upload**: Multer 1.4.5-lts.1
-- **AI**: OpenAI API 4.73.0 (GPT-4o-mini) - Ready for implementation
+- **AI**: OpenAI API 4.73.0 (GPT-4o-mini) for on-demand summary, flashcard, and exam generation
 - **Storage**: Cloudflare R2 (S3-compatible)
 - **Deployment**: Railway (Docker container)
 
@@ -35,8 +35,11 @@ This document provides guidelines for AI agents and developers working on the AI
 - **Document is the lifecycle owner**: the frontend reads `Document.processingStatus`, `processingJobId`, `processingError`, and `processedAt` as the source of truth.
 - **User-visible states**: `queued -> processing -> complete | failed`
 - **Job rows are worker coordination records**: jobs still move through `queued -> running -> succeeded | failed`, but that status is internal to the worker and polling APIs.
+- **Generation is separate from extraction**: `DocumentGeneration` owns generation status/history per feature, while `Document.summary`, `Document.flashcards`, and `Document.examQuestions` are compatibility mirrors only.
 - **Upload is atomic**: the backend uploads to storage, creates the `Document`, increments usage, creates the `Job`, and links `processingJobId` inside one Prisma transaction before returning `202 Accepted`.
-- **Workers use leases**: claiming a queued job sets `workerId`, `leaseExpiresAt`, and `lastHeartbeatAt`; heartbeats extend the lease while extraction and AI generation run.
+- **F1 extraction is excerpt-only**: `extract_document` stores `DocumentExcerpt` rows and then marks the document complete. It does not generate summary, flashcards, or exam questions.
+- **Workers use leases**: claiming a queued job sets `workerId`, `leaseExpiresAt`, and `lastHeartbeatAt`; heartbeats extend the lease while extraction runs.
+- **Generation is on demand**: `generate_summary`, `generate_flashcards`, and `generate_exam` run as background jobs after extraction completes and never modify extraction lifecycle fields.
 - **Startup is schema-safe**: the worker waits for the lifecycle columns to exist, backfills document lifecycle state, then starts polling for queued jobs.
 - **Expired leases recover automatically**: startup recovery and the periodic stale-job sweep requeue or fail abandoned running jobs and keep the owning document status in sync.
 

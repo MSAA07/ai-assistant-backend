@@ -1,3 +1,9 @@
+import {
+  buildDocumentGenerationState,
+  isUsableGenerationExcerpt,
+  normalizeDocumentMirrorMaterials,
+} from "./documentGeneration.js";
+
 export const DOCUMENT_PROCESSING_STATUS = Object.freeze({
   queued: "queued",
   processing: "processing",
@@ -12,118 +18,8 @@ function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function parseJsonValue(value) {
-  if (typeof value !== "string") {
-    return value;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-function coerceArray(value) {
-  const parsedValue = parseJsonValue(value);
-  return Array.isArray(parsedValue) ? parsedValue : [];
-}
-
-function normalizeOptions(value) {
-  const uniqueOptions = [];
-
-  for (const option of coerceArray(value)) {
-    const normalizedOption = normalizeString(option);
-    if (!normalizedOption || uniqueOptions.includes(normalizedOption)) {
-      continue;
-    }
-
-    uniqueOptions.push(normalizedOption);
-  }
-
-  return uniqueOptions;
-}
-
-function normalizeQuestionType(type, options) {
-  const normalizedType = normalizeString(type).toLowerCase();
-
-  if (normalizedType === "mcq" || normalizedType === "multiple_choice") {
-    return "mcq";
-  }
-
-  if (normalizedType === "true_false" || normalizedType === "truefalse") {
-    return "true_false";
-  }
-
-  if (normalizedType === "short" || normalizedType === "short_answer" || normalizedType === "shortanswer") {
-    return "short";
-  }
-
-  return options.length > 1 ? "mcq" : "short";
-}
-
-function normalizeFlashcard(flashcard) {
-  if (!flashcard || typeof flashcard !== "object") {
-    return null;
-  }
-
-  const question = normalizeString(flashcard.question ?? flashcard.front);
-  const answer = normalizeString(flashcard.answer ?? flashcard.back);
-
-  if (!question || !answer) {
-    return null;
-  }
-
-  return { question, answer };
-}
-
-function normalizeExamQuestion(question) {
-  if (!question || typeof question !== "object") {
-    return null;
-  }
-
-  const options = normalizeOptions(question.options);
-  const type = normalizeQuestionType(question.type, options);
-  const normalizedQuestion = normalizeString(question.question);
-  const correctAnswer = normalizeString(question.correctAnswer);
-  const explanation = normalizeString(question.explanation);
-
-  if (!normalizedQuestion || !correctAnswer || !explanation) {
-    return null;
-  }
-
-  if (type === "mcq" && options.length < 2) {
-    return null;
-  }
-
-  if (type === "mcq" && !options.includes(correctAnswer)) {
-    return null;
-  }
-
-  const normalizedExamQuestion = {
-    type,
-    question: normalizedQuestion,
-    correctAnswer,
-    explanation,
-  };
-
-  if (options.length > 0) {
-    normalizedExamQuestion.options = options;
-  }
-
-  return normalizedExamQuestion;
-}
-
 export function normalizeStudyMaterials(studyMaterials = {}) {
-  return {
-    summary: normalizeString(studyMaterials.summary),
-    flashcards: coerceArray(studyMaterials.flashcards)
-      .map(normalizeFlashcard)
-      .filter(Boolean),
-    examQuestions: coerceArray(studyMaterials.examQuestions)
-      .map(normalizeExamQuestion)
-      .filter(Boolean),
-  };
+  return normalizeDocumentMirrorMaterials(studyMaterials);
 }
 
 export function getDocumentExcerptCount(document) {
@@ -145,8 +41,7 @@ export function getDocumentExcerptCount(document) {
 }
 
 export function isUsableExcerpt(excerpt) {
-  return normalizeString(excerpt?.content).length > 0
-    && normalizeString(excerpt?.excerptType).toLowerCase() !== "image_flag";
+  return isUsableGenerationExcerpt(excerpt);
 }
 
 export function countUsableExcerpts(excerpts = []) {
@@ -218,6 +113,7 @@ export function serializeDocument(document, options = {}) {
     || processingStatus === DOCUMENT_PROCESSING_STATUS.processing
     ? document.processingJobId ?? null
     : null;
+  const generationState = buildDocumentGenerationState(document?.generations ?? []);
 
   return {
     id: document.id,
@@ -234,6 +130,7 @@ export function serializeDocument(document, options = {}) {
     processingStatus,
     processingJobId,
     processingError,
+    generationState,
     summary: canExposeContent ? studyMaterialState.summary : "",
     flashcards: canExposeContent ? studyMaterialState.flashcards : [],
     examQuestions: canExposeContent ? studyMaterialState.examQuestions : [],

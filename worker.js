@@ -3,6 +3,11 @@ import os from "os";
 import { PrismaClient } from "@prisma/client";
 
 import { processExtraction } from "./utils/extractionPipeline.js";
+import { processGeneration } from "./utils/generationPipeline.js";
+import {
+  ensureDocumentGenerationSchema,
+  GENERATION_JOB_TYPES,
+} from "./utils/documentGeneration.js";
 import {
   claimNextQueuedJob,
   completeJob,
@@ -24,9 +29,16 @@ const SCHEMA_WAIT_INTERVAL_MS = 5000;
 const SCHEMA_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const JOB_TIMEOUTS = {
   extract_document: 60_000,
-  generate_exam: 90_000,
-  generate_flashcards: 90_000,
+  [GENERATION_JOB_TYPES.summary]: 90_000,
+  [GENERATION_JOB_TYPES.flashcards]: 90_000,
+  [GENERATION_JOB_TYPES.exam]: 90_000,
   export_pdf: 30_000,
+};
+const JOB_PROCESSORS = {
+  extract_document: processExtraction,
+  [GENERATION_JOB_TYPES.summary]: processGeneration,
+  [GENERATION_JOB_TYPES.flashcards]: processGeneration,
+  [GENERATION_JOB_TYPES.exam]: processGeneration,
 };
 
 let fatalWorkerShutdownStarted = false;
@@ -36,7 +48,8 @@ initSentry({ serviceName: "worker", disableProcessHandlers: true });
 async function runWorker() {
   console.log(`[worker] started as ${WORKER_ID}, polling every 2s`);
 
-  await waitForDocumentLifecycleSchema(prisma);
+  await waitForRequiredSchema(prisma);
+  await ensureDocumentGenerationSchema(prisma);
   await backfillDocumentProcessingState(prisma);
   await recoverStaleJobs(prisma);
 
@@ -88,27 +101,25 @@ async function runWorker() {
 
       console.log(`[worker] processing job ${job.id} type=${job.jobType}`);
 
+      const processor = JOB_PROCESSORS[job.jobType];
+      if (!processor) {
+        const unsupportedJobError = new Error(`Unsupported job type: ${job.jobType}`);
+        unsupportedJobError.code = "unsupported_job_type";
+        await failJob(prisma, job, unsupportedJobError);
+        continue;
+      }
+
       const timeout = JOB_TIMEOUTS[job.jobType] || 60_000;
       const heartbeatHandle = startLeaseHeartbeat(job.id);
 
       try {
-        const extractionResult = await withTimeout(
-          processExtraction(prisma, job, WORKER_ID),
+        const jobResult = await withTimeout(
+          processor(prisma, job, WORKER_ID),
           timeout,
         );
         clearInterval(heartbeatHandle);
 
-        await completeJob(
-          prisma,
-          job,
-          extractionResult.result ?? {
-            documentId: extractionResult.documentId,
-            excerptCount: extractionResult.excerptCount,
-            excerptSource: extractionResult.excerptSource,
-            generated: extractionResult.generated,
-          },
-        );
-
+        await completeJob(prisma, job, jobResult?.result ?? jobResult);
         console.log(`[worker] job ${job.id} succeeded`);
       } catch (error) {
         clearInterval(heartbeatHandle);
@@ -177,34 +188,42 @@ function isNonRetryableJobError(error) {
     || error?.code === "token_cap_hit"
     || error?.code === "document_not_found"
     || error?.code === "no_extractable_content"
-    || error?.code === "document_completion_conflict";
+    || error?.code === "document_completion_conflict"
+    || error?.code === "document_not_ready"
+    || error?.code === "no_usable_excerpts"
+    || error?.code === "generation_not_found"
+    || error?.code === "generation_completion_conflict"
+    || error?.code === "invalid_generation_request"
+    || error?.code === "invalid_generation_job"
+    || error?.code === "generation_config_missing"
+    || error?.code === "unsupported_job_type";
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForDocumentLifecycleSchema(prisma) {
+async function waitForRequiredSchema(prisma) {
   const startedAt = Date.now();
 
   while (true) {
-    const schemaReady = await hasRequiredDocumentLifecycleSchema(prisma);
+    const schemaReady = await hasRequiredSchema(prisma);
 
     if (schemaReady) {
       return;
     }
 
     if (Date.now() - startedAt >= SCHEMA_WAIT_TIMEOUT_MS) {
-      throw new Error("Document lifecycle schema was not ready before worker startup timeout");
+      throw new Error("Required worker schema was not ready before startup timeout");
     }
 
-    console.warn("[worker] waiting for document lifecycle schema to become available");
+    console.warn("[worker] waiting for required schema to become available");
     await sleep(SCHEMA_WAIT_INTERVAL_MS);
   }
 }
 
-async function hasRequiredDocumentLifecycleSchema(prisma) {
-  const [documentColumns, jobColumns] = await Promise.all([
+async function hasRequiredSchema(prisma) {
+  const [documentColumns, jobColumns, generationColumns] = await Promise.all([
     prisma.$queryRaw`
       SELECT "column_name"
       FROM "information_schema"."columns"
@@ -219,9 +238,18 @@ async function hasRequiredDocumentLifecycleSchema(prisma) {
         AND "table_name" = 'Job'
         AND "column_name" IN ('documentId', 'workerId', 'leaseExpiresAt', 'lastHeartbeatAt')
     `,
+    prisma.$queryRaw`
+      SELECT "column_name"
+      FROM "information_schema"."columns"
+      WHERE "table_schema" = 'public'
+        AND "table_name" = 'DocumentGeneration'
+        AND "column_name" IN ('documentId', 'generationType', 'status', 'jobId', 'isLatest')
+    `,
   ]);
 
-  return documentColumns.length === 4 && jobColumns.length === 4;
+  return documentColumns.length === 4
+    && jobColumns.length === 4
+    && generationColumns.length === 5;
 }
 
 function normalizeFatalWorkerError(error, fallbackMessage) {

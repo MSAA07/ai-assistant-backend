@@ -39,7 +39,7 @@ This document explains the architecture, integration patterns, and data flows of
 │  │                  │  Poll    │                  │           │
 │  │  • Job polling   │  jobs    │  • 17 models     │           │
 │  │  • File extract  │          │  • Prisma ORM    │           │
-│  │  • AI generation │          │  • Migrations    │           │
+│  │  • Excerpt output│          │  • Migrations    │           │
 │  └──────────────────┘          └──────────────────┘           │
 └─────────────────────────────────────────────────────────────────┘
          │                              │
@@ -57,7 +57,7 @@ This document explains the architecture, integration patterns, and data flows of
 
 1. **Frontend (Svelte SPA)**: User interface, client-side routing, session management
 2. **Backend API (Express)**: REST endpoints, authentication, business logic
-3. **Worker Process**: Async job processing (file extraction, AI generation)
+3. **Worker Process**: Async job processing for extraction jobs; F1 ends after excerpts are stored and the document is marked complete
 4. **PostgreSQL Database**: Data persistence via Prisma ORM
 5. **Cloudflare R2**: Object storage for uploaded documents
 6. **Python Scripts**: PPTX text extraction (subprocess)
@@ -218,6 +218,26 @@ DELETE /api/document/:id      # Delete document
      Returns: { success: true }
 ```
 
+Note: document payloads still include `summary`, `flashcards`, and `examQuestions` for frontend compatibility, but those fields are mirrors only. Canonical generation state now lives in `DocumentGeneration`, while extraction completion still means usable `DocumentExcerpt` rows exist.
+
+### Generation Endpoints
+
+```
+POST /api/document/:id/generations   # Queue summary/flashcards/exam generation
+     Auth: Required
+     Body: { type, options?, regenerate? }
+     Returns: { generationId, jobId, generationStatus, generation }
+
+GET  /api/document/:id/generations   # Read current per-feature generation state
+     Auth: Required
+     Returns: {
+       documentId,
+       generations: {
+         summary, flashcards, exam
+       }
+     }
+```
+
 ### Learning Endpoints
 
 ```
@@ -241,10 +261,10 @@ GET  /api/jobs/:id            # Get job status (polling)
      Auth: Required
      Ownership: Must own job or be admin
      Returns: {
-        id, status, progressPct, result, errorMessage
+        id, jobType, documentId, generationId, status, progressPct, result, errorMessage
       }
       Statuses: 'queued', 'running', 'succeeded', 'failed'
-     Note: job status is a worker view; the frontend treats Document.processingStatus as authoritative
+     Note: job status is a worker view; extraction state still lives on `Document`, while generation state lives on `DocumentGeneration`
 ```
 
 ### Document Lifecycle Contract
@@ -253,7 +273,9 @@ GET  /api/jobs/:id            # Get job status (polling)
 - User-visible lifecycle states are `queued -> processing -> complete | failed`.
 - `Job` records remain worker coordination objects with `queued | running | succeeded | failed`.
 - `processingJobId` links the document to the active extraction job.
-- `processingError` is only populated when the lifecycle ends in `failed`.
+- `processingError` is only populated when the extraction lifecycle ends in `failed`.
+- `complete` means extraction finished and usable `DocumentExcerpt` records exist; generation is requested separately and tracked per feature.
+- `DocumentGeneration` owns `queued | running | complete | failed` state for `summary`, `flashcards`, and `exam`, with history preserved by `isLatest`.
 - `/api/user/me` and `/api/document/:id` both serialize the same document-owned lifecycle fields so list/detail views stay consistent across refreshes and direct navigation.
 
 ### Admin Endpoints
@@ -385,6 +407,9 @@ model Account {
 #### Document Management
 
 **Document**
+
+Note: `summary`, `flashcards`, and `examQuestions` remain on the model as compatibility mirrors for the current frontend. Canonical generation records now live in `DocumentGeneration`; extraction completion is still based on stored `DocumentExcerpt` rows.
+
 ```prisma
 model Document {
   id              String   @id @default(uuid())
@@ -406,6 +431,7 @@ model Document {
 
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   excerpts        DocumentExcerpt[]
+  generations     DocumentGeneration[]
   flashcardProgress FlashcardProgress[]
   examAttempts    ExamAttempt[]
   
@@ -415,7 +441,30 @@ model Document {
 }
 ```
 
-**DocumentExcerpt** (Cached extraction)
+**DocumentGeneration** (Canonical generation state + history)
+```prisma
+model DocumentGeneration {
+  id             String   @id @default(cuid())
+  documentId     String
+  generationType String   // "summary" | "flashcards" | "exam"
+  status         String   // "queued" | "running" | "complete" | "failed"
+  jobId          String?
+  options        Json     @default("{}")
+  output         Json?
+  errorMessage   String?
+  generatedAt    DateTime?
+  isLatest       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  document       Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, generationType, isLatest])
+  @@index([jobId])
+}
+```
+
+**DocumentExcerpt** (Extraction output)
 ```prisma
 model DocumentExcerpt {
   id           String   @id @default(cuid())
@@ -478,7 +527,7 @@ model Job {
   id           String   @id @default(cuid())
   userId       String
   documentId   String?
-  jobType      String   // "extract_document", "generate_exam", "generate_flashcards", "export_pdf"
+  jobType      String   // "extract_document" | "generate_summary" | "generate_flashcards" | "generate_exam" | "export_pdf"
   status       String   @default("queued")  // "queued", "running", "succeeded", "failed"
   progressPct  Int      @default(0)
   retryCount   Int      @default(0)
@@ -520,7 +569,7 @@ model AuditLog {
 }
 ```
 
-**UsageEvent** (AI cost tracking - ready for implementation)
+**UsageEvent** (AI cost tracking for on-demand generation)
 ```prisma
 model UsageEvent {
   id               String   @id @default(cuid())
@@ -717,7 +766,11 @@ await prisma.$transaction([
 
 ## Document Processing Flow
 
-### Complete Upload & Processing Flow
+### Upload, Extraction, and On-Demand Generation Flow
+
+Pipeline summary:
+- Extraction: `Upload -> Job(extract_document) -> Worker -> DocumentExcerpt -> Document complete`
+- Generation: `POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> Document mirrors updated`
 
 ```
 1. User selects file (PDF/DOCX/PPTX) → Frontend
@@ -784,13 +837,13 @@ await prisma.$transaction([
    • Returns JSON
    • Parse and store as DocumentExcerpt records
    ↓
-16. Worker generates summary, flashcards, and exam questions with OpenAI
-   • Usage is recorded in UsageEvent
-   • Token / document caps are enforced before completion
+16. Worker finishes the extraction phase
+   • `DocumentExcerpt` is the extraction output
+   • Job.result records excerpt metadata (`documentId`, `excerptCount`, `excerptSource`, `generated: false`)
    ↓
 17. completeJob() updates Document and Job in one transaction
    • Document.processingStatus = "complete"
-   • Document.summary / flashcards / examQuestions persisted
+   • Existing generated mirrors are left untouched
    • Document.processedAt set
    • Job.status = "succeeded", progressPct = 100
    ↓
@@ -799,7 +852,31 @@ await prisma.$transaction([
 19. User refreshes, opens the document directly, or returns from the list
    • List and detail remain consistent because both read the same document lifecycle fields
    ↓
-20. User views summary, flashcards, and exam questions
+20. Extraction is complete once usable `DocumentExcerpt` rows exist for the document
+   ↓
+21. A user can later call POST /api/document/:id/generations with type = "summary" | "flashcards" | "exam"
+   ↓
+22. Backend validates auth, ownership, extraction readiness, usable excerpts, normalized options, and feature flags
+   ↓
+23. Backend locks the document row, reuses identical in-flight work when possible, and otherwise:
+   • Marks the previous latest `DocumentGeneration` row as isLatest = false
+   • Creates a new `DocumentGeneration` row with status = "queued"
+   • Creates a matching generation Job with payload { documentId, generationId, generationType, options }
+   ↓
+24. Worker claims the generation job
+   • Job.status = "running"
+   • `Document.processingStatus` is unchanged
+   • `DocumentGeneration.status` = "running"
+   ↓
+25. Worker reads usable `DocumentExcerpt` rows, builds bounded prompt input, and calls OpenAI
+   ↓
+26. On success, worker updates only generation state plus compatibility mirrors
+   • `DocumentGeneration.status` = "complete"
+   • `DocumentGeneration.output` stores the canonical artifact
+   • `Document.summary` or `Document.flashcards` or `Document.examQuestions` is refreshed for the current frontend
+   • Job.status = "succeeded"
+   ↓
+27. On failure, worker retries or marks only the `DocumentGeneration` row failed; extraction lifecycle fields remain unchanged
 ```
 
 ### Error Handling
@@ -811,7 +888,7 @@ Backend deletes the uploaded R2 object (unless local fallback is in use)
 No orphaned Document/Job rows are returned to the frontend
 ```
 
-**If extraction or generation fails:**
+**If extraction fails:**
 ```
 Worker catches error
    ↓
@@ -823,6 +900,21 @@ Else:
   • Set Job.status = "failed"
   • Set Document.processingStatus = "failed"
   • Persist processingError for the frontend
+```
+
+**If generation fails:**
+```
+Worker catches error
+   ↓
+If retryable and retryCount + 1 < maxRetries:
+  • Requeue Job with status = "queued"
+  • Keep Document.processingStatus unchanged
+  • Set DocumentGeneration.status = "queued"
+Else:
+  • Set Job.status = "failed"
+  • Keep Document.processingStatus unchanged
+  • Set DocumentGeneration.status = "failed"
+  • Persist generation errorMessage
 ```
 
 **If a worker dies or stops heartbeating:**
@@ -843,131 +935,13 @@ Else:
 
 ---
 
-## AI Integration (Ready for Implementation)
+## Generation Phase Note
 
-### Current Status
-
-✅ **Infrastructure Ready:**
-- OpenAI API key configured (`OPENAI_API_KEY` env var)
-- UsageEvent model for token/cost tracking
-- UserLimit model for quota enforcement
-- CostAnomalyAlert model for overspending detection
-- Job queue supports generation job types
-
-⏳ **Awaiting Implementation:**
-- OpenAI API calls in worker.js
-- Prompt engineering for summary, flashcards, exams
-- Token usage tracking
-- Cost calculation
-
-### Planned Implementation
-
-**Generate Summary:**
-```javascript
-import OpenAI from 'openai';
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// Combine excerpts
-const fullText = excerpts.map(e => e.content).join('\n\n');
-
-// Call OpenAI
-const completion = await openai.chat.completions.create({
-  model: 'gpt-4o-mini',
-  messages: [
-    {
-      role: 'system',
-      content: `You are a helpful study assistant. Summarize the following document in ${language}.`
-    },
-    {
-      role: 'user',
-      content: fullText
-    }
-  ],
-  max_tokens: 500
-});
-
-const summary = completion.choices[0].message.content;
-
-// Track usage
-await prisma.usageEvent.create({
-  data: {
-    userId,
-    eventType: 'ai_generation',
-    featureKey: 'document_summary',
-    aiModelUsed: 'gpt-4o-mini',
-    inputTokens: completion.usage.prompt_tokens,
-    outputTokens: completion.usage.completion_tokens,
-    estimatedCostUsd: calculateCost(completion.usage)
-  }
-});
-
-// Update document
-await prisma.document.update({
-  where: { id: documentId },
-  data: { summary }
-});
-```
-
-**Generate Flashcards:**
-```javascript
-const completion = await openai.chat.completions.create({
-  model: 'gpt-4o-mini',
-  messages: [
-    {
-      role: 'system',
-      content: `Create 10 study flashcards from this document. 
-                Return JSON array: [{ front: "question", back: "answer" }]`
-    },
-    {
-      role: 'user',
-      content: fullText
-    }
-  ],
-  response_format: { type: "json_object" }
-});
-
-const flashcards = JSON.parse(completion.choices[0].message.content);
-
-await prisma.document.update({
-  where: { id: documentId },
-  data: { flashcards }
-});
-```
-
-**Cost Calculation:**
-```javascript
-// GPT-4o-mini pricing (as of 2024)
-const COST_PER_1K_INPUT = 0.00015;   // $0.15 per 1M tokens
-const COST_PER_1K_OUTPUT = 0.0006;   // $0.60 per 1M tokens
-
-function calculateCost(usage) {
-  const inputCost = (usage.prompt_tokens / 1000) * COST_PER_1K_INPUT;
-  const outputCost = (usage.completion_tokens / 1000) * COST_PER_1K_OUTPUT;
-  return inputCost + outputCost;
-}
-```
-
-**Quota Enforcement:**
-```javascript
-// Before OpenAI call
-const limit = await prisma.userLimit.findUnique({
-  where: { userId }
-});
-
-if (limit && limit.tokensUsedToday >= limit.dailyTokenCap) {
-  throw new Error('Daily token limit exceeded');
-}
-
-// After OpenAI call
-await prisma.userLimit.update({
-  where: { userId },
-  data: {
-    tokensUsedToday: {
-      increment: completion.usage.total_tokens
-    }
-  }
-});
-```
+- F1 remains extraction-only: `extract_document` does not call OpenAI.
+- F2 adds on-demand `generate_summary`, `generate_flashcards`, and `generate_exam` jobs.
+- `Document.processingStatus`, `processingJobId`, `processingError`, and `processedAt` are extraction-only fields.
+- `DocumentGeneration` is the canonical generation store and preserves regeneration history with `isLatest`.
+- `Document.summary`, `flashcards`, and `examQuestions` are compatibility mirrors only.
 
 ---
 
@@ -1245,7 +1219,7 @@ npx prisma migrate deploy  # In production
 | `DATABASE_URL` | Yes | PostgreSQL connection |
 | `BETTER_AUTH_SECRET` | Yes | Session encryption |
 | `BETTER_AUTH_BASE_URL` | Yes | Backend URL |
-| `OPENAI_API_KEY` | Yes* | AI generation (*ready for impl) |
+| `OPENAI_API_KEY` | Yes* | On-demand generation jobs (*not used by F1 extraction) |
 | `ADMIN_EMAILS` | No | Auto-admin emails |
 | `R2_*` | No | Cloud storage (fallback: local) |
 | `VITE_API_BASE_URL` | Yes | Backend API URL (frontend) |
