@@ -468,6 +468,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       const document = await getAuthorizedDocument(prisma, req.params.id, req.session.user, {
         select: {
           id: true,
+          userId: true,
           generations: latestGenerationInclude.generations,
         },
       });
