@@ -124,7 +124,7 @@ Feature flags:
 
 ## Data Model Summary
 
-Current schema models (17):
+Current schema models (23):
 - `User`
 - `Session`
 - `Account`
@@ -135,6 +135,12 @@ Current schema models (17):
 - `Job`
 - `FlashcardProgress`
 - `ExamAttempt`
+- `FlashcardSet`
+- `FlashcardCard`
+- `FlashcardCardState`
+- `ExamRecord`
+- `ExamQuestion`
+- `ExportArtifact`
 - `AuditLog`
 - `UsageEvent`
 - `UserLimit`
@@ -147,6 +153,7 @@ Lifecycle ownership:
 - Extraction lifecycle: `Document.processingStatus`, `processingJobId`, `processingError`, `processedAt`
 - Worker execution state: `Job.status`, `workerId`, `leaseExpiresAt`, `lastHeartbeatAt`, `retryCount`
 - Generation lifecycle/history: `DocumentGeneration.status`, `isLatest`, `output`, `options`, `errorMessage`
+- Phase 2 foundations (additive, not yet active in routes): flashcard sets/cards/state, exam records/questions, export artifacts, and expanded `ExamAttempt` fields for in-progress lifecycle
 
 ## Worker Safety and Recovery
 
@@ -182,4 +189,4 @@ Update this file when any of the following changes:
 - Schema models/relationships
 - Deployment endpoints or required environment variables
 
-Last Updated: March 9, 2026
+Last Updated: March 10, 2026

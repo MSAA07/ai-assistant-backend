@@ -108,10 +108,12 @@ model Document {
   processingError  String?
   processedAt      DateTime?
 
-  excerpts    DocumentExcerpt[]
-  generations DocumentGeneration[]
-  storageKey  String? // R2 object key — added for P1-S04
-
+  excerpts        DocumentExcerpt[]
+  generations     DocumentGeneration[]
+  flashcardSets   FlashcardSet[]
+  examRecords     ExamRecord[]
+  exportArtifacts ExportArtifact[]
+  storageKey      String? // R2 object key - added for P1-S04
   @@index([userId])
   @@index([userId, processingStatus])
   @@index([processingJobId])
@@ -121,13 +123,24 @@ model ExamAttempt {
   id             String   @id @default(uuid())
   documentId     String
   userId         String
+  examRecordId   String?
+  examRecord     ExamRecord? @relation(fields: [examRecordId], references: [id], onDelete: SetNull)
   score          Int
   totalQuestions Int
   answers        Json
+  status         String   @default("submitted") // 'in_progress' | 'submitted' | 'abandoned'
+  startedAt      DateTime @default(now())
+  lastSavedAt    DateTime @default(now())
+  submittedAt    DateTime? @default(now())
+  feedbackMode   String   @default("end") // 'instant' | 'end'
+  restartFromAttemptId String?
   completedAt    DateTime @default(now())
 
   @@index([userId])
   @@index([documentId])
+  @@index([examRecordId])
+  @@index([userId, examRecordId, status])
+  @@index([userId, documentId, startedAt])
 }
 
 model FlashcardProgress {
@@ -140,6 +153,127 @@ model FlashcardProgress {
 
   @@unique([userId, documentId, cardIndex])
   @@index([userId])
+}
+
+model FlashcardSet {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  generationId String?
+  title        String?
+  options      Json     @default("{}")
+  cardCount    Int      @default(0)
+  sourceType   String   @default("generation") // 'generation' | 'manual' | 'legacy_migration'
+  isLatest     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cards FlashcardCard[]
+
+  @@index([documentId, createdAt])
+  @@index([documentId, isLatest])
+}
+
+model FlashcardCard {
+  id          String      @id @default(cuid())
+  setId       String
+  set         FlashcardSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+  position    Int
+  question    String      @db.Text
+  answer      String      @db.Text
+  explanation String?     @db.Text
+  sourceRefs  Json        @default("[]")
+  isDeleted   Boolean     @default(false)
+  deletedAt   DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  states FlashcardCardState[]
+
+  @@unique([setId, position])
+  @@index([setId, isDeleted, position])
+}
+
+model FlashcardCardState {
+  id               String       @id @default(cuid())
+  userId           String
+  cardId           String
+  card             FlashcardCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  isHidden         Boolean      @default(false)
+  isDeletedForUser Boolean      @default(false)
+  mastered         Boolean      @default(false)
+  correctCount     Int          @default(0)
+  incorrectCount   Int          @default(0)
+  lastResult       String       @default("unseen") // 'correct' | 'incorrect' | 'unseen'
+  lastReviewedAt   DateTime?
+  updatedAt        DateTime     @updatedAt
+
+  @@unique([userId, cardId])
+  @@index([userId, lastResult, updatedAt])
+}
+
+model ExamRecord {
+  id            String   @id @default(cuid())
+  documentId    String
+  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  generationId  String?
+  title         String?
+  options       Json     @default("{}")
+  questionCount Int      @default(0)
+  sourceType    String   @default("generation") // 'generation' | 'manual' | 'legacy_migration'
+  isLatest      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  questions ExamQuestion[]
+  attempts  ExamAttempt[]
+  exports   ExportArtifact[]
+
+  @@index([documentId, createdAt])
+  @@index([documentId, isLatest])
+}
+
+model ExamQuestion {
+  id            String     @id @default(cuid())
+  examRecordId  String
+  examRecord    ExamRecord @relation(fields: [examRecordId], references: [id], onDelete: Cascade)
+  position      Int
+  questionType  String
+  question      String     @db.Text
+  options       Json       @default("[]")
+  correctAnswer String     @db.Text
+  explanation   String     @db.Text
+  sourceRefs    Json       @default("[]")
+  createdAt     DateTime   @default(now())
+
+  @@unique([examRecordId, position])
+}
+
+model ExportArtifact {
+  id               String      @id @default(cuid())
+  userId           String
+  documentId       String
+  document         Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  examRecordId     String?
+  examRecord       ExamRecord? @relation(fields: [examRecordId], references: [id], onDelete: SetNull)
+  attemptId        String?
+  format           String      @default("pdf")
+  config           Json        @default("{}")
+  status           String      @default("queued") // 'queued' | 'running' | 'complete' | 'failed' | 'expired'
+  jobId            String?
+  storageKey       String?
+  fileName         String?
+  mimeType         String?
+  fileSize         Int?
+  errorMessage     String?
+  createdAt        DateTime    @default(now())
+  readyAt          DateTime?
+  expiresAt        DateTime?
+  lastDownloadedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([documentId, createdAt])
+  @@index([status, createdAt])
 }
 
 model AuditLog {
@@ -298,3 +432,4 @@ enum FeatureEntityType {
   user
   tier
 }
+
