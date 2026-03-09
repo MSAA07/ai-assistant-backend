@@ -44,11 +44,12 @@ This document describes the backend architecture, API surface, and data flow for
 
 ### Generation pipeline
 
-`POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> mirror fields`
+`POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> canonical + mirror writes`
 
 - Generation is independent from extraction lifecycle
 - Canonical generation state is on `DocumentGeneration`
-- `Document.summary`, `Document.flashcards`, and `Document.examQuestions` are compatibility mirrors for current frontend behavior
+- On completion, flashcard/exam generations dual-write canonical records (`FlashcardSet`/`FlashcardCard`, `ExamRecord`/`ExamQuestion`) and legacy mirrors
+- `Document.summary`, `Document.flashcards`, and `Document.examQuestions` remain compatibility mirrors for current frontend behavior (read path unchanged)
 
 ## API Surface
 
@@ -154,6 +155,7 @@ Lifecycle ownership:
 - Worker execution state: `Job.status`, `workerId`, `leaseExpiresAt`, `lastHeartbeatAt`, `retryCount`
 - Generation lifecycle/history: `DocumentGeneration.status`, `isLatest`, `output`, `options`, `errorMessage`
 - Phase 2 foundations (additive, not yet active in routes): flashcard sets/cards/state, exam records/questions, export artifacts, and expanded `ExamAttempt` fields for in-progress lifecycle
+- Phase 2 milestone 2 data migration: `npm run phase2:backfill` backfills canonical flashcards/exams/progress/attempt links from legacy mirrors and runs reconciliation validation
 
 ## Worker Safety and Recovery
 

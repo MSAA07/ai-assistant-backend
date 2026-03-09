@@ -1,5 +1,6 @@
 import express from "express";
 import { captureSentryException } from "../utils/sentry.js";
+import { LEGACY_MIGRATION_SOURCE_TYPE } from "../utils/phase2Backfill.js";
 
 export const createExamsRouter = ({ prisma, requireAuth }) => {
   const router = express.Router();
@@ -27,14 +28,37 @@ export const createExamsRouter = ({ prisma, requireAuth }) => {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      const attempt = await prisma.examAttempt.create({
-        data: {
-          userId: req.session.user.id,
-          documentId,
-          score: parsedScore,
-          totalQuestions: parsedTotal,
-          answers,
-        },
+      const attempt = await prisma.$transaction(async (tx) => {
+        const latestExamRecord = await tx.examRecord.findFirst({
+          where: {
+            documentId,
+            isLatest: true,
+          },
+          select: { id: true },
+          orderBy: { createdAt: "desc" },
+        });
+
+        const migratedExamRecord = latestExamRecord ?? await tx.examRecord.findFirst({
+          where: {
+            documentId,
+            sourceType: LEGACY_MIGRATION_SOURCE_TYPE,
+            generationId: null,
+          },
+          select: { id: true },
+          orderBy: { createdAt: "asc" },
+        });
+
+        return tx.examAttempt.create({
+          data: {
+            userId: req.session.user.id,
+            documentId,
+            examRecordId: migratedExamRecord?.id ?? null,
+            score: parsedScore,
+            totalQuestions: parsedTotal,
+            answers,
+            status: "submitted",
+          },
+        });
       });
 
       res.json({ success: true, attempt });

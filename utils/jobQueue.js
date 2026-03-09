@@ -6,6 +6,7 @@ import {
   isGenerationJobType,
   normalizeGenerationOutput,
 } from "./documentGeneration.js";
+import { upsertCanonicalGenerationRecord } from "./phase2Backfill.js";
 
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 export const JOB_LEASE_DURATION_MS = 120_000;
@@ -140,6 +141,7 @@ async function completeExtractionJob(tx, job, result, completedAt) {
 async function completeGenerationJob(tx, job, result, completedAt) {
   const generationType = getGenerationTypeForJobType(job.jobType);
   const normalizedOutput = normalizeGenerationOutput(generationType, result?.output);
+  const generationId = typeof result?.generationId === "string" ? result.generationId : null;
   const documentUpdateData = {};
   const mirrorField = getMirrorFieldForGenerationType(generationType);
 
@@ -165,6 +167,29 @@ async function completeGenerationJob(tx, job, result, completedAt) {
     const completionError = new Error(`Generation job ${job.id} is missing its DocumentGeneration row`);
     completionError.code = "generation_completion_conflict";
     throw completionError;
+  }
+
+  if (job.documentId && (generationType === "flashcards" || generationType === "exam")) {
+    const generation = await tx.documentGeneration.findFirst({
+      where: { jobId: job.id },
+      select: {
+        id: true,
+        documentId: true,
+        isLatest: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (generation?.documentId) {
+      await upsertCanonicalGenerationRecord(tx, {
+        generationType,
+        documentId: generation.documentId,
+        generationId: generationId || generation.id,
+        options: result?.effectiveOptions ?? result?.options ?? {},
+        output: normalizedOutput,
+        isLatest: Boolean(generation.isLatest),
+      });
+    }
   }
 
   if (job.documentId) {
