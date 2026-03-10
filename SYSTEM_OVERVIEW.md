@@ -1,36 +1,105 @@
-﻿# System Overview
+# System Overview
 
-This document describes the backend architecture, API surface, and data flow for the AI Study Assistant.
+This document describes the current backend architecture for the AI Study Assistant after the Study Hub redesign.
 
-## Current Stack
+## Product-Aligned View
+
+The current product is organized around three Study Hub layers:
+
+1. Study Hub Library
+2. Study Hub Document
+3. Activity Modes
+
+The canonical user flow is:
+
+`Home -> Upload document -> Choose generation options -> Processing state -> Study Hub Library -> Study Hub Document -> Activity Mode -> Summary | Flashcards | Mock Exam`
+
+The backend does not own the frontend screens, but it does own the data contracts and background processing that make each screen work.
+
+## Study Hub Layers and Backend Contracts
+
+### Study Hub Library
+
+Purpose:
+- Show a grid of uploaded materials
+- Surface extraction/generation readiness without loading full activity data
+- Support document entry and document deletion
+
+Backend contract:
+- `GET /api/user/me`
+- Returns the authenticated user plus their documents ordered by newest first
+- Each document includes `processingStatus`, `processingJobId` when active, and a per-feature `generationState`
+- Document cards are intentionally lightweight and derive their visible title from `originalName`
+
+### Study Hub Document
+
+Purpose:
+- Present a single selected document
+- Show feature entry cards for Summary, Flashcards, and Mock Exam
+- Reflect the state of each feature card: `not_requested`, `queued`, `running`, `complete`, or `failed`
+
+Backend contract:
+- `GET /api/document/:id`
+- `GET /api/document/:id/generations`
+- `POST /api/document/:id/generations`
+
+Notes:
+- The backend serializes the selected document with `generationState.summary`, `generationState.flashcards`, and `generationState.exam`
+- Feature cards should be driven directly by those states.
+
+### Activity Modes
+
+Purpose:
+- Enter the actual study experience for a generated feature
+- Keep navigation minimal: library -> document -> activity
+
+Backend contract:
+- Summary reader: `GET /api/document/:id`
+- Flashcards: `GET /api/document/:id/flashcard-sets`, `GET /api/flashcard-sets/:setId`, `PATCH /api/flashcard-sets/:setId/cards/:cardId/state`
+- Mock exam: `GET /api/document/:id/exams`, `GET /api/exams/:examId`, attempt lifecycle routes, and exam export routes
+
+## Runtime Stack
 
 - Runtime: Node.js 18+ (Docker image uses Node 20)
-- Framework: Express 4
+- HTTP framework: Express 4
 - Auth: Better Auth
 - Database: PostgreSQL via Prisma
-- AI: OpenAI (`gpt-4o-mini`) for on-demand generations
-- Storage: Cloudflare R2 (S3-compatible) with local fallback
-- Worker: `worker.js` with DB-backed queue, leases, retries, and stale-job recovery
+- AI generation: OpenAI `gpt-4o-mini`
+- Storage: Cloudflare R2 with local fallback
+- Background work: `worker.js` with DB-backed queue, leases, heartbeats, retries, and stale-job recovery
 
 ## Runtime Components
 
-1. API server (`server.js`)
-- Serves REST endpoints under `/api/*`
+### API server (`server.js`)
+
+- Mounts REST endpoints under `/api/*`
 - Mounts Better Auth handlers at `/api/auth/*`
-- Applies CORS, auth middleware, and admin guards
+- Applies CORS, authentication, and admin authorization
+- Normalizes document-processing state on startup
 
-2. Worker (`worker.js`)
-- Polls queue for jobs every 2 seconds
-- Runs extraction jobs and generation jobs
-- Maintains lease heartbeat while running
-- Requeues retryable failures and fails non-retryable jobs
+### Worker (`worker.js`)
 
-3. Database (PostgreSQL)
-- Stores users, sessions, documents, excerpts, jobs, generations, limits, usage, and admin/audit data
+- Polls the queue every 2 seconds
+- Processes extraction jobs and generation jobs
+- Maintains a lease heartbeat while work is active
+- Requeues retryable failures and permanently fails non-retryable work
+- Runs stale-job recovery and anomaly sweeps on intervals
 
-4. Object storage (R2)
-- Stores uploaded files by key
-- Falls back to local path when R2 env vars are not configured
+### Database (PostgreSQL)
+
+Stores:
+- auth data
+- users and limits
+- documents and excerpts
+- background jobs
+- generation history
+- canonical flashcard and exam records
+- attempts, exports, usage, anomalies, audit logs, and feature flags
+
+### Object storage
+
+- Uploaded files are stored in Cloudflare R2 when configured
+- Local-path fallback is used when R2 environment variables are absent
 
 ## Processing Pipelines
 
@@ -38,19 +107,58 @@ This document describes the backend architecture, API surface, and data flow for
 
 `Upload -> Job(extract_document) -> Worker -> DocumentExcerpt rows -> Document complete`
 
-- Upload creates a `Document` and `Job` atomically in one transaction
-- Worker extracts text from PDF/DOCX/PPTX into `DocumentExcerpt`
-- `Document.processingStatus` moves through `queued -> processing -> complete|failed`
+Detailed behavior:
+- `POST /api/upload` creates the `Document` and extraction `Job` in one transaction
+- `Document.processingStatus` starts at `queued`
+- When the worker claims the job, the document moves to `processing`
+- Extracted content is stored as `DocumentExcerpt` rows
+- On success, the document moves to `complete` and `processedAt` is populated
+- On permanent failure, the document moves to `failed` and `processingError` is exposed
+
+Progress reporting:
+- Upload returns `jobId` and `documentId`
+- `GET /api/jobs/:id` returns `status`, `progressPct`, `documentId`, `generationId`, `result`, and `errorMessage`
+- `GET /api/document/:id` exposes document-level processing state for library and document views
 
 ### Generation pipeline
 
-`POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> canonical + mirror writes`
+`POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> canonical records + document mirrors`
 
-- Generation is independent from extraction lifecycle
-- Canonical generation state is on `DocumentGeneration`
-- Generation options now allow optional `regenerationGuidance` (`reasonKey`, `customInstruction`) in addition to type-specific options
-- On completion, flashcard/exam generations dual-write canonical records (`FlashcardSet`/`FlashcardCard`, `ExamRecord`/`ExamQuestion`) and legacy mirrors
-- `Document.summary`, `Document.flashcards`, and `Document.examQuestions` remain compatibility mirrors for current frontend behavior (read path unchanged)
+Detailed behavior:
+- Generation is blocked until document extraction is `complete`
+- One latest `DocumentGeneration` row is maintained per feature type
+- Supported feature types: `summary`, `flashcards`, `exam`
+- Supported statuses: `not_requested`, `queued`, `running`, `complete`, `failed`
+- If the latest generation already matches the requested options, the backend reuses that generation instead of queueing duplicate work
+- If matching work is already `queued` or `running`, the backend returns the active generation/job instead of creating another one
+- If a different option set is already active for the same feature, the backend returns `409`
+
+Guided regeneration:
+- Regeneration is explicit through `regenerate: true`
+- All feature types accept optional `options.regenerationGuidance`
+- Supported guidance fields:
+  - `reasonKey`: `missing_parts`, `not_comprehensive_enough`, `too_short`, `too_generic`
+  - `customInstruction`: free-form instruction capped at 500 characters
+- The worker passes that guidance into the generation prompt while keeping output grounded in extracted study material
+
+Completion behavior:
+- Summary completion updates `Document.summary`
+- Flashcard completion updates `Document.flashcards` and canonical `FlashcardSet` / `FlashcardCard` records
+- Exam completion updates `Document.examQuestions` and canonical `ExamRecord` / `ExamQuestion` records
+- Current frontend reads remain compatible because document mirror fields stay populated
+
+## Navigation and State Model
+
+The redesigned product intentionally uses a simplified navigation model.
+
+Documented flow should assume:
+- entry from Home into upload
+- a dedicated processing state while extraction or generation is in progress
+- a library shelf for selecting a document
+- a document-level feature chooser
+- activity modes entered from that document view
+
+Documentation should stay aligned with the current product model and canonical user flow.
 
 ## API Surface
 
@@ -58,40 +166,34 @@ This document describes the backend architecture, API surface, and data flow for
 
 - `GET /api/health`
 
-### Auth (Better Auth)
+### Auth
 
 - `POST /api/auth/sign-up/email`
 - `POST /api/auth/sign-in/email`
 - `GET /api/auth/get-session`
 - `POST /api/auth/sign-out`
 
-### User
+### Library and document routes
 
 - `GET /api/user/me`
-
-### Documents
-
 - `POST /api/upload`
 - `GET /api/document/:id`
 - `DELETE /api/document/:id`
 - `GET /api/document/:id/excerpts`
 - `POST /api/document/:id/generations`
 - `GET /api/document/:id/generations`
+- `GET /api/jobs/:id`
 
-### Learning progress
+### Flashcard routes
 
 - `POST /api/flashcard/progress`
-- `POST /api/exam/attempt`
-
-### Canonical Phase 2 APIs (additive, no frontend switch yet)
-
-Flashcards:
 - `GET /api/document/:id/flashcard-sets`
 - `GET /api/flashcard-sets/:setId`
 - `PATCH /api/flashcard-sets/:setId/cards/:cardId/state`
-- `GET /api/flashcard-sets/:setId/incorrect-session`
 
-Exams:
+### Exam routes
+
+- `POST /api/exam/attempt`
 - `GET /api/document/:id/exams`
 - `GET /api/exams/:examId`
 - `POST /api/exams/:examId/attempts`
@@ -101,52 +203,23 @@ Exams:
 - `POST /api/exam-attempts/:attemptId/restart`
 - `GET /api/exam-attempts/:attemptId/review`
 
-Exports:
+### Export routes
+
 - `POST /api/exports/exams`
 - `GET /api/exports`
 - `GET /api/exports/:id`
 - `GET /api/exports/:id/download`
 
-### Jobs
+### Admin routes
 
-- `GET /api/jobs/:id`
-
-### Admin
-
-User/session management:
-- `GET /api/admin/users`
-- `POST /api/admin/users`
-- `GET /api/admin/users/:id`
-- `PATCH /api/admin/users/:id`
-- `DELETE /api/admin/users/:id`
-- `POST /api/admin/users/:id/suspend`
-- `POST /api/admin/users/:id/unsuspend`
-- `GET /api/admin/users/:id/files`
-- `DELETE /api/admin/users/:id/files/:documentId`
-- `GET /api/admin/users/:id/sessions`
-- `DELETE /api/admin/users/:id/sessions`
-- `DELETE /api/admin/users/:id/sessions/:sessionId`
-- `GET /api/admin/sessions`
-- `DELETE /api/admin/sessions/:sessionId`
-
-Monitoring/analytics:
-- `GET /api/admin/analytics`
-- `GET /api/admin/storage`
-- `GET /api/admin/audit-logs`
-- `GET /api/admin/usage`
-- `GET /api/admin/usage/:userId`
-- `GET /api/admin/costs/summary`
-- `GET /api/admin/users/:id/limits`
-- `PATCH /api/admin/users/:id/limits`
-- `GET /api/admin/anomalies`
-- `PATCH /api/admin/anomalies/:id/resolve`
-
-Feature flags:
-- `GET /api/admin/features`
-- `POST /api/admin/features/:key/toggle`
-- `POST /api/admin/features/:key/grant`
-- `POST /api/admin/features/:key/revoke`
-- `GET /api/admin/features/audit`
+Admin coverage includes:
+- user and session management
+- file operations
+- analytics and storage reporting
+- usage and cost reporting
+- per-user limits
+- cost anomalies
+- feature flags and feature-flag audit logs
 
 ## Data Model Summary
 
@@ -177,44 +250,49 @@ Current schema models (23):
 
 Lifecycle ownership:
 - Extraction lifecycle: `Document.processingStatus`, `processingJobId`, `processingError`, `processedAt`
-- Worker execution state: `Job.status`, `workerId`, `leaseExpiresAt`, `lastHeartbeatAt`, `retryCount`
-- Generation lifecycle/history: `DocumentGeneration.status`, `isLatest`, `output`, `options`, `errorMessage`
-- Phase 2 foundations (additive, not yet active in routes): flashcard sets/cards/state, exam records/questions, export artifacts, and expanded `ExamAttempt` fields for in-progress lifecycle
-- Phase 2 milestone 2 data migration: `npm run phase2:backfill` backfills canonical flashcards/exams/progress/attempt links from legacy mirrors and runs reconciliation validation
-- Phase 2 milestone 3 APIs: canonical study artifacts are readable through additive endpoints while legacy `/api/document/:id` payload remains the frontend contract
+- Worker execution state: `Job.status`, `workerId`, `leaseExpiresAt`, `lastHeartbeatAt`, `retryCount`, `progressPct`
+- Generation lifecycle/history: `DocumentGeneration.status`, `isLatest`, `options`, `output`, `errorMessage`, `generatedAt`
+- Flashcard activity state: `FlashcardSet`, `FlashcardCard`, `FlashcardCardState`
+- Exam activity state: `ExamRecord`, `ExamQuestion`, `ExamAttempt`, `ExportArtifact`
 
 ## Worker Safety and Recovery
 
 - Uses `SELECT ... FOR UPDATE SKIP LOCKED` to claim queued jobs
-- Sends lease heartbeats while work is active
+- Sends lease heartbeats while jobs are active
 - Sweeps stale jobs on startup and every 15 seconds
 - Retries transient failures until `maxRetries`
 - Marks non-retryable failures immediately
+- Backfills document-processing state on worker startup before claiming work
 
 ## Deployment Notes
-
-Production:
-- Railway backend: `https://ai-assistant-backend-production-ddf0.up.railway.app`
-- Branch: `production`
 
 Staging:
 - Railway backend: `https://ai-assistant-backend-staging.up.railway.app`
 - Branch: `stage`
 
-Important env vars:
+Production:
+- Railway backend: `https://ai-assistant-backend-production-ddf0.up.railway.app`
+- Branch: `production`
+
+Important environment variables:
 - `DATABASE_URL`
 - `OPENAI_API_KEY`
 - `BETTER_AUTH_SECRET`
-- `BETTER_AUTH_BASE_URL` (or `BETTER_AUTH_URL`)
+- `BETTER_AUTH_BASE_URL` or `BETTER_AUTH_URL`
 - `ADMIN_EMAILS`
-- `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`
+- `R2_ENDPOINT`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET_NAME`
 
 ## Maintenance
 
 Update this file when any of the following changes:
-- Route contracts
-- Job lifecycle behavior
-- Schema models/relationships
-- Deployment endpoints or required environment variables
+- route contracts
+- job lifecycle behavior
+- schema models or relationships
+- deployment endpoints or required environment variables
+- the Study Hub screen hierarchy or canonical user flow
 
-Last Updated: March 10, 2026
+Last Updated: March 11, 2026
+
