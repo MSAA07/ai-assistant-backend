@@ -25,6 +25,12 @@ const OUTPUT_TOKEN_LIMITS = {
   [DOCUMENT_GENERATION_TYPES.flashcards]: 1_600,
   [DOCUMENT_GENERATION_TYPES.exam]: 2_200,
 };
+const REGENERATION_REASON_LABELS = Object.freeze({
+  missing_parts: "Missing parts",
+  not_comprehensive_enough: "Not comprehensive enough",
+  too_short: "Too short",
+  too_generic: "Too generic",
+});
 
 function getClient() {
   if (!process.env.OPENAI_API_KEY) {
@@ -195,9 +201,36 @@ function buildSystemPrompt(generationType) {
   return "You produce study exams as strict JSON. Return valid JSON only.";
 }
 
+function buildRegenerationGuidancePrompt(options = {}) {
+  const guidance = options?.regenerationGuidance;
+  if (!guidance || typeof guidance !== "object") {
+    return "";
+  }
+
+  const reasonKey = normalizeString(guidance.reasonKey).toLowerCase();
+  const reasonLabel = REGENERATION_REASON_LABELS[reasonKey] || "";
+  const customInstruction = normalizeString(guidance.customInstruction);
+  const notes = [];
+
+  if (reasonLabel) {
+    notes.push(`- Improve area: ${reasonLabel}.`);
+  }
+
+  if (customInstruction) {
+    notes.push(`- Additional instruction: ${customInstruction}`);
+  }
+
+  if (notes.length === 0) {
+    return "";
+  }
+
+  return `\nRegeneration guidance:\n${notes.join("\n")}\n- Keep all claims grounded in the provided study material.\n`;
+}
+
 function buildSummaryPrompt(text, language, options, sourceTier, sampled) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const targetWords = getSummaryWordTarget(options.length, sourceTier);
+  const guidancePrompt = buildRegenerationGuidancePrompt(options);
 
   return `Create a study summary in ${languageName}.
 
@@ -210,6 +243,7 @@ Rules:
 - Use concise prose with short paragraphs or bullet-like sentences inside the text.
 - Do not add markdown fences.
 - If the source is partial, say only what is supported by the text.
+${guidancePrompt}
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
 
@@ -222,6 +256,7 @@ ${text}
 function buildFlashcardsPrompt(text, language, options, sourceTier, sampled) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const cardCount = getFlashcardTargetCount(sourceTier);
+  const guidancePrompt = buildRegenerationGuidancePrompt(options);
 
   return `Create study flashcards in ${languageName}.
 
@@ -234,6 +269,7 @@ Rules:
 - ${options.includeExplanations ? 'Also include "explanation" with 1 short sentence per card.' : 'Do not include explanations.'}
 - Cover concepts across the document instead of repeating the same point.
 - Do not add markdown fences.
+${guidancePrompt}
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
 
@@ -243,8 +279,9 @@ ${text}
 """`;
 }
 
-function buildExamPrompt(text, language, questionCount, sampled) {
+function buildExamPrompt(text, language, questionCount, options, sampled) {
   const languageName = language === "arabic" ? "Arabic" : "English";
+  const guidancePrompt = buildRegenerationGuidancePrompt(options);
 
   return `Create a study exam in ${languageName}.
 
@@ -257,6 +294,7 @@ Rules:
 - MCQ items must have exactly 4 options, and correctAnswer must match one option exactly.
 - Every question must include an explanation.
 - Do not add markdown fences.
+${guidancePrompt}
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
 
@@ -344,7 +382,7 @@ function buildPromptForGeneration({ generationType, language, options, sourceTex
 
   const effectiveQuestionCount = Math.min(options.questionCount, getExamMaxCount(sourceTier));
   return {
-    prompt: buildExamPrompt(sourceText, language, effectiveQuestionCount, sampled),
+    prompt: buildExamPrompt(sourceText, language, effectiveQuestionCount, options, sampled),
     effectiveOptions: {
       ...options,
       questionCount: effectiveQuestionCount,

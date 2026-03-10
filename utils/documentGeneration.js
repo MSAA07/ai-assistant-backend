@@ -40,6 +40,12 @@ const DOCUMENT_GENERATION_TYPE_SET = new Set(Object.values(DOCUMENT_GENERATION_T
 const DOCUMENT_GENERATION_STATUS_SET = new Set(Object.values(DOCUMENT_GENERATION_STATUS));
 const SUMMARY_LENGTH_SET = new Set(["short", "medium", "long"]);
 const EXAM_QUESTION_COUNT_SET = new Set([5, 10, 15]);
+const REGENERATION_REASON_KEY_SET = new Set([
+  "missing_parts",
+  "not_comprehensive_enough",
+  "too_short",
+  "too_generic",
+]);
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -93,6 +99,36 @@ function normalizeQuestionType(type, options) {
   }
 
   return options.length > 1 ? "mcq" : "short";
+}
+
+function normalizeRegenerationGuidance(value) {
+  const parsed = parseJsonValue(value);
+  const source = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed
+    : null;
+
+  if (!source) {
+    return null;
+  }
+
+  const reasonKey = normalizeString(source.reasonKey).toLowerCase();
+  const customInstruction = normalizeString(source.customInstruction).slice(0, 500);
+  const hasReasonKey = REGENERATION_REASON_KEY_SET.has(reasonKey);
+  const hasCustomInstruction = customInstruction.length > 0;
+
+  if (!hasReasonKey && !hasCustomInstruction) {
+    return null;
+  }
+
+  const normalized = {};
+  if (hasReasonKey) {
+    normalized.reasonKey = reasonKey;
+  }
+  if (hasCustomInstruction) {
+    normalized.customInstruction = customInstruction;
+  }
+
+  return normalized;
 }
 
 function createValidationError(message) {
@@ -183,6 +219,7 @@ export function normalizeGenerationOptions(type, options = {}) {
   const sourceOptions = parsedOptions && typeof parsedOptions === "object" && !Array.isArray(parsedOptions)
     ? parsedOptions
     : {};
+  const regenerationGuidance = normalizeRegenerationGuidance(sourceOptions.regenerationGuidance);
 
   if (generationType === DOCUMENT_GENERATION_TYPES.summary) {
     const length = normalizeString(sourceOptions.length || "medium").toLowerCase();
@@ -191,13 +228,21 @@ export function normalizeGenerationOptions(type, options = {}) {
       throw createValidationError("Invalid summary length");
     }
 
-    return { length };
+    const normalizedOptions = { length };
+    if (regenerationGuidance) {
+      normalizedOptions.regenerationGuidance = regenerationGuidance;
+    }
+    return normalizedOptions;
   }
 
   if (generationType === DOCUMENT_GENERATION_TYPES.flashcards) {
-    return {
+    const normalizedOptions = {
       includeExplanations: Boolean(sourceOptions.includeExplanations),
     };
+    if (regenerationGuidance) {
+      normalizedOptions.regenerationGuidance = regenerationGuidance;
+    }
+    return normalizedOptions;
   }
 
   const rawQuestionCount = Number(sourceOptions.questionCount ?? 10);
@@ -205,7 +250,12 @@ export function normalizeGenerationOptions(type, options = {}) {
     throw createValidationError("Invalid exam question count");
   }
 
-  return { questionCount: rawQuestionCount };
+  const normalizedOptions = { questionCount: rawQuestionCount };
+  if (regenerationGuidance) {
+    normalizedOptions.regenerationGuidance = regenerationGuidance;
+  }
+
+  return normalizedOptions;
 }
 
 export function areGenerationOptionsEqual(type, left, right) {

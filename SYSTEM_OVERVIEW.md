@@ -48,6 +48,7 @@ This document describes the backend architecture, API surface, and data flow for
 
 - Generation is independent from extraction lifecycle
 - Canonical generation state is on `DocumentGeneration`
+- Generation options now allow optional `regenerationGuidance` (`reasonKey`, `customInstruction`) in addition to type-specific options
 - On completion, flashcard/exam generations dual-write canonical records (`FlashcardSet`/`FlashcardCard`, `ExamRecord`/`ExamQuestion`) and legacy mirrors
 - `Document.summary`, `Document.flashcards`, and `Document.examQuestions` remain compatibility mirrors for current frontend behavior (read path unchanged)
 
