@@ -29,8 +29,9 @@ Document shelf for all uploaded materials.
 
 - Source: `GET /api/user/me`
 - Carries document identity, upload metadata, extraction status, and `generationState`
+- Supports rename through `PATCH /api/document/:id`
 - Supports deletion through `DELETE /api/document/:id`
-- Uses uploaded names from `originalName`; this backend does not currently expose a rename endpoint
+- Uses uploaded names from `originalName`
 
 ### 2. Study Hub Document
 
@@ -92,6 +93,7 @@ Better Auth is mounted at `/api/auth/*`.
 - `GET /api/user/me`
 - `POST /api/upload`
 - `GET /api/document/:id`
+- `PATCH /api/document/:id`
 - `DELETE /api/document/:id`
 - `GET /api/document/:id/excerpts`
 - `POST /api/document/:id/generations`
@@ -175,4 +177,3 @@ Current deployments:
 - `AGENTS.md`: repository-specific agent instructions
 
 Last Updated: March 11, 2026
-

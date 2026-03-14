@@ -178,6 +178,7 @@ Documentation should stay aligned with the current product model and canonical u
 - `GET /api/user/me`
 - `POST /api/upload`
 - `GET /api/document/:id`
+- `PATCH /api/document/:id`
 - `DELETE /api/document/:id`
 - `GET /api/document/:id/excerpts`
 - `POST /api/document/:id/generations`
@@ -295,4 +296,3 @@ Update this file when any of the following changes:
 - the Study Hub screen hierarchy or canonical user flow
 
 Last Updated: March 11, 2026
-

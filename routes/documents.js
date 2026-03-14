@@ -146,6 +146,10 @@ function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) 
   return Math.min(Math.max(parsed, min), max);
 }
 
+function normalizeDocumentName(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 async function queueGenerationJob(tx, { documentId, userId, generationType, options, regenerate }) {
   await tx.$queryRaw`
     SELECT "id"
@@ -586,6 +590,65 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         },
       });
       return jsonError(res, error, "Failed to fetch document excerpts");
+    }
+  });
+
+  router.patch("/document/:id", requireAuth, async (req, res) => {
+    try {
+      const document = await getAuthorizedDocument(prisma, req.params.id, req.session.user, {
+        select: {
+          id: true,
+          userId: true,
+          originalName: true,
+        },
+      });
+
+      const nextOriginalName = normalizeDocumentName(req.body?.originalName);
+
+      if (!nextOriginalName) {
+        throw createHttpError(400, "Document name is required", "invalid_document_name");
+      }
+
+      if (nextOriginalName.length > 255) {
+        throw createHttpError(400, "Document name is too long", "invalid_document_name");
+      }
+
+      if (nextOriginalName === document.originalName) {
+        return res.json({
+          success: true,
+          documentId: document.id,
+          originalName: document.originalName,
+          message: "Document name unchanged",
+        });
+      }
+
+      const updatedDocument = await prisma.document.update({
+        where: { id: document.id },
+        data: {
+          originalName: nextOriginalName,
+        },
+        select: {
+          id: true,
+          originalName: true,
+        },
+      });
+
+      return res.json({
+        success: true,
+        documentId: updatedDocument.id,
+        originalName: updatedDocument.originalName,
+        message: "Document renamed",
+      });
+    } catch (error) {
+      console.error("Error renaming document:", error);
+      captureSentryException(error, {
+        tags: { route: "documents", action: "rename" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+        extra: {
+          documentId: req.params.id,
+        },
+      });
+      return jsonError(res, error, "Failed to rename document");
     }
   });
 

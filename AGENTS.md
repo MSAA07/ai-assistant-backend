@@ -71,6 +71,7 @@ Library and document flow:
 - `GET /api/user/me`
 - `POST /api/upload`
 - `GET /api/document/:id`
+- `PATCH /api/document/:id`
 - `DELETE /api/document/:id`
 - `GET /api/document/:id/excerpts`
 - `POST /api/document/:id/generations`
@@ -144,4 +145,3 @@ Update docs in the same commit when changing:
 Keep docs, issues, and review notes aligned with current Study Hub terminology and flow.
 
 Last Updated: March 11, 2026
-
