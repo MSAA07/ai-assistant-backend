@@ -1,179 +1,112 @@
-# System Overview
+# System Overview (Backend)
 
-This document describes the current backend architecture for the AI Study Assistant after the Study Hub redesign.
+This document describes the current implemented backend architecture.
 
-## Product-Aligned View
+## Product-Aligned Model
 
-The current product is organized around three Study Hub layers:
+The backend currently supports:
 
-1. Study Hub Library
-2. Study Hub Document
-3. Activity Modes
+- Study Hub Library
+- Study Hub Document
+- study activity APIs
 
-The canonical user flow is:
+The canonical user-facing route model is owned by the frontend, but the backend owns the data contracts behind that model.
 
-`Home -> Upload document -> Choose generation options -> Processing state -> Study Hub Library -> Study Hub Document -> Activity Mode -> Summary | Flashcards | Mock Exam`
+## Lifecycle Ownership
 
-The backend does not own the frontend screens, but it does own the data contracts and background processing that make each screen work.
+Document processing lifecycle:
 
-## Study Hub Layers and Backend Contracts
+- source: `Document.processingStatus`
+- values: `queued`, `processing`, `complete`, `failed`
+- fields: `processingJobId`, `processingError`, `processedAt`
 
-### Study Hub Library
+Job execution lifecycle:
 
-Purpose:
-- Show a grid of uploaded materials
-- Surface extraction/generation readiness without loading full activity data
-- Support document entry and document deletion
+- source: `Job.status`
+- values: `queued`, `running`, `succeeded`, `failed`
+- fields: `progressPct`, `retryCount`, `workerId`, `leaseExpiresAt`, `lastHeartbeatAt`
 
-Backend contract:
-- `GET /api/user/me`
-- Returns the authenticated user plus their documents ordered by newest first
-- Each document includes `processingStatus`, `processingJobId` when active, and a per-feature `generationState`
-- Document cards are intentionally lightweight and derive their visible title from `originalName`
+Generation lifecycle:
 
-### Study Hub Document
+- source: `DocumentGeneration.status`
+- values: `not_requested`, `queued`, `running`, `complete`, `failed`
+- fields: `jobId`, `options`, `output`, `errorMessage`, `generatedAt`, `isLatest`
 
-Purpose:
-- Present a single selected document
-- Show feature entry cards for Summary, Flashcards, and Mock Exam
-- Reflect the state of each feature card: `not_requested`, `queued`, `running`, `complete`, or `failed`
+Compatibility mirrors:
 
-Backend contract:
-- `GET /api/document/:id`
-- `GET /api/document/:id/generations`
-- `POST /api/document/:id/generations`
+- `Document.summary`
+- `Document.flashcards`
+- `Document.examQuestions`
 
-Notes:
-- The backend serializes the selected document with `generationState.summary`, `generationState.flashcards`, and `generationState.exam`
-- Feature cards should be driven directly by those states.
-
-### Activity Modes
-
-Purpose:
-- Enter the actual study experience for a generated feature
-- Keep navigation minimal: library -> document -> activity
-
-Backend contract:
-- Summary reader: `GET /api/document/:id`
-- Flashcards: `GET /api/document/:id/flashcard-sets`, `GET /api/flashcard-sets/:setId`, `PATCH /api/flashcard-sets/:setId/cards/:cardId/state`
-- Mock exam: `GET /api/document/:id/exams`, `GET /api/exams/:examId`, attempt lifecycle routes, and exam export routes
-
-## Runtime Stack
-
-- Runtime: Node.js 18+ (Docker image uses Node 20)
-- HTTP framework: Express 4
-- Auth: Better Auth
-- Database: PostgreSQL via Prisma
-- AI generation: OpenAI `gpt-4o-mini`
-- Storage: Cloudflare R2 with local fallback
-- Background work: `worker.js` with DB-backed queue, leases, heartbeats, retries, and stale-job recovery
+Those mirror fields remain in the serialized document contract even though canonical generation ownership lives on `DocumentGeneration`.
 
 ## Runtime Components
 
-### API server (`server.js`)
+API server:
 
-- Mounts REST endpoints under `/api/*`
-- Mounts Better Auth handlers at `/api/auth/*`
-- Applies CORS, authentication, and admin authorization
-- Normalizes document-processing state on startup
+- `server.js`
+- mounts Better Auth under `/api/auth/*`
+- mounts REST routes under `/api/*`
+- runs schema and document-state reconciliation on startup
 
-### Worker (`worker.js`)
+Worker:
 
-- Polls the queue every 2 seconds
-- Processes extraction jobs and generation jobs
-- Maintains a lease heartbeat while work is active
-- Requeues retryable failures and permanently fails non-retryable work
-- Runs stale-job recovery and anomaly sweeps on intervals
+- `worker.js`
+- polls queued jobs every 2 seconds
+- claims jobs through `SELECT ... FOR UPDATE SKIP LOCKED`
+- maintains heartbeats and leases
+- retries retryable failures and fails non-retryable ones
+- sweeps stale jobs
 
-### Database (PostgreSQL)
+Persistence:
 
-Stores:
-- auth data
-- users and limits
-- documents and excerpts
-- background jobs
-- generation history
-- canonical flashcard and exam records
-- attempts, exports, usage, anomalies, audit logs, and feature flags
+- PostgreSQL via Prisma
+- Cloudflare R2 when configured, local absolute-path fallback otherwise
 
-### Object storage
+Extraction:
 
-- Uploaded files are stored in Cloudflare R2 when configured
-- Local-path fallback is used when R2 environment variables are absent
+- `utils/extractionPipeline.js`
+- PDF via `pdf-parse`
+- DOCX via `mammoth`
+- PPTX via `scripts/extract_pptx.py`
+
+Generation:
+
+- `utils/generationPipeline.js`
+- `utils/studyMaterials.js`
+- current model constant: `gpt-4o-mini`
 
 ## Processing Pipelines
 
-### Extraction pipeline
+Extraction pipeline:
 
-`Upload -> Job(extract_document) -> Worker -> DocumentExcerpt rows -> Document complete`
+`POST /api/upload -> Job(extract_document) -> worker -> DocumentExcerpt rows -> Document complete`
 
-Detailed behavior:
-- `POST /api/upload` creates the `Document` and extraction `Job` in one transaction
-- `Document.processingStatus` starts at `queued`
-- When the worker claims the job, the document moves to `processing`
-- Extracted content is stored as `DocumentExcerpt` rows
-- On success, the document moves to `complete` and `processedAt` is populated
-- On permanent failure, the document moves to `failed` and `processingError` is exposed
+Behavior:
 
-Progress reporting:
-- Upload returns `jobId` and `documentId`
-- `GET /api/jobs/:id` returns `status`, `progressPct`, `documentId`, `generationId`, `result`, and `errorMessage`
-- `GET /api/document/:id` exposes document-level processing state for library and document views
+- upload creates the `Document` and extraction `Job`
+- the document starts at `processingStatus=queued`
+- the worker moves the document to `processing` when the job is claimed
+- extracted text becomes `DocumentExcerpt` rows
+- success moves the document to `complete`
+- permanent failure moves the document to `failed`
 
-### Generation pipeline
+Generation pipeline:
 
-`POST /api/document/:id/generations -> Job(generate_*) -> Worker -> DocumentGeneration -> canonical records + document mirrors`
+`POST /api/document/:id/generations -> Job(generate_*) -> worker -> DocumentGeneration -> canonical records + document mirrors`
 
-Detailed behavior:
-- Generation is blocked until document extraction is `complete`
-- One latest `DocumentGeneration` row is maintained per feature type
-- Supported feature types: `summary`, `flashcards`, `exam`
-- Supported statuses: `not_requested`, `queued`, `running`, `complete`, `failed`
-- If the latest generation already matches the requested options, the backend reuses that generation instead of queueing duplicate work
-- If matching work is already `queued` or `running`, the backend returns the active generation/job instead of creating another one
-- If a different option set is already active for the same feature, the backend returns `409`
+Behavior:
 
-Guided regeneration:
-- Regeneration is explicit through `regenerate: true`
-- All feature types accept optional `options.regenerationGuidance`
-- Supported guidance fields:
-  - `reasonKey`: `missing_parts`, `not_comprehensive_enough`, `too_short`, `too_generic`
-  - `customInstruction`: free-form instruction capped at 500 characters
-- The worker passes that guidance into the generation prompt while keeping output grounded in extracted study material
-
-Completion behavior:
-- Summary completion updates `Document.summary`
-- Flashcard completion updates `Document.flashcards` and canonical `FlashcardSet` / `FlashcardCard` records
-- Exam completion updates `Document.examQuestions` and canonical `ExamRecord` / `ExamQuestion` records
-- Current frontend reads remain compatible because document mirror fields stay populated
-
-## Navigation and State Model
-
-The redesigned product intentionally uses a simplified navigation model.
-
-Documented flow should assume:
-- entry from Home into upload
-- a dedicated processing state while extraction or generation is in progress
-- a library shelf for selecting a document
-- a document-level feature chooser
-- activity modes entered from that document view
-
-Documentation should stay aligned with the current product model and canonical user flow.
+- generation is blocked until extraction is `complete`
+- one latest `DocumentGeneration` row is maintained per feature type
+- matching completed generations can be reused
+- matching active generations can be reused
+- active conflicting option sets return `409`
+- successful flashcard/exam generation updates canonical study records and document mirrors
 
 ## API Surface
 
-### Health
-
-- `GET /api/health`
-
-### Auth
-
-- `POST /api/auth/sign-up/email`
-- `POST /api/auth/sign-in/email`
-- `GET /api/auth/get-session`
-- `POST /api/auth/sign-out`
-
-### Library and document routes
+Core Study Hub APIs:
 
 - `GET /api/user/me`
 - `POST /api/upload`
@@ -185,16 +118,17 @@ Documentation should stay aligned with the current product model and canonical u
 - `GET /api/document/:id/generations`
 - `GET /api/jobs/:id`
 
-### Flashcard routes
+Legacy compatibility activity APIs:
 
 - `POST /api/flashcard/progress`
+- `POST /api/exam/attempt`
+
+Canonical study activity APIs:
+
 - `GET /api/document/:id/flashcard-sets`
 - `GET /api/flashcard-sets/:setId`
 - `PATCH /api/flashcard-sets/:setId/cards/:cardId/state`
-
-### Exam routes
-
-- `POST /api/exam/attempt`
+- `GET /api/flashcard-sets/:setId/incorrect-session`
 - `GET /api/document/:id/exams`
 - `GET /api/exams/:examId`
 - `POST /api/exams/:examId/attempts`
@@ -203,28 +137,27 @@ Documentation should stay aligned with the current product model and canonical u
 - `POST /api/exam-attempts/:attemptId/submit`
 - `POST /api/exam-attempts/:attemptId/restart`
 - `GET /api/exam-attempts/:attemptId/review`
-
-### Export routes
-
 - `POST /api/exports/exams`
 - `GET /api/exports`
 - `GET /api/exports/:id`
 - `GET /api/exports/:id/download`
 
-### Admin routes
+Admin coverage:
 
-Admin coverage includes:
-- user and session management
-- file operations
-- analytics and storage reporting
+- users
+- files
+- sessions
+- analytics
+- storage
 - usage and cost reporting
 - per-user limits
-- cost anomalies
-- feature flags and feature-flag audit logs
+- anomaly resolution
+- feature flags and flag audit
 
-## Data Model Summary
+## Current Prisma Model Set
 
-Current schema models (23):
+Current schema models:
+
 - `User`
 - `Session`
 - `Account`
@@ -242,57 +175,29 @@ Current schema models (23):
 - `ExamQuestion`
 - `ExportArtifact`
 - `AuditLog`
-- `UsageEvent`
-- `UserLimit`
-- `CostAnomalyAlert`
 - `FeatureFlag`
 - `FeatureFlagAssignment`
 - `FeatureFlagAuditLog`
+- `UserLimit`
+- `CostAnomalyAlert`
+- `UsageEvent`
 
-Lifecycle ownership:
-- Extraction lifecycle: `Document.processingStatus`, `processingJobId`, `processingError`, `processedAt`
-- Worker execution state: `Job.status`, `workerId`, `leaseExpiresAt`, `lastHeartbeatAt`, `retryCount`, `progressPct`
-- Generation lifecycle/history: `DocumentGeneration.status`, `isLatest`, `options`, `output`, `errorMessage`, `generatedAt`
-- Flashcard activity state: `FlashcardSet`, `FlashcardCard`, `FlashcardCardState`
-- Exam activity state: `ExamRecord`, `ExamQuestion`, `ExamAttempt`, `ExportArtifact`
+Current migration folders:
 
-## Worker Safety and Recovery
+- `20260216073943_init`
+- `20260302194206_add_jobs_flags_limits_usage_excerpts`
+- `20260308000000_document_processing_lifecycle_stabilization`
+- `20260309000000_generation_architecture_f2`
+- `20260310010000_phase2_foundations_m1`
 
-- Uses `SELECT ... FOR UPDATE SKIP LOCKED` to claim queued jobs
-- Sends lease heartbeats while jobs are active
-- Sweeps stale jobs on startup and every 15 seconds
-- Retries transient failures until `maxRetries`
-- Marks non-retryable failures immediately
-- Backfills document-processing state on worker startup before claiming work
+## Maintenance Triggers
 
-## Deployment Notes
+Update this file when any of these change:
 
-Staging:
-- Railway backend: `https://ai-assistant-backend-staging.up.railway.app`
-- Branch: `stage`
-
-Production:
-- Railway backend: `https://ai-assistant-backend-production-ddf0.up.railway.app`
-- Branch: `production`
-
-Important environment variables:
-- `DATABASE_URL`
-- `OPENAI_API_KEY`
-- `BETTER_AUTH_SECRET`
-- `BETTER_AUTH_BASE_URL` or `BETTER_AUTH_URL`
-- `ADMIN_EMAILS`
-- `R2_ENDPOINT`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_BUCKET_NAME`
-
-## Maintenance
-
-Update this file when any of the following changes:
+- lifecycle ownership
 - route contracts
-- job lifecycle behavior
-- schema models or relationships
-- deployment endpoints or required environment variables
-- the Study Hub screen hierarchy or canonical user flow
+- worker claim/retry/recovery behavior
+- canonical study records or mirror-field behavior
+- Prisma model set or migration history
 
-Last Updated: March 11, 2026
+Last Updated: March 23, 2026

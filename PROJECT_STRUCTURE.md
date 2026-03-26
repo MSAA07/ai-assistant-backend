@@ -1,6 +1,6 @@
-# Project Structure
+# Project Structure (Backend)
 
-This document maps the current backend repository structure and shows how the codebase supports the Study Hub flow.
+This file maps the current backend repository structure.
 
 ## Root Tree
 
@@ -13,7 +13,6 @@ ai-assistant-backend/
 |-- PROJECT_STRUCTURE.md
 |-- DEPLOY_TRIGGER.md
 |-- package.json
-|-- package-lock.json
 |-- Dockerfile
 |-- railway.toml
 |-- nixpacks.toml
@@ -30,128 +29,87 @@ ai-assistant-backend/
 `-- utils/
 ```
 
-## Top-Level Operational Files
+## Top-Level Responsibilities
 
-- `server.js`: boots the API, mounts all routers, and normalizes schema-backed document state on startup
-- `worker.js`: long-running worker for extraction and generation jobs with leases, retries, and stale-job recovery
+- `server.js`: API entry point and startup reconciliation
+- `worker.js`: extraction/generation worker, retries, heartbeats, stale-job recovery
 - `auth.js`: Better Auth configuration
-- `backfill-storage.js`: recomputes `User.storageUsed`
-- `reset-db.js`: destructive reset helper for non-production environments
+- `backfill-storage.js`: recompute `User.storageUsed`
+- `reset-db.js`: destructive non-production reset helper
 
-## Documentation Files
+## Routes
 
-- `README.md`: project entry point, current product flow, and setup guide
-- `SYSTEM_OVERVIEW.md`: architecture, lifecycle, API map, and deployment notes
-- `PROJECT_STRUCTURE.md`: repository layout and responsibility map
-- `agent.md`: practical contributor handbook for backend work
-- `AGENTS.md`: repository-specific agent instructions
-- `DEPLOY_TRIGGER.md`: no-op deployment marker documentation
+- `routes/user.js`: Study Hub Library bootstrap
+- `routes/documents.js`: upload, read, rename, delete, excerpts, generation queueing
+- `routes/jobs.js`: job execution lifecycle polling
+- `routes/flashcards.js`: legacy flashcard progress plus canonical flashcard-set routes
+- `routes/exams.js`: legacy exam attempt plus canonical exam and attempt routes
+- `routes/exports.js`: export artifact routes
+- `routes/admin.js`: admin APIs for users, files, sessions, analytics, usage, costs, limits, anomalies, and feature flags
 
-## Directories
+## Middleware
 
-### `routes/`
+- `middleware/auth.js`: `requireAuth`
+- `middleware/adminGuard.js`: `requireAdmin`
+- `middleware/rateLimit.js`: generation throttling and shared in-memory rate limiting
+- `middleware/featureFlag.js`: feature-flag request helpers
 
-Routes are grouped by product layer and support flow.
+## Core Utilities
 
-- `documents.js`: upload, document read/delete, excerpts, generation queueing, generation state reads
-- `user.js`: authenticated Study Hub Library bootstrap via `GET /api/user/me`
-- `jobs.js`: live processing polling for queued/running jobs
-- `flashcards.js`: compatibility progress route plus canonical flashcard-set and card-state routes
-- `exams.js`: compatibility exam-attempt route plus canonical exam and attempt lifecycle routes
-- `exports.js`: exam export creation, listing, lookup, and download routes
-- `admin.js`: admin APIs for users, sessions, storage, analytics, usage, costs, anomalies, and feature flags
+Lifecycle and serialization:
 
-### `middleware/`
-
-- `auth.js`: Better Auth session guard (`requireAuth`) and admin auto-elevation by configured email
-- `adminGuard.js`: admin-only authorization for `/api/admin/*`
-- `rateLimit.js`: in-memory request limiter used for generation throttling
-
-### `utils/`
-
-Core lifecycle helpers:
-- `documentGeneration.js`: generation types, option validation, state serialization, and helper constants
-- `documentStatus.js`: document processing normalization and serialized library/document payloads
-- `extractionPipeline.js`: extraction job processor for PDF, DOCX, and PPTX files
-- `generationPipeline.js`: generation job processor and usage recording
-- `jobQueue.js`: queue claiming, progress updates, completion/failure transitions, requeueing, and stale-job recovery
-- `studyMaterials.js`: OpenAI prompt construction, source sampling, and output normalization
-- `storage.js`: R2 and local file storage operations
-
-Operational support:
-- `auditLog.js`: admin audit helper
-- `costGuard.js`: usage recording and anomaly checks
-- `featureFlags.js`: feature-flag reads and assignment helpers
-- `limits.js`: daily/monthly guardrails
-- `sentry.js`: Sentry bootstrap and capture helpers
-- `serializers.js`: JSON-safe serializers for BigInt and Decimal values
-
-Canonical artifact and compatibility helpers:
-- `phase2Backfill.js`: compatibility migration utilities between document mirrors and canonical study records
-- `phase2Flashcards.js`: flashcard set serialization helpers
-- `phase2Exams.js`: exam serialization helpers
-- `phase2Exports.js`: export artifact serialization helpers
-- `phase2GenerationRecords.js`: canonical generation record helpers
-- `phase2SourceRefs.js`: source-reference utilities for canonical artifacts
-
-### `prisma/`
-
-- `schema.prisma`: current 23-model PostgreSQL schema
-- `seed.js`: default admin seeding
-- `migrations/`: Prisma migration history
-
-### `scripts/`
-
-- `extract_pptx.py`: PPTX extraction helper invoked by the backend pipeline
-- `backfill-phase2-canonical.js`: compatibility backfill and reconciliation script for canonical flashcard/exam records
-
-## Product Flow Mapping
-
-### Home and upload
-
-Primary files:
-- `routes/documents.js`
-- `utils/storage.js`
-- `utils/extractionPipeline.js`
-- `utils/jobQueue.js`
-
-### Processing state
-
-Primary files:
-- `routes/jobs.js`
 - `utils/documentStatus.js`
-- `utils/jobQueue.js`
-- `worker.js`
-
-### Study Hub Library
-
-Primary files:
-- `routes/user.js`
-- `utils/documentStatus.js`
-
-### Study Hub Document
-
-Primary files:
-- `routes/documents.js`
 - `utils/documentGeneration.js`
-- `utils/documentStatus.js`
+- `utils/jobQueue.js`
 
-### Activity Modes
+Worker processors:
 
-Primary files:
-- `routes/flashcards.js`
-- `routes/exams.js`
-- `routes/exports.js`
+- `utils/extractionPipeline.js`
+- `utils/generationPipeline.js`
+- `utils/studyMaterials.js`
+
+Canonical study-record support:
+
+- `utils/phase2Backfill.js`
 - `utils/phase2Flashcards.js`
 - `utils/phase2Exams.js`
 - `utils/phase2Exports.js`
+- `utils/phase2GenerationRecords.js`
+- `utils/phase2SourceRefs.js`
 
-## Notes
+Operational support:
 
-- Runtime uploads are written under `/tmp/uploads` before moving to R2 or using local-path fallback.
-- `Document`, `DocumentGeneration`, and `Job` are the core entities behind library cards, document feature cards, and processing states.
-- The backend keeps document mirror fields (`summary`, `flashcards`, `examQuestions`) for the current read contract while also maintaining canonical flashcard and exam records.
-- Documentation and implementation should describe the simplified Study Hub model consistently.
+- `utils/storage.js`
+- `utils/limits.js`
+- `utils/featureFlags.js`
+- `utils/costGuard.js`
+- `utils/auditLog.js`
+- `utils/sentry.js`
+- `utils/serializers.js`
 
-Last Updated: March 11, 2026
+## Prisma Layer
 
+- `prisma/schema.prisma`: current schema
+- `prisma/seed.js`: seed entry
+- `prisma/migrations/`: migration history
+
+Current migration folders:
+
+- `20260216073943_init`
+- `20260302194206_add_jobs_flags_limits_usage_excerpts`
+- `20260308000000_document_processing_lifecycle_stabilization`
+- `20260309000000_generation_architecture_f2`
+- `20260310010000_phase2_foundations_m1`
+
+## Scripts
+
+- `scripts/extract_pptx.py`: PPTX extraction helper
+- `scripts/backfill-phase2-canonical.js`: legacy-to-canonical backfill and reconciliation
+
+## Structure Notes
+
+- `Document`, `DocumentGeneration`, and `Job` are distinct ownership layers and should be documented separately.
+- Canonical flashcard and exam records are Prisma-backed and coexist with document mirror fields.
+- `POST /api/upload` and worker processing still use `/tmp/uploads` during local/temp file handling before R2 or local-path persistence is finalized.
+
+Last Updated: March 23, 2026

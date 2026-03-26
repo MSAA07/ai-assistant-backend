@@ -35,6 +35,8 @@ app.use(
       const allowedOrigins = [
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "https://my-ai-assistant-ypzx.vercel.app",
         "https://my-ai-assistant-git-stage-msaa07.vercel.app",
         "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
