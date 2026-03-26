@@ -22,6 +22,12 @@ import { serializeDocument } from "../utils/documentStatus.js";
 import { isFeatureEnabledIfConfigured } from "../utils/featureFlags.js";
 import { getMonthlyLimit } from "../utils/limits.js";
 import { captureSentryException } from "../utils/sentry.js";
+import {
+  buildStudyPdfBuffer,
+  buildStudyPdfFileName,
+  hasStudyExportContent,
+  normalizeStudyExportFeature,
+} from "../utils/studyPdf.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -516,6 +522,47 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
       });
       return jsonError(res, error, "Failed to fetch document");
+    }
+  });
+
+  router.get("/document/:id/export-pdf", requireAuth, async (req, res) => {
+    try {
+      const feature = normalizeStudyExportFeature(req.query?.feature);
+      if (!feature) {
+        throw createHttpError(400, "feature must be one of summary, flashcards, or exam", "invalid_export_feature");
+      }
+
+      const document = await getAuthorizedDocument(prisma, req.params.id, req.session.user, documentDetailsInclude);
+      const serializedDocument = serializeDocument(document, {
+        excerptCount: document._count?.excerpts ?? 0,
+      });
+
+      if (serializedDocument.processingStatus !== "complete") {
+        throw createHttpError(409, "Document content is not ready for export", "document_not_ready");
+      }
+
+      if (!hasStudyExportContent(serializedDocument, feature)) {
+        throw createHttpError(409, "Selected study content is not ready for export", "export_not_ready");
+      }
+
+      const pdfBuffer = await buildStudyPdfBuffer(serializedDocument, feature);
+      const fileName = buildStudyPdfFileName(serializedDocument, feature);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+      res.setHeader("Content-Length", pdfBuffer.length);
+      return res.send(pdfBuffer);
+    } catch (error) {
+      console.error("Error exporting study PDF:", error);
+      captureSentryException(error, {
+        tags: { route: "documents", action: "export_pdf" },
+        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+        extra: {
+          documentId: req.params.id,
+          feature: req.query?.feature,
+        },
+      });
+      return jsonError(res, error, "Failed to export study PDF");
     }
   });
 
