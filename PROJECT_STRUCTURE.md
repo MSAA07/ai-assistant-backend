@@ -41,7 +41,7 @@ ai-assistant-backend/
 
 - `routes/user.js`: Study Hub Library bootstrap
 - `routes/documents.js`: upload, read, rename, delete, excerpts, generation queueing
-- `routes/jobs.js`: job execution lifecycle polling
+- `routes/jobs.js`: job execution lifecycle polling used by the guided upload flow and study surfaces
 - `routes/flashcards.js`: legacy flashcard progress plus canonical flashcard-set routes
 - `routes/exams.js`: legacy exam attempt plus canonical exam and attempt routes
 - `routes/exports.js`: export artifact routes
@@ -111,5 +111,6 @@ Current migration folders:
 - `Document`, `DocumentGeneration`, and `Job` are distinct ownership layers and should be documented separately.
 - Canonical flashcard and exam records are Prisma-backed and coexist with document mirror fields.
 - `POST /api/upload` and worker processing still use `/tmp/uploads` during local/temp file handling before R2 or local-path persistence is finalized.
+- `utils/extractionPipeline.js` sanitizes extracted excerpt content before `DocumentExcerpt` persistence so invalid UTF-8 control bytes do not reach PostgreSQL.
 
-Last Updated: March 23, 2026
+Last Updated: March 27, 2026

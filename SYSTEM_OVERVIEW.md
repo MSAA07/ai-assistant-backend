@@ -8,6 +8,7 @@ The backend currently supports:
 
 - Study Hub Library
 - Study Hub Document
+- guided post-upload selection and progress handoff from Home
 - study activity APIs
 
 The canonical user-facing route model is owned by the frontend, but the backend owns the data contracts behind that model.
@@ -69,6 +70,7 @@ Extraction:
 - PDF via `pdf-parse`
 - DOCX via `mammoth`
 - PPTX via `scripts/extract_pptx.py`
+- extracted excerpt text is sanitized before `DocumentExcerpt` rows are inserted so invalid UTF-8 control bytes cannot be persisted
 
 Generation:
 
@@ -86,8 +88,9 @@ Behavior:
 
 - upload creates the `Document` and extraction `Job`
 - the document starts at `processingStatus=queued`
+- the Home guided upload step can poll `GET /api/jobs/:id` plus `GET /api/document/:id` while extraction is still running
 - the worker moves the document to `processing` when the job is claimed
-- extracted text becomes `DocumentExcerpt` rows
+- extracted text is sanitized, then stored as `DocumentExcerpt` rows
 - success moves the document to `complete`
 - permanent failure moves the document to `failed`
 
@@ -200,4 +203,4 @@ Update this file when any of these change:
 - canonical study records or mirror-field behavior
 - Prisma model set or migration history
 
-Last Updated: March 23, 2026
+Last Updated: March 27, 2026
