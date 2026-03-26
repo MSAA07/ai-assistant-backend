@@ -22,6 +22,25 @@ function buildExtractionResult(documentId, excerptCount, excerptSource) {
   };
 }
 
+function sanitizeExtractedText(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value
+    .replace(/\u0000/g, "")
+    .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+}
+
+function sanitizeExcerpt(excerpt) {
+  return {
+    ...excerpt,
+    content: sanitizeExtractedText(excerpt?.content),
+  };
+}
+
 export async function processExtraction(prisma, job, workerId) {
   const documentId = job.documentId ?? job.payload?.documentId;
   const filePath = job.payload?.filePath;
@@ -110,6 +129,10 @@ export async function processExtraction(prisma, job, workerId) {
     } else {
       throw new Error(`Unsupported file type: ${mimeType}`);
     }
+
+    excerpts = excerpts
+      .map(sanitizeExcerpt)
+      .filter((excerpt) => excerpt.content.length > 0);
 
     const usableExcerptCount = countUsableExcerpts(excerpts);
     if (usableExcerptCount === 0) {
