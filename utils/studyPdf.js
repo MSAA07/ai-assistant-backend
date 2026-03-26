@@ -49,7 +49,7 @@ function renderMeta(doc, documentTitle, featureLabel) {
     .font("Helvetica")
     .fontSize(PDF_LAYOUT.smallFontSize)
     .fillColor("#6B7280")
-    .text(`Study Hub export • ${featureLabel}`, { lineGap: 2 });
+    .text(`Study Hub export - ${featureLabel}`, { lineGap: 2 });
 
   doc
     .text(`Generated ${new Date().toLocaleString("en-US")}`, { lineGap: 2 });
@@ -100,7 +100,7 @@ function renderSummary(doc, summary) {
     const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
     if (lines.length > 0 && lines.every((line) => /^-\s+/.test(line))) {
       for (const item of lines) {
-        renderParagraph(doc, `• ${item.replace(/^-\s+/, "")}`, { spacing: 0.35 });
+        renderParagraph(doc, `- ${item.replace(/^-\s+/, "")}`, { spacing: 0.35 });
       }
       doc.moveDown(0.35);
       continue;
@@ -111,14 +111,13 @@ function renderSummary(doc, summary) {
 }
 
 function renderFlashcards(doc, flashcards = []) {
-  flashcards.forEach((flashcard, index) => {
-    renderSectionHeading(doc, `Card ${index + 1}`);
-    renderParagraph(doc, `Question: ${normalizeString(flashcard?.question)}`, { bold: true, spacing: 0.35 });
-    renderParagraph(doc, `Answer: ${normalizeString(flashcard?.answer)}`, { spacing: 0.35 });
+  flashcards.forEach((flashcard) => {
+    renderParagraph(doc, `Q: ${normalizeString(flashcard?.question)}`, { bold: true, spacing: 0.3 });
+    renderParagraph(doc, `A: ${normalizeString(flashcard?.answer)}`, { spacing: 0.35 });
 
     const explanation = normalizeString(flashcard?.explanation);
     if (explanation) {
-      renderParagraph(doc, `Explanation: ${explanation}`, { color: "#4B5563", spacing: 0.5 });
+      renderParagraph(doc, `Explanation: ${explanation}`, { color: "#4B5563", spacing: 0.75 });
     }
   });
 }
@@ -150,7 +149,7 @@ export function normalizeStudyExportFeature(value) {
 export function buildStudyPdfFileName(document, feature) {
   const documentTitle = sanitizeFileSegment(document?.originalName || document?.title || document?.filename, "study-document");
   const featureLabel = sanitizeFileSegment(feature, "study");
-  return `${documentTitle}-${featureLabel}.pdf`;
+  return `${featureLabel}-${documentTitle}.pdf`;
 }
 
 export function hasStudyExportContent(document, feature) {
