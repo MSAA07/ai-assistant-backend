@@ -2,7 +2,7 @@ import express from "express";
 
 import { captureSentryException } from "../utils/sentry.js";
 import { LEGACY_MIGRATION_SOURCE_TYPE } from "../utils/phase2Backfill.js";
-import { serializeExamRecord } from "../utils/phase2Exams.js";
+import { normalizeStoredExamQuestions, serializeExamRecord } from "../utils/phase2Exams.js";
 
 function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) {
   const parsed = Number.parseInt(value, 10);
@@ -277,19 +277,23 @@ export const createCanonicalExamsRouter = ({ prisma, requireAuth }) => {
           orderBy: [{ createdAt: "desc" }],
           skip,
           take: limit,
-          select: {
-            id: true,
-            title: true,
-            questionCount: true,
-            generationId: true,
-            createdAt: true,
+          include: {
+            questions: {
+              orderBy: [{ position: "asc" }],
+            },
           },
         }),
       ]);
 
       return res.json({
         documentId: req.params.id,
-        exams,
+        exams: exams.map((exam) => ({
+          id: exam.id,
+          title: exam.title,
+          questionCount: normalizeStoredExamQuestions(exam.questions).length,
+          generationId: exam.generationId,
+          createdAt: exam.createdAt,
+        })),
         pagination: {
           page,
           limit,
@@ -320,7 +324,7 @@ export const createCanonicalExamsRouter = ({ prisma, requireAuth }) => {
       });
 
       return res.json({
-        exam: serializeExamRecord(ownership.examRecord, questions),
+        exam: serializeExamRecord(ownership.examRecord, normalizeStoredExamQuestions(questions)),
       });
     } catch (error) {
       console.error("Error fetching exam:", error);
@@ -340,13 +344,18 @@ export const createCanonicalExamsRouter = ({ prisma, requireAuth }) => {
       }
 
       const now = new Date();
+      const questions = await prisma.examQuestion.findMany({
+        where: { examRecordId: ownership.examRecord.id },
+        orderBy: [{ position: "asc" }],
+      });
+      const normalizedQuestions = normalizeStoredExamQuestions(questions);
       const attempt = await prisma.examAttempt.create({
         data: {
           userId: req.session.user.id,
           documentId: ownership.examRecord.documentId,
           examRecordId: ownership.examRecord.id,
           score: 0,
-          totalQuestions: ownership.examRecord.questionCount,
+          totalQuestions: normalizedQuestions.length,
           answers: req.body?.answers ?? [],
           status: "in_progress",
           startedAt: now,
@@ -442,9 +451,10 @@ export const createCanonicalExamsRouter = ({ prisma, requireAuth }) => {
         where: { examRecordId: attempt.examRecordId },
         orderBy: [{ position: "asc" }],
       });
+      const normalizedQuestions = normalizeStoredExamQuestions(questions);
 
       const answers = req.body?.answers ?? attempt.answers;
-      const scoring = calculateExamScore(questions, answers);
+      const scoring = calculateExamScore(normalizedQuestions, answers);
       const now = new Date();
 
       const submittedAttempt = await prisma.examAttempt.update({
@@ -528,11 +538,12 @@ export const createCanonicalExamsRouter = ({ prisma, requireAuth }) => {
         where: { examRecordId: attempt.examRecordId },
         orderBy: [{ position: "asc" }],
       });
+      const normalizedQuestions = normalizeStoredExamQuestions(questions);
 
       return res.json({
         attempt,
         review: {
-          questions: questions.map((question) => ({
+          questions: normalizedQuestions.map((question) => ({
             id: question.id,
             position: question.position,
             questionType: question.questionType,

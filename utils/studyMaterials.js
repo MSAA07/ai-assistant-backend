@@ -286,12 +286,14 @@ function buildExamPrompt(text, language, questionCount, options, sampled) {
   return `Create a study exam in ${languageName}.
 
 Return valid JSON only with this shape:
-{"questions":[{"type":"mcq","question":"...","options":["..."],"correctAnswer":"...","explanation":"..."},{"type":"true_false","question":"...","correctAnswer":"True","explanation":"..."},{"type":"short","question":"...","correctAnswer":"...","explanation":"..."}]}
+{"questions":[{"type":"mcq","question":"...","options":["..."],"correctAnswer":"...","explanation":"..."},{"type":"true_false","question":"...","correctAnswer":"True","explanation":"..."}]}
 
 Rules:
 - Generate exactly ${questionCount} questions.
-- Include a balanced mix of "mcq", "true_false", and "short" when the source supports it.
+- Only use "mcq" and "true_false" question types.
+- Include a balanced mix of "mcq" and "true_false" when the source supports it.
 - MCQ items must have exactly 4 options, and correctAnswer must match one option exactly.
+- True/false items must use "True" or "False" exactly as correctAnswer.
 - Every question must include an explanation.
 - Do not add markdown fences.
 ${guidancePrompt}

@@ -21,6 +21,29 @@ function normalizeOptions(value) {
   return unique;
 }
 
+function normalizeQuestionType(value) {
+  const questionType = normalizeString(value).toLowerCase();
+  if (questionType === "mcq" || questionType === "multiple_choice") {
+    return "mcq";
+  }
+  if (questionType === "true_false" || questionType === "truefalse") {
+    return "true_false";
+  }
+  return "";
+}
+
+function normalizeCorrectAnswer(value, questionType) {
+  const answer = normalizeString(value);
+  if (questionType !== "true_false") {
+    return answer;
+  }
+
+  const normalized = answer.toLowerCase();
+  if (normalized === "true") return "True";
+  if (normalized === "false") return "False";
+  return "";
+}
+
 export function normalizeExamRecordInput(input = {}) {
   return {
     documentId: normalizeString(input.documentId),
@@ -35,14 +58,29 @@ export function normalizeExamRecordInput(input = {}) {
 }
 
 export function normalizeExamQuestionInput(question = {}) {
-  const questionType = normalizeString(question.questionType ?? question.type).toLowerCase();
+  const questionType = normalizeQuestionType(question.questionType ?? question.type);
   const prompt = normalizeString(question.question);
-  const correctAnswer = normalizeString(question.correctAnswer);
+  const correctAnswer = normalizeCorrectAnswer(question.correctAnswer, questionType);
   const explanation = normalizeString(question.explanation);
   const options = normalizeOptions(question.options);
 
   if (!questionType || !prompt || !correctAnswer || !explanation) {
     return null;
+  }
+
+  if (questionType === "mcq" && (options.length < 2 || !options.includes(correctAnswer))) {
+    return null;
+  }
+
+  if (questionType === "true_false" && options.length > 0) {
+    return {
+      questionType,
+      question: prompt,
+      options: [],
+      correctAnswer,
+      explanation,
+      sourceRefs: normalizeCompactSourceRefs(question.sourceRefs),
+    };
   }
 
   return {
@@ -80,19 +118,27 @@ export function buildExamRecordFromGeneration({
   };
 }
 
+export function normalizeStoredExamQuestions(questions = []) {
+  return Array.isArray(questions)
+    ? questions.map(normalizeExamQuestionInput).filter(Boolean)
+    : [];
+}
+
 export function serializeExamRecord(record, questions = []) {
+  const normalizedQuestions = normalizeStoredExamQuestions(questions);
+
   return {
     id: record?.id ?? null,
     documentId: record?.documentId ?? null,
     generationId: record?.generationId ?? null,
     title: record?.title ?? null,
     options: record?.options ?? {},
-    questionCount: Number(record?.questionCount ?? questions.length ?? 0),
+    questionCount: normalizedQuestions.length,
     sourceType: record?.sourceType ?? "generation",
     isLatest: Boolean(record?.isLatest),
     createdAt: record?.createdAt ?? null,
     updatedAt: record?.updatedAt ?? null,
-    questions: questions.map((question) => ({
+    questions: normalizedQuestions.map((question) => ({
       id: question.id,
       position: question.position,
       questionType: question.questionType,
@@ -104,4 +150,3 @@ export function serializeExamRecord(record, questions = []) {
     })),
   };
 }
-

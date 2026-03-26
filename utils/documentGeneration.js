@@ -94,11 +94,7 @@ function normalizeQuestionType(type, options) {
     return "true_false";
   }
 
-  if (normalizedType === "short" || normalizedType === "short_answer" || normalizedType === "shortanswer") {
-    return "short";
-  }
-
-  return options.length > 1 ? "mcq" : "short";
+  return options.length > 1 ? "mcq" : "";
 }
 
 function normalizeRegenerationGuidance(value) {
@@ -182,12 +178,12 @@ export function normalizeExamQuestion(question) {
   }
 
   const options = normalizeOptions(question.options);
-  const type = normalizeQuestionType(question.type, options);
+  const type = normalizeQuestionType(question.type ?? question.questionType, options);
   const normalizedQuestion = normalizeString(question.question);
   const correctAnswer = normalizeString(question.correctAnswer);
   const explanation = normalizeString(question.explanation);
 
-  if (!normalizedQuestion || !correctAnswer || !explanation) {
+  if (!type || !normalizedQuestion || !correctAnswer || !explanation) {
     return null;
   }
 
@@ -199,10 +195,19 @@ export function normalizeExamQuestion(question) {
     return null;
   }
 
+  if (type === "true_false") {
+    const normalizedAnswer = correctAnswer.toLowerCase();
+    if (normalizedAnswer !== "true" && normalizedAnswer !== "false") {
+      return null;
+    }
+  }
+
   const normalizedExamQuestion = {
     type,
     question: normalizedQuestion,
-    correctAnswer,
+    correctAnswer: type === "true_false"
+      ? (correctAnswer.toLowerCase() === "true" ? "True" : "False")
+      : correctAnswer,
     explanation,
   };
 
