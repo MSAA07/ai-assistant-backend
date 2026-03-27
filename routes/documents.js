@@ -265,10 +265,8 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
   router.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
     try {
-      const { language } = req.body;
       const file = req.file;
       const user = req.session.user;
-      const selectedLanguage = language === "arabic" ? "arabic" : "english";
 
       console.log("Upload request received:", {
         userId: user?.id,
@@ -323,7 +321,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
               originalName: file.originalname,
               fileType: file.mimetype,
               fileSize: file.size,
-              language: selectedLanguage,
+              language: "english",
               summary: "",
               flashcards: [],
               examQuestions: [],

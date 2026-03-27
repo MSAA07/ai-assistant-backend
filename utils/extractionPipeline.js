@@ -41,6 +41,24 @@ function sanitizeExcerpt(excerpt) {
   };
 }
 
+function detectDocumentLanguage(excerpts = []) {
+  let arabicCharCount = 0;
+  let latinCharCount = 0;
+
+  for (const excerpt of excerpts) {
+    const content = typeof excerpt?.content === "string" ? excerpt.content : "";
+    for (const char of content) {
+      if (/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(char)) {
+        arabicCharCount += 1;
+      } else if (/[A-Za-z]/.test(char)) {
+        latinCharCount += 1;
+      }
+    }
+  }
+
+  return arabicCharCount > latinCharCount ? "arabic" : "english";
+}
+
 export async function processExtraction(prisma, job, workerId) {
   const documentId = job.documentId ?? job.payload?.documentId;
   const filePath = job.payload?.filePath;
@@ -97,6 +115,12 @@ export async function processExtraction(prisma, job, workerId) {
     const existingUsableExcerptCount = countUsableExcerpts(existingExcerpts);
 
     if (existingUsableExcerptCount > 0) {
+      await prisma.document.update({
+        where: { id: documentId },
+        data: {
+          language: detectDocumentLanguage(existingExcerpts),
+        },
+      });
       await updateJobProgress(prisma, job.id, workerId, 100);
       const result = buildExtractionResult(documentId, existingUsableExcerptCount, "cache");
 
@@ -140,6 +164,13 @@ export async function processExtraction(prisma, job, workerId) {
       noContentError.code = "no_extractable_content";
       throw noContentError;
     }
+
+    await prisma.document.update({
+      where: { id: documentId },
+      data: {
+        language: detectDocumentLanguage(excerpts),
+      },
+    });
 
     await prisma.documentExcerpt.createMany({
       data: excerpts.map((excerpt) => ({
