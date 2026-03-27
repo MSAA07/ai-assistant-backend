@@ -18,6 +18,8 @@ const getUtcDateString = (value = new Date()) => {
   return new Date(value).toISOString().split("T")[0];
 };
 
+const isAdminUser = (user) => user?.role === "admin";
+
 async function lockAndResetDailyUsageIfNeeded(tx, userId) {
   const rows = await tx.$queryRaw`
     SELECT * FROM "UserLimit" WHERE "userId" = ${userId} FOR UPDATE
@@ -59,7 +61,17 @@ export async function ensureUserLimitExists(userId) {
 
 export async function checkAndIncrementDailyDocCap(userId) {
   await prisma.$transaction(async (tx) => {
-    const row = await lockAndResetDailyUsageIfNeeded(tx, userId);
+    const [row, user] = await Promise.all([
+      lockAndResetDailyUsageIfNeeded(tx, userId),
+      tx.user.findUnique({
+        where: { id: userId },
+        select: { role: true },
+      }),
+    ]);
+
+    if (isAdminUser(user)) {
+      return;
+    }
 
     if (row.docsUsedToday >= row.dailyDocCap) {
       const error = new Error("Daily document limit reached");
@@ -78,7 +90,17 @@ export async function checkAndIncrementDailyDocCap(userId) {
 
 export async function checkAndIncrementDailyTokenCap(userId, estimatedTokens) {
   await prisma.$transaction(async (tx) => {
-    const row = await lockAndResetDailyUsageIfNeeded(tx, userId);
+    const [row, user] = await Promise.all([
+      lockAndResetDailyUsageIfNeeded(tx, userId),
+      tx.user.findUnique({
+        where: { id: userId },
+        select: { role: true },
+      }),
+    ]);
+
+    if (isAdminUser(user)) {
+      return;
+    }
 
     if (row.tokensUsedToday + estimatedTokens > row.dailyTokenCap) {
       const error = new Error("Daily token limit reached");

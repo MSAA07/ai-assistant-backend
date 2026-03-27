@@ -301,7 +301,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       }
 
       const monthlyLimit = getMonthlyLimit(dbUser);
-      if (dbUser.documentsUsed >= monthlyLimit) {
+      if (!isAdminUser(dbUser) && dbUser.documentsUsed >= monthlyLimit) {
         await fs.unlink(file.path).catch(() => {});
         return res.status(403).json({
           error: "Monthly upload limit reached",
