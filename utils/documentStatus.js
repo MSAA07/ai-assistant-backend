@@ -3,6 +3,7 @@ import {
   isUsableGenerationExcerpt,
   normalizeDocumentMirrorMaterials,
 } from "./documentGeneration.js";
+import { getDocumentDisplayName, normalizeDocumentName } from "./filenames.js";
 
 export const DOCUMENT_PROCESSING_STATUS = Object.freeze({
   queued: "queued",
@@ -114,12 +115,14 @@ export function serializeDocument(document, options = {}) {
     ? document.processingJobId ?? null
     : null;
   const generationState = buildDocumentGenerationState(document?.generations ?? []);
+  const displayName = getDocumentDisplayName(document);
 
   return {
     id: document.id,
     userId: document.userId,
     filename: document.filename,
-    originalName: document.originalName,
+    originalName: normalizeDocumentName(document?.originalName) || displayName,
+    displayName,
     fileType: document.fileType,
     fileSize: document.fileSize,
     language: document.language,

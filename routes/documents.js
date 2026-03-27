@@ -28,6 +28,11 @@ import {
   hasStudyExportContent,
   normalizeStudyExportFeature,
 } from "../utils/studyPdf.js";
+import {
+  getStorageFileExtension,
+  normalizeDocumentName,
+  normalizeUploadedFilename,
+} from "../utils/filenames.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -43,8 +48,10 @@ const storage = multer.diskStorage({
     cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
+    const normalizedOriginalName = normalizeUploadedFilename(file.originalname);
+    file.originalname = normalizedOriginalName;
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + "-" + file.originalname);
+    cb(null, `${uniqueSuffix}${getStorageFileExtension(normalizedOriginalName)}`);
   },
 });
 
@@ -150,10 +157,6 @@ function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) 
   }
 
   return Math.min(Math.max(parsed, min), max);
-}
-
-function normalizeDocumentName(value) {
-  return typeof value === "string" ? value.trim() : "";
 }
 
 async function queueGenerationJob(tx, { documentId, userId, generationType, options, regenerate }) {
@@ -267,10 +270,11 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
     try {
       const file = req.file;
       const user = req.session.user;
+      const originalName = normalizeUploadedFilename(file?.originalname);
 
       console.log("Upload request received:", {
         userId: user?.id,
-        fileName: file?.originalname,
+        fileName: originalName,
         fileType: file?.mimetype,
         fileSize: file?.size,
       });
@@ -306,7 +310,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         });
       }
 
-      const { key } = await uploadFile(file.path, user.id, file.originalname, file.mimetype);
+      const { key } = await uploadFile(file.path, user.id, originalName, file.mimetype);
       const isLocalPath = path.isAbsolute(key);
 
       let document;
@@ -318,7 +322,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
             data: {
               userId: user.id,
               filename: file.filename,
-              originalName: file.originalname,
+              originalName,
               fileType: file.mimetype,
               fileSize: file.size,
               language: "english",
@@ -383,7 +387,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         documentId: document.id,
         document: serializeDocument({
           ...document,
-          originalName: document.originalName,
+          originalName,
           filename: document.originalName,
           excerptCount: 0,
           generations: [],
