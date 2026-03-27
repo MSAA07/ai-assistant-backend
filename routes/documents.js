@@ -18,7 +18,7 @@ import {
   normalizeGenerationType,
   serializeDocumentGeneration,
 } from "../utils/documentGeneration.js";
-import { serializeDocument } from "../utils/documentStatus.js";
+import { reconcileDocumentProcessingState, serializeDocument } from "../utils/documentStatus.js";
 import { isFeatureEnabledIfConfigured } from "../utils/featureFlags.js";
 import { getMonthlyLimit } from "../utils/limits.js";
 import { captureSentryException } from "../utils/sentry.js";
@@ -127,7 +127,7 @@ function createHttpError(statusCode, message, code) {
 }
 
 async function getAuthorizedDocument(prisma, documentId, user, queryOptions = {}) {
-  const document = await prisma.document.findUnique({
+  let document = await prisma.document.findUnique({
     where: { id: documentId },
     ...queryOptions,
   });
@@ -140,6 +140,7 @@ async function getAuthorizedDocument(prisma, documentId, user, queryOptions = {}
     throw createHttpError(403, "Access denied", "forbidden");
   }
 
+  document = await reconcileDocumentProcessingState(prisma, document);
   return document;
 }
 

@@ -1,5 +1,6 @@
 import {
   buildDocumentGenerationState,
+  getUsableExcerptCount,
   isUsableGenerationExcerpt,
   normalizeDocumentMirrorMaterials,
 } from "./documentGeneration.js";
@@ -139,6 +140,56 @@ export function serializeDocument(document, options = {}) {
     examQuestions: canExposeContent ? studyMaterialState.examQuestions : [],
     flashcardCount: canExposeContent ? studyMaterialState.flashcardCount : 0,
     questionCount: canExposeContent ? studyMaterialState.questionCount : 0,
+  };
+}
+
+export async function reconcileDocumentProcessingState(prisma, document) {
+  if (!document?.id) {
+    return document;
+  }
+
+  const processingStatus = normalizeDocumentProcessingStatus(document.processingStatus);
+  if (processingStatus === DOCUMENT_PROCESSING_STATUS.complete) {
+    return document;
+  }
+
+  const processingJobId = document.processingJobId ?? null;
+  if (processingJobId) {
+    const job = await prisma.job.findUnique({
+      where: { id: processingJobId },
+      select: {
+        jobType: true,
+        status: true,
+      },
+    });
+
+    const activeExtractionJob = job?.jobType === "extract_document"
+      && (job.status === "queued" || job.status === "running");
+
+    if (activeExtractionJob) {
+      return document;
+    }
+  }
+
+  const usableExcerptCount = await getUsableExcerptCount(prisma, document.id);
+  if (usableExcerptCount <= 0) {
+    return document;
+  }
+
+  const processedAt = document.processedAt ?? new Date();
+  const updatedDocument = await prisma.document.update({
+    where: { id: document.id },
+    data: {
+      processingStatus: DOCUMENT_PROCESSING_STATUS.complete,
+      processingJobId: null,
+      processingError: null,
+      processedAt,
+    },
+  });
+
+  return {
+    ...document,
+    ...updatedDocument,
   };
 }
 
