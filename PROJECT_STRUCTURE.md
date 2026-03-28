@@ -9,6 +9,10 @@ ai-assistant-backend/
 |-- AGENTS.md
 |-- agent.md
 |-- README.md
+|-- PHASE1_PROMPT_ENGINEERING.md
+|-- PHASE3_MODEL_ROUTING_BENCHMARK.md
+|-- PHASE4_ROLLOUT_VALIDATION.md
+|-- PHASE5_FINAL_EXECUTION_BRIEF.md
 |-- SYSTEM_OVERVIEW.md
 |-- PROJECT_STRUCTURE.md
 |-- DEPLOY_TRIGGER.md
@@ -45,7 +49,7 @@ ai-assistant-backend/
 - `routes/flashcards.js`: legacy flashcard progress plus canonical flashcard-set routes
 - `routes/exams.js`: legacy exam attempt plus canonical exam and attempt routes
 - `routes/exports.js`: export artifact routes
-- `routes/admin.js`: admin APIs for users, files, sessions, analytics, usage, costs, limits, anomalies, and feature flags
+- `routes/admin.js`: admin APIs for users, files, sessions, analytics, usage, costs, limits, anomalies, feature flags, and generation evaluation annotation
 
 ## Middleware
 
@@ -65,8 +69,9 @@ Lifecycle and serialization:
 Worker processors:
 
 - `utils/extractionPipeline.js`
-- `utils/generationPipeline.js`
-- `utils/studyMaterials.js`
+- `utils/generationPipeline.js`: generation worker pipeline, routing resolution, prompt/cost trace persistence, and two-step token reconciliation
+- `utils/studyMaterials.js`: shared prompt framework, feature prompts, large-document analysis prompt, weak-reference resolution, and output normalization
+- `utils/modelRoutingPolicy.js`: per-tier execution policy, quality-mode access, stronger-model upgrade rules, and fallback policy
 
 Canonical study-record support:
 
@@ -112,5 +117,7 @@ Current migration folders:
 - Canonical flashcard and exam records are Prisma-backed and coexist with document mirror fields.
 - `POST /api/upload` and worker processing still use `/tmp/uploads` during local/temp file handling before R2 or local-path persistence is finalized.
 - `utils/extractionPipeline.js` sanitizes extracted excerpt content before `DocumentExcerpt` persistence so invalid UTF-8 control bytes do not reach PostgreSQL.
+- Prompt/version, rollout, and benchmark traceability reuse existing JSON metadata surfaces and do not add new Prisma models.
+- Backend phase markdown files in the repo root are archival rollout records. Use `SYSTEM_OVERVIEW.md` and `PROJECT_STRUCTURE.md` for live runtime truth.
 
-Last Updated: March 27, 2026
+Last Updated: March 28, 2026

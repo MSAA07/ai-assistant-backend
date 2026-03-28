@@ -14,6 +14,10 @@ For file ownership:
 
 - see `PROJECT_STRUCTURE.md`
 
+For rollout history:
+
+- root `PHASE*.md` files are archival records, not the live runtime source of truth
+
 ## Development Rules
 
 - Validate input before queueing or mutating state.
@@ -56,4 +60,4 @@ Optional:
 - onboarding/setup: update `README.md`
 - agent workflow rules: update `agent.md` / `AGENTS.md`
 
-Last Updated: March 23, 2026
+Last Updated: March 28, 2026

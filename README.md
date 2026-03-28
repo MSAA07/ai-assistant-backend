@@ -17,6 +17,11 @@ Backend API and worker stack for the AI Study Assistant.
 - document lifecycle, job lifecycle, and generation lifecycle are distinct
 - canonical study records are Prisma-backed
 - mirror fields remain in document payloads for compatibility
+- the AI prompt-engineering rollout is complete in the current generation path
+- one shared prompt framework now drives summary, flashcards, and mock exam generation
+- large documents use a two-step sampled flow with a grounded learning-content analysis pass
+- prompt versions, routing metadata, rollout metadata, and benchmark linkage are persisted in existing internal metadata surfaces
+- free, pro, and premium generation behavior is policy-based inside the same backend path
 - server entry is `server.js`
 - worker entry is `worker.js`
 
@@ -63,5 +68,6 @@ Current backend targets:
 - `SYSTEM_OVERVIEW.md`: lifecycle, runtime, routes, and architecture
 - `PROJECT_STRUCTURE.md`: file and folder ownership
 - `agent.md` / `AGENTS.md`: contributor operating instructions
+- `PHASE1_PROMPT_ENGINEERING.md`, `PHASE3_MODEL_ROUTING_BENCHMARK.md`, `PHASE4_ROLLOUT_VALIDATION.md`, `PHASE5_FINAL_EXECUTION_BRIEF.md`: archival rollout records, not the live runtime source of truth
 
-Last Updated: March 23, 2026
+Last Updated: March 28, 2026

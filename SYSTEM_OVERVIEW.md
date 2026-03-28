@@ -76,7 +76,15 @@ Generation:
 
 - `utils/generationPipeline.js`
 - `utils/studyMaterials.js`
-- current model constant: `gpt-4o-mini`
+- `utils/modelRoutingPolicy.js`
+- prompt-engineering rollout is complete in the current backend path
+- shared prompt framework is implemented for summary, flashcards, and mock exam
+- large documents can use a two-step flow: sampled excerpts first, then a grounded learning-content map, then feature generation
+- weak documents reduce scope or count instead of inventing unsupported detail
+- model is chosen per request from routing policy
+- current policy: lower-cost model by default, stronger-model upgrade first for mock exams on entitled tiers
+- free, pro, and premium stay on the same backend generation endpoints and worker path; tier differences are routing-policy and limits decisions, not separate APIs
+- prompt-layer rollout and routing-policy rollout can be enabled or rolled back independently with feature flags
 
 ## Processing Pipelines
 
@@ -106,6 +114,16 @@ Behavior:
 - matching active generations can be reused
 - active conflicting option sets return `409`
 - successful flashcard/exam generation updates canonical study records and document mirrors
+- prompt versions are persisted for released generations in `Job.result` and `UsageEvent.metadata`
+- benchmark metadata and rollout metadata are attached through existing internal JSON metadata, not new schema
+- evaluator outcomes for benchmark runs can be attached later through the admin evaluation flow
+- large sampled generations reserve and reconcile prompt-token usage across both the analysis pass and the final generation pass
+- weak-certainty references are resolved during source preparation:
+  - `Page N` for reliable PDF anchors
+  - `Slide N` for reliable PPT/PPTX anchors
+  - extracted `Section: ...` labels when certainty is weak but structure is reliable
+  - omitted references when no reliable structure exists
+- DOCX synthetic chunks are internal anchors only and are not documented or treated as real pages
 
 ## API Surface
 
@@ -156,6 +174,7 @@ Admin coverage:
 - per-user limits
 - anomaly resolution
 - feature flags and flag audit
+- benchmark/evaluation annotation for completed generation jobs
 
 ## Current Prisma Model Set
 
@@ -202,5 +221,9 @@ Update this file when any of these change:
 - worker claim/retry/recovery behavior
 - canonical study records or mirror-field behavior
 - Prisma model set or migration history
+- model-routing policy or benchmark rules
+- rollout validation or traceability requirements
+- final execution brief or locked implementation decisions
+- prompt-version persistence or weak-reference resolution behavior
 
-Last Updated: March 27, 2026
+Last Updated: March 28, 2026

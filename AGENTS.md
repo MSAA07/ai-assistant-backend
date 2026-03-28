@@ -10,6 +10,7 @@ Use these source-of-truth docs instead:
 
 - `SYSTEM_OVERVIEW.md` for lifecycle ownership, runtime behavior, and route contracts
 - `PROJECT_STRUCTURE.md` for file ownership
+- root `PHASE*.md` files are archival rollout records, not the live runtime source of truth
 
 ## Commands
 
@@ -31,4 +32,4 @@ Update docs when:
 - onboarding/setup changes: `README.md`
 - agent workflow changes: `AGENTS.md` / `agent.md`
 
-Last Updated: March 23, 2026
+Last Updated: March 28, 2026
