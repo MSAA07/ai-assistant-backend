@@ -15,6 +15,9 @@ const unwrapAuthResult = async (result) => {
 };
 
 const FLAGS = [
+  { featureKey: "document_summary", description: "On-demand document summaries (Phase F2)" },
+  { featureKey: "flashcards", description: "On-demand flashcard generation (Phase F2)" },
+  { featureKey: "exam", description: "On-demand exam generation (Phase F2)" },
   { featureKey: "pdf_export", description: "Export exams as PDF (Phase 5)" },
   {
     featureKey: "vision_model",

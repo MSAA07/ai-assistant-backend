@@ -10,39 +10,39 @@ datasource db {
 }
 
 model User {
-  id            String      @id @default(uuid())
-  email         String      @unique
+  id            String   @id @default(uuid())
+  email         String   @unique
   name          String
   emailVerified Boolean
   image         String?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  lastActive    DateTime    @default(now())
-  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastActive    DateTime @default(now())
+
   // Custom fields
-  role          String?     // For admin plugin
-  banned        Boolean?    // For admin plugin
-  banReason     String?     // For admin plugin
-  banExpires    DateTime?   // For admin plugin
-  plan          String      @default("free") // For subscription management
-  
+  role       String? // For admin plugin
+  banned     Boolean? // For admin plugin
+  banReason  String? // For admin plugin
+  banExpires DateTime? // For admin plugin
+  plan       String    @default("free") // For subscription management
+
   // Legacy/Business fields
-  documentsUsed Int         @default(0)
-  monthlyLimit  Int         @default(5)
-  storageUsed   BigInt      @default(0)
-  lastReset     DateTime    @default(now())
-  
-  documents     Document[]
-  sessions      Session[]
-  accounts      Account[]
+  documentsUsed Int      @default(0)
+  monthlyLimit  Int      @default(5)
+  storageUsed   BigInt   @default(0)
+  lastReset     DateTime @default(now())
+
+  documents Document[]
+  sessions  Session[]
+  accounts  Account[]
 
   userLimit         UserLimit?
   costAnomalyAlerts CostAnomalyAlert[]
   usageEvents       UsageEvent[]
   jobs              Job[]
-  
-  @@map("user")
+
   @@index([lastActive])
+  @@map("user")
 }
 
 model Session {
@@ -91,54 +91,189 @@ model Verification {
 }
 
 model Document {
-  id          String   @id @default(uuid())
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  filename    String
-  originalName String
-  fileType    String
-  fileSize    Int
-  language    String   @default("english")
-  summary     String @db.Text
-  flashcards  Json
-  examQuestions Json
-  uploadDate  DateTime @default(now())
-  processingStatus String @default("queued")
-  processingJobId String?
-  processingError String?
-  processedAt DateTime?
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  filename         String
+  originalName     String
+  fileType         String
+  fileSize         Int
+  language         String    @default("english")
+  summary          String    @db.Text
+  flashcards       Json
+  examQuestions    Json
+  uploadDate       DateTime  @default(now())
+  processingStatus String    @default("queued")
+  processingJobId  String?
+  processingError  String?
+  processedAt      DateTime?
 
-  excerpts    DocumentExcerpt[]
-  storageKey  String?           // R2 object key — added for P1-S04
-  
+  excerpts        DocumentExcerpt[]
+  generations     DocumentGeneration[]
+  flashcardSets   FlashcardSet[]
+  examRecords     ExamRecord[]
+  exportArtifacts ExportArtifact[]
+  storageKey      String? // R2 object key - added for P1-S04
   @@index([userId])
   @@index([userId, processingStatus])
   @@index([processingJobId])
 }
 
 model ExamAttempt {
-  id          String   @id @default(uuid())
-  documentId  String
-  userId      String
-  score       Int
+  id             String   @id @default(uuid())
+  documentId     String
+  userId         String
+  examRecordId   String?
+  examRecord     ExamRecord? @relation(fields: [examRecordId], references: [id], onDelete: SetNull)
+  score          Int
   totalQuestions Int
-  answers     Json
-  completedAt DateTime @default(now())
-  
+  answers        Json
+  status         String   @default("submitted") // 'in_progress' | 'submitted' | 'abandoned'
+  startedAt      DateTime @default(now())
+  lastSavedAt    DateTime @default(now())
+  submittedAt    DateTime? @default(now())
+  feedbackMode   String   @default("end") // 'instant' | 'end'
+  restartFromAttemptId String?
+  completedAt    DateTime @default(now())
+
   @@index([userId])
   @@index([documentId])
+  @@index([examRecordId])
+  @@index([userId, examRecordId, status])
+  @@index([userId, documentId, startedAt])
 }
 
 model FlashcardProgress {
-  id          String   @id @default(uuid())
-  documentId  String
-  userId      String
-  cardIndex   Int
-  mastered    Boolean  @default(false)
+  id           String   @id @default(uuid())
+  documentId   String
+  userId       String
+  cardIndex    Int
+  mastered     Boolean  @default(false)
   lastReviewed DateTime @default(now())
-  
+
   @@unique([userId, documentId, cardIndex])
   @@index([userId])
+}
+
+model FlashcardSet {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  generationId String?
+  title        String?
+  options      Json     @default("{}")
+  cardCount    Int      @default(0)
+  sourceType   String   @default("generation") // 'generation' | 'manual' | 'legacy_migration'
+  isLatest     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cards FlashcardCard[]
+
+  @@index([documentId, createdAt])
+  @@index([documentId, isLatest])
+}
+
+model FlashcardCard {
+  id          String      @id @default(cuid())
+  setId       String
+  set         FlashcardSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+  position    Int
+  question    String      @db.Text
+  answer      String      @db.Text
+  explanation String?     @db.Text
+  sourceRefs  Json        @default("[]")
+  isDeleted   Boolean     @default(false)
+  deletedAt   DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  states FlashcardCardState[]
+
+  @@unique([setId, position])
+  @@index([setId, isDeleted, position])
+}
+
+model FlashcardCardState {
+  id               String       @id @default(cuid())
+  userId           String
+  cardId           String
+  card             FlashcardCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  isHidden         Boolean      @default(false)
+  isDeletedForUser Boolean      @default(false)
+  mastered         Boolean      @default(false)
+  correctCount     Int          @default(0)
+  incorrectCount   Int          @default(0)
+  lastResult       String       @default("unseen") // 'correct' | 'incorrect' | 'unseen'
+  lastReviewedAt   DateTime?
+  updatedAt        DateTime     @updatedAt
+
+  @@unique([userId, cardId])
+  @@index([userId, lastResult, updatedAt])
+}
+
+model ExamRecord {
+  id            String   @id @default(cuid())
+  documentId    String
+  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  generationId  String?
+  title         String?
+  options       Json     @default("{}")
+  questionCount Int      @default(0)
+  sourceType    String   @default("generation") // 'generation' | 'manual' | 'legacy_migration'
+  isLatest      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  questions ExamQuestion[]
+  attempts  ExamAttempt[]
+  exports   ExportArtifact[]
+
+  @@index([documentId, createdAt])
+  @@index([documentId, isLatest])
+}
+
+model ExamQuestion {
+  id            String     @id @default(cuid())
+  examRecordId  String
+  examRecord    ExamRecord @relation(fields: [examRecordId], references: [id], onDelete: Cascade)
+  position      Int
+  questionType  String
+  question      String     @db.Text
+  options       Json       @default("[]")
+  correctAnswer String     @db.Text
+  explanation   String     @db.Text
+  sourceRefs    Json       @default("[]")
+  createdAt     DateTime   @default(now())
+
+  @@unique([examRecordId, position])
+}
+
+model ExportArtifact {
+  id               String      @id @default(cuid())
+  userId           String
+  documentId       String
+  document         Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  examRecordId     String?
+  examRecord       ExamRecord? @relation(fields: [examRecordId], references: [id], onDelete: SetNull)
+  attemptId        String?
+  format           String      @default("pdf")
+  config           Json        @default("{}")
+  status           String      @default("queued") // 'queued' | 'running' | 'complete' | 'failed' | 'expired'
+  jobId            String?
+  storageKey       String?
+  fileName         String?
+  mimeType         String?
+  fileSize         Int?
+  errorMessage     String?
+  createdAt        DateTime    @default(now())
+  readyAt          DateTime?
+  expiresAt        DateTime?
+  lastDownloadedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([documentId, createdAt])
+  @@index([status, createdAt])
 }
 
 model AuditLog {
@@ -157,34 +292,53 @@ model AuditLog {
 }
 
 model DocumentExcerpt {
-  id           String   @id @default(cuid())
-  documentId   String
-  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  slideOrPage  Int
-  excerptType  String   // 'slide_text' | 'speaker_note' | 'image_flag'
-  content      String
-  charOffset   Int      @default(0)
-  createdAt    DateTime @default(now())
+  id          String   @id @default(cuid())
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  slideOrPage Int
+  excerptType String // 'slide_text' | 'speaker_note' | 'image_flag'
+  content     String
+  charOffset  Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model DocumentGeneration {
+  id             String    @id @default(cuid())
+  documentId     String
+  document       Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  generationType String
+  status         String    @default("queued")
+  jobId          String?
+  options        Json      @default("{}")
+  output         Json?
+  errorMessage   String?
+  generatedAt    DateTime?
+  isLatest       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([documentId, generationType, isLatest])
+  @@index([jobId])
 }
 
 model Job {
-  id           String    @id @default(cuid())
-  userId       String
-  user         User      @relation(fields: [userId], references: [id])
-  documentId   String?
-  jobType      String    // 'extract_document' | 'generate_exam' | 'generate_flashcards' | 'export_pdf'
-  status       String    @default("queued") // 'queued' | 'running' | 'succeeded' | 'failed'
-  progressPct  Int       @default(0)
-  retryCount   Int       @default(0)
-  maxRetries   Int       @default(3)
-  payload      Json      @default("{}")
-  result       Json?
-  errorMessage String?
-  queuedAt     DateTime  @default(now())
-  startedAt    DateTime?
-  completedAt  DateTime?
-  workerId     String?
-  leaseExpiresAt DateTime?
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  documentId      String?
+  jobType         String // 'extract_document' | 'generate_summary' | 'generate_exam' | 'generate_flashcards' | 'export_pdf'
+  status          String    @default("queued") // 'queued' | 'running' | 'succeeded' | 'failed'
+  progressPct     Int       @default(0)
+  retryCount      Int       @default(0)
+  maxRetries      Int       @default(3)
+  payload         Json      @default("{}")
+  result          Json?
+  errorMessage    String?
+  queuedAt        DateTime  @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  workerId        String?
+  leaseExpiresAt  DateTime?
   lastHeartbeatAt DateTime?
 
   @@index([status, queuedAt])
@@ -204,17 +358,17 @@ model FeatureFlag {
 }
 
 model FeatureFlagAssignment {
-  id         String             @id @default(cuid())
+  id         String            @id @default(cuid())
   flagId     String
-  flag       FeatureFlag        @relation(fields: [flagId], references: [id], onDelete: Cascade)
+  flag       FeatureFlag       @relation(fields: [flagId], references: [id], onDelete: Cascade)
   entityType FeatureEntityType
   entityId   String
   grantedBy  String?
-  grantedAt  DateTime           @default(now())
+  grantedAt  DateTime          @default(now())
   expiresAt  DateTime?
 
-  @@index([flagId])
   @@unique([flagId, entityType, entityId])
+  @@index([flagId])
 }
 
 model FeatureFlagAuditLog {
@@ -250,7 +404,7 @@ model CostAnomalyAlert {
   id           String   @id @default(cuid())
   userId       String
   user         User     @relation(fields: [userId], references: [id])
-  alertType    String   // 'daily_spend_3x_avg' | 'doc_cap_hit' | 'token_cap_hit'
+  alertType    String // 'daily_spend_3x_avg' | 'doc_cap_hit' | 'token_cap_hit'
   thresholdUsd Decimal  @db.Decimal(10, 4)
   actualUsd    Decimal  @db.Decimal(10, 4)
   resolved     Boolean  @default(false)
@@ -261,9 +415,9 @@ model UsageEvent {
   id               String   @id @default(cuid())
   userId           String
   user             User     @relation(fields: [userId], references: [id])
-  eventType        String   // 'exam_generated' | 'flashcard_generated' | 'pdf_exported' | 'document_extracted'
+  eventType        String // 'summary_generated' | 'flashcards_generated' | 'exam_generated' | 'pdf_exported' | 'document_extracted'
   featureKey       String?
-  aiModelUsed      String?  // 'gpt-4o-mini' | 'gpt-4o'
+  aiModelUsed      String? // 'gpt-4o-mini' | 'gpt-4o'
   inputTokens      Int?
   outputTokens     Int?
   estimatedCostUsd Decimal? @db.Decimal(10, 6)
@@ -278,3 +432,4 @@ enum FeatureEntityType {
   user
   tier
 }
+

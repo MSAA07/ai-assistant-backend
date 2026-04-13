@@ -11,6 +11,7 @@ import path from 'path'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import { captureSentryException } from './sentry.js'
+import { buildStorageObjectKey } from './filenames.js'
 
 const r2 = process.env.R2_ENDPOINT ? new S3Client({
   region: 'auto',
@@ -31,7 +32,7 @@ export async function uploadFile(localPath, userId, originalFilename, mimeType) 
     return { key: localPath, url: null }
   }
 
-  const key = `uploads/${userId}/${Date.now()}-${originalFilename}`
+  const key = buildStorageObjectKey(userId, originalFilename)
   const fileBuffer = fs.readFileSync(localPath)
   
   try {

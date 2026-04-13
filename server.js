@@ -9,10 +9,12 @@ import { createRequireAuth } from "./middleware/auth.js";
 import { createRequireAdmin } from "./middleware/adminGuard.js";
 import { createUserRouter } from "./routes/user.js";
 import { createDocumentsRouter } from "./routes/documents.js";
-import { createFlashcardsRouter } from "./routes/flashcards.js";
-import { createExamsRouter } from "./routes/exams.js";
+import { createFlashcardsRouter, createFlashcardSetsRouter } from "./routes/flashcards.js";
+import { createExamsRouter, createCanonicalExamsRouter } from "./routes/exams.js";
+import { createExportsRouter } from "./routes/exports.js";
 import { createAdminRouter } from "./routes/admin.js";
 import { createJobsRouter } from "./routes/jobs.js";
+import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 
@@ -33,11 +35,15 @@ app.use(
       const allowedOrigins = [
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "https://my-ai-assistant-ypzx.vercel.app",
         "https://my-ai-assistant-git-stage-msaa07.vercel.app",
         "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
         "https://my-ai-assistant-git-production-mohammed-abushayiqahs-projects.vercel.app",
         "https://my-ai-assistant.vercel.app",
+        "https://studymaxing.com",
+        "https://www.studymaxing.com",
       ];
       
       // Allow requests with no origin (like mobile apps or curl requests)
@@ -74,6 +80,9 @@ app.use("/api/user", createUserRouter({ prisma, requireAuth }));
 app.use("/api", createDocumentsRouter({ prisma, requireAuth }));
 app.use("/api/flashcard", createFlashcardsRouter({ prisma, requireAuth }));
 app.use("/api/exam", createExamsRouter({ prisma, requireAuth }));
+app.use("/api", createFlashcardSetsRouter({ prisma, requireAuth }));
+app.use("/api", createCanonicalExamsRouter({ prisma, requireAuth }));
+app.use("/api/exports", createExportsRouter({ prisma, requireAuth }));
 app.use("/api/jobs", createJobsRouter({ prisma, requireAuth }));
 app.use(
   "/api/admin",
@@ -100,6 +109,7 @@ app.use((error, req, res, next) => {
 const PORT = process.env.PORT || 3001;
 
 async function startServer() {
+  await ensureDocumentGenerationSchema(prisma);
   await backfillDocumentProcessingState(prisma);
 
   app.listen(PORT, () => {

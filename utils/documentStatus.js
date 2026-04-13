@@ -1,3 +1,11 @@
+import {
+  buildDocumentGenerationState,
+  getUsableExcerptCount,
+  isUsableGenerationExcerpt,
+  normalizeDocumentMirrorMaterials,
+} from "./documentGeneration.js";
+import { getDocumentDisplayName, normalizeDocumentName } from "./filenames.js";
+
 export const DOCUMENT_PROCESSING_STATUS = Object.freeze({
   queued: "queued",
   processing: "processing",
@@ -12,118 +20,8 @@ function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function parseJsonValue(value) {
-  if (typeof value !== "string") {
-    return value;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-function coerceArray(value) {
-  const parsedValue = parseJsonValue(value);
-  return Array.isArray(parsedValue) ? parsedValue : [];
-}
-
-function normalizeOptions(value) {
-  const uniqueOptions = [];
-
-  for (const option of coerceArray(value)) {
-    const normalizedOption = normalizeString(option);
-    if (!normalizedOption || uniqueOptions.includes(normalizedOption)) {
-      continue;
-    }
-
-    uniqueOptions.push(normalizedOption);
-  }
-
-  return uniqueOptions;
-}
-
-function normalizeQuestionType(type, options) {
-  const normalizedType = normalizeString(type).toLowerCase();
-
-  if (normalizedType === "mcq" || normalizedType === "multiple_choice") {
-    return "mcq";
-  }
-
-  if (normalizedType === "true_false" || normalizedType === "truefalse") {
-    return "true_false";
-  }
-
-  if (normalizedType === "short" || normalizedType === "short_answer" || normalizedType === "shortanswer") {
-    return "short";
-  }
-
-  return options.length > 1 ? "mcq" : "short";
-}
-
-function normalizeFlashcard(flashcard) {
-  if (!flashcard || typeof flashcard !== "object") {
-    return null;
-  }
-
-  const question = normalizeString(flashcard.question ?? flashcard.front);
-  const answer = normalizeString(flashcard.answer ?? flashcard.back);
-
-  if (!question || !answer) {
-    return null;
-  }
-
-  return { question, answer };
-}
-
-function normalizeExamQuestion(question) {
-  if (!question || typeof question !== "object") {
-    return null;
-  }
-
-  const options = normalizeOptions(question.options);
-  const type = normalizeQuestionType(question.type, options);
-  const normalizedQuestion = normalizeString(question.question);
-  const correctAnswer = normalizeString(question.correctAnswer);
-  const explanation = normalizeString(question.explanation);
-
-  if (!normalizedQuestion || !correctAnswer || !explanation) {
-    return null;
-  }
-
-  if (type === "mcq" && options.length < 2) {
-    return null;
-  }
-
-  if (type === "mcq" && !options.includes(correctAnswer)) {
-    return null;
-  }
-
-  const normalizedExamQuestion = {
-    type,
-    question: normalizedQuestion,
-    correctAnswer,
-    explanation,
-  };
-
-  if (options.length > 0) {
-    normalizedExamQuestion.options = options;
-  }
-
-  return normalizedExamQuestion;
-}
-
 export function normalizeStudyMaterials(studyMaterials = {}) {
-  return {
-    summary: normalizeString(studyMaterials.summary),
-    flashcards: coerceArray(studyMaterials.flashcards)
-      .map(normalizeFlashcard)
-      .filter(Boolean),
-    examQuestions: coerceArray(studyMaterials.examQuestions)
-      .map(normalizeExamQuestion)
-      .filter(Boolean),
-  };
+  return normalizeDocumentMirrorMaterials(studyMaterials);
 }
 
 export function getDocumentExcerptCount(document) {
@@ -142,6 +40,18 @@ export function getDocumentExcerptCount(document) {
   }
 
   return 0;
+}
+
+export function isUsableExcerpt(excerpt) {
+  return isUsableGenerationExcerpt(excerpt);
+}
+
+export function countUsableExcerpts(excerpts = []) {
+  if (!Array.isArray(excerpts)) {
+    return 0;
+  }
+
+  return excerpts.filter(isUsableExcerpt).length;
 }
 
 export function getStudyMaterialState(studyMaterials = {}, options = {}) {
@@ -196,23 +106,24 @@ export function serializeDocument(document, options = {}) {
     ? Number(options.excerptCount)
     : getDocumentExcerptCount(document);
   const studyMaterialState = getStudyMaterialState(document, { excerptCount });
-  let processingStatus = normalizeDocumentProcessingStatus(document?.processingStatus);
-
-  if (processingStatus === DOCUMENT_PROCESSING_STATUS.complete && !studyMaterialState.isComplete) {
-    processingStatus = DOCUMENT_PROCESSING_STATUS.failed;
-  }
-
-  const canExposeContent = processingStatus === DOCUMENT_PROCESSING_STATUS.complete
-    && studyMaterialState.isComplete;
+  const processingStatus = normalizeDocumentProcessingStatus(document?.processingStatus);
+  const canExposeContent = processingStatus === DOCUMENT_PROCESSING_STATUS.complete;
   const processingError = processingStatus === DOCUMENT_PROCESSING_STATUS.failed
     ? normalizeString(document?.processingError) || DOCUMENT_INCOMPLETE_MESSAGE
     : null;
+  const processingJobId = processingStatus === DOCUMENT_PROCESSING_STATUS.queued
+    || processingStatus === DOCUMENT_PROCESSING_STATUS.processing
+    ? document.processingJobId ?? null
+    : null;
+  const generationState = buildDocumentGenerationState(document?.generations ?? []);
+  const displayName = getDocumentDisplayName(document);
 
   return {
     id: document.id,
     userId: document.userId,
     filename: document.filename,
-    originalName: document.originalName,
+    originalName: normalizeDocumentName(document?.originalName) || displayName,
+    displayName,
     fileType: document.fileType,
     fileSize: document.fileSize,
     language: document.language,
@@ -221,13 +132,64 @@ export function serializeDocument(document, options = {}) {
       ? document.processedAt ?? null
       : null,
     processingStatus,
-    processingJobId: document.processingJobId ?? null,
+    processingJobId,
     processingError,
+    generationState,
     summary: canExposeContent ? studyMaterialState.summary : "",
     flashcards: canExposeContent ? studyMaterialState.flashcards : [],
     examQuestions: canExposeContent ? studyMaterialState.examQuestions : [],
     flashcardCount: canExposeContent ? studyMaterialState.flashcardCount : 0,
     questionCount: canExposeContent ? studyMaterialState.questionCount : 0,
+  };
+}
+
+export async function reconcileDocumentProcessingState(prisma, document) {
+  if (!document?.id) {
+    return document;
+  }
+
+  const processingStatus = normalizeDocumentProcessingStatus(document.processingStatus);
+  if (processingStatus === DOCUMENT_PROCESSING_STATUS.complete) {
+    return document;
+  }
+
+  const processingJobId = document.processingJobId ?? null;
+  if (processingJobId) {
+    const job = await prisma.job.findUnique({
+      where: { id: processingJobId },
+      select: {
+        jobType: true,
+        status: true,
+      },
+    });
+
+    const activeExtractionJob = job?.jobType === "extract_document"
+      && (job.status === "queued" || job.status === "running");
+
+    if (activeExtractionJob) {
+      return document;
+    }
+  }
+
+  const usableExcerptCount = await getUsableExcerptCount(prisma, document.id);
+  if (usableExcerptCount <= 0) {
+    return document;
+  }
+
+  const processedAt = document.processedAt ?? new Date();
+  const updatedDocument = await prisma.document.update({
+    where: { id: document.id },
+    data: {
+      processingStatus: DOCUMENT_PROCESSING_STATUS.complete,
+      processingJobId: null,
+      processingError: null,
+      processedAt,
+    },
+  });
+
+  return {
+    ...document,
+    ...updatedDocument,
   };
 }
 
@@ -261,6 +223,20 @@ function pickActiveJobByDocumentId(jobs) {
   return jobsByDocumentId;
 }
 
+async function getUsableExcerptCountsByDocumentId(prisma) {
+  const excerptCounts = await prisma.$queryRaw`
+    SELECT "documentId", COUNT(*)::int AS "usableExcerptCount"
+    FROM "DocumentExcerpt"
+    WHERE "excerptType" <> 'image_flag'
+      AND NULLIF(BTRIM("content"), '') IS NOT NULL
+    GROUP BY "documentId"
+  `;
+
+  return new Map(
+    excerptCounts.map((row) => [row.documentId, Number(row.usableExcerptCount || 0)]),
+  );
+}
+
 export async function backfillDocumentProcessingState(prisma) {
   await prisma.$executeRaw`
     UPDATE "Job"
@@ -270,14 +246,8 @@ export async function backfillDocumentProcessingState(prisma) {
       AND payload ? 'documentId'
   `;
 
-  const [documents, activeJobs] = await Promise.all([
-    prisma.document.findMany({
-      include: {
-        _count: {
-          select: { excerpts: true },
-        },
-      },
-    }),
+  const [documents, activeJobs, usableExcerptCountsByDocumentId] = await Promise.all([
+    prisma.document.findMany(),
     prisma.job.findMany({
       where: {
         jobType: "extract_document",
@@ -285,21 +255,20 @@ export async function backfillDocumentProcessingState(prisma) {
       },
       orderBy: [{ queuedAt: "desc" }],
     }),
+    getUsableExcerptCountsByDocumentId(prisma),
   ]);
 
   const activeJobsByDocumentId = pickActiveJobByDocumentId(activeJobs);
 
   for (const document of documents) {
-    const materialState = getStudyMaterialState(document, {
-      excerptCount: document._count?.excerpts ?? 0,
-    });
     const activeJob = activeJobsByDocumentId.get(document.id);
-    const nextStatus = materialState.isComplete
-      ? DOCUMENT_PROCESSING_STATUS.complete
-      : activeJob?.status === "running"
-        ? DOCUMENT_PROCESSING_STATUS.processing
-        : activeJob?.status === "queued"
-          ? DOCUMENT_PROCESSING_STATUS.queued
+    const usableExcerptCount = usableExcerptCountsByDocumentId.get(document.id) ?? 0;
+    const nextStatus = activeJob?.status === "running"
+      ? DOCUMENT_PROCESSING_STATUS.processing
+      : activeJob?.status === "queued"
+        ? DOCUMENT_PROCESSING_STATUS.queued
+        : usableExcerptCount > 0
+          ? DOCUMENT_PROCESSING_STATUS.complete
           : DOCUMENT_PROCESSING_STATUS.failed;
     const nextProcessingJobId = activeJob?.id ?? null;
     const nextProcessingError = nextStatus === DOCUMENT_PROCESSING_STATUS.failed

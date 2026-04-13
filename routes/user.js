@@ -1,5 +1,5 @@
 import express from "express";
-import { serializeDocument } from "../utils/documentStatus.js";
+import { reconcileDocumentProcessingState, serializeDocument } from "../utils/documentStatus.js";
 import { getMonthlyLimit } from "../utils/limits.js";
 import { toNumber } from "../utils/serializers.js";
 import { captureSentryException } from "../utils/sentry.js";
@@ -18,6 +18,10 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
             include: {
               _count: {
                 select: { excerpts: true },
+              },
+              generations: {
+                where: { isLatest: true },
+                orderBy: [{ generationType: "asc" }, { createdAt: "desc" }],
               },
             },
             orderBy: { uploadDate: "desc" },
@@ -46,6 +50,10 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
                 _count: {
                   select: { excerpts: true },
                 },
+                generations: {
+                  where: { isLatest: true },
+                  orderBy: [{ generationType: "asc" }, { createdAt: "desc" }],
+                },
               },
               orderBy: { uploadDate: "desc" },
             },
@@ -53,8 +61,12 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
         });
       }
 
+      const reconciledDocuments = await Promise.all(
+        user.documents.map((document) => reconcileDocumentProcessingState(prisma, document)),
+      );
+
       const monthlyLimit = getMonthlyLimit(user);
-      const documents = user.documents.map((document) => serializeDocument(document, {
+      const documents = reconciledDocuments.map((document) => serializeDocument(document, {
         excerptCount: document._count?.excerpts ?? 0,
       }));
 
