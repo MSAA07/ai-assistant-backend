@@ -16,6 +16,7 @@ import { createAdminRouter } from "./routes/admin.js";
 import { createJobsRouter } from "./routes/jobs.js";
 import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
+import { createCorsOriginValidator } from "./utils/frontendOrigins.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 
 dotenv.config();
@@ -31,35 +32,7 @@ const prisma = new PrismaClient();
 
 app.use(
   cors({
-    origin: (origin, callback) => {
-      const allowedOrigins = [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "https://my-ai-assistant-ypzx.vercel.app",
-        "https://my-ai-assistant-git-stage-msaa07.vercel.app",
-        "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
-        "https://my-ai-assistant-git-production-mohammed-abushayiqahs-projects.vercel.app",
-        "https://my-ai-assistant.vercel.app",
-        "https://studymaxing.com",
-        "https://www.studymaxing.com",
-      ];
-      
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) return callback(null, true);
-      
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        return callback(null, true);
-      }
-      
-      // Allow Vercel preview deployments for this project
-      if (origin.endsWith(".vercel.app") && origin.includes("my-ai-assistant")) {
-        return callback(null, true);
-      }
-      
-      return callback(new Error("Not allowed by CORS"));
-    },
+    origin: createCorsOriginValidator(),
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "User-Agent"],
