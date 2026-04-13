@@ -63,6 +63,11 @@ Current backend targets:
 - Staging: `https://ai-assistant-backend-staging.up.railway.app`
 - Production: `https://ai-assistant-backend-production-ddf0.up.railway.app`
 
+Production frontend origins expected by auth/CORS:
+
+- `https://studymaxing.com`
+- `https://www.studymaxing.com`
+
 ## Related Docs
 
 - `SYSTEM_OVERVIEW.md`: lifecycle, runtime, routes, and architecture

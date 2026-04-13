@@ -42,6 +42,8 @@ app.use(
         "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
         "https://my-ai-assistant-git-production-mohammed-abushayiqahs-projects.vercel.app",
         "https://my-ai-assistant.vercel.app",
+        "https://studymaxing.com",
+        "https://www.studymaxing.com",
       ];
       
       // Allow requests with no origin (like mobile apps or curl requests)
