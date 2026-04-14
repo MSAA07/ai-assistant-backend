@@ -60,78 +60,86 @@ export async function sendTransactionalEmail({
 }) {
   const provider = (process.env.AUTH_EMAIL_PROVIDER || "resend").trim().toLowerCase();
 
-  if (provider !== "resend") {
-    throw new Error(`Unsupported AUTH_EMAIL_PROVIDER: ${provider}`);
-  }
-
-  const apiKey = getRequiredEnv("RESEND_API_KEY");
-  const { from, replyTo } = getSenderConfig();
-
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: Array.isArray(to) ? to : [to],
-      subject,
-      html,
-      text,
-      ...(replyTo ? { reply_to: replyTo } : {}),
-    }),
-  });
-
-  const bodyText = await response.text();
-  let body = null;
-  if (bodyText) {
-    try {
-      body = JSON.parse(bodyText);
-    } catch {
-      body = { raw: bodyText };
-    }
-  }
-
   authEmailDiagnostics.lastAttemptAt = new Date().toISOString();
   authEmailDiagnostics.lastContext = context;
   authEmailDiagnostics.lastResult = "attempted";
   authEmailDiagnostics.lastMessageId = "";
   authEmailDiagnostics.lastError = "";
 
-  if (!response.ok) {
-    authEmailDiagnostics.lastResult = "rejected";
-    authEmailDiagnostics.lastError = JSON.stringify(body ?? response.statusText);
+  try {
+    if (provider !== "resend") {
+      throw new Error(`Unsupported AUTH_EMAIL_PROVIDER: ${provider}`);
+    }
 
-    console.error("[auth-email] provider rejected send", {
-      provider,
-      context,
-      status: response.status,
-      subject,
-      to: (Array.isArray(to) ? to : [to]).map(maskEmailAddress),
-      error: body ?? response.statusText,
+    const apiKey = getRequiredEnv("RESEND_API_KEY");
+    const { from, replyTo } = getSenderConfig();
+
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: Array.isArray(to) ? to : [to],
+        subject,
+        html,
+        text,
+        ...(replyTo ? { reply_to: replyTo } : {}),
+      }),
     });
 
-    throw new Error(
-      `Resend email request failed (${response.status}): ${JSON.stringify(body ?? response.statusText)}`,
-    );
+    const bodyText = await response.text();
+    let body = null;
+    if (bodyText) {
+      try {
+        body = JSON.parse(bodyText);
+      } catch {
+        body = { raw: bodyText };
+      }
+    }
+
+    if (!response.ok) {
+      authEmailDiagnostics.lastResult = "rejected";
+      authEmailDiagnostics.lastError = JSON.stringify(body ?? response.statusText);
+
+      console.error("[auth-email] provider rejected send", {
+        provider,
+        context,
+        status: response.status,
+        subject,
+        to: (Array.isArray(to) ? to : [to]).map(maskEmailAddress),
+        error: body ?? response.statusText,
+      });
+
+      throw new Error(
+        `Resend email request failed (${response.status}): ${JSON.stringify(body ?? response.statusText)}`,
+      );
+    }
+
+    const providerMessageId = body?.id || body?.data?.id || "";
+
+    authEmailDiagnostics.lastResult = "accepted";
+    authEmailDiagnostics.lastMessageId = providerMessageId || "";
+
+    console.info("[auth-email] provider accepted send", {
+      provider,
+      context,
+      subject,
+      to: (Array.isArray(to) ? to : [to]).map(maskEmailAddress),
+      messageId: providerMessageId || "(missing)",
+    });
+
+    return {
+      ...body,
+      providerMessageId,
+    };
+  } catch (error) {
+    authEmailDiagnostics.lastResult = "rejected";
+    authEmailDiagnostics.lastError = error instanceof Error
+      ? error.message
+      : String(error);
+    throw error;
   }
-
-  const providerMessageId = body?.id || body?.data?.id || "";
-
-  authEmailDiagnostics.lastResult = "accepted";
-  authEmailDiagnostics.lastMessageId = providerMessageId || "";
-
-  console.info("[auth-email] provider accepted send", {
-    provider,
-    context,
-    subject,
-    to: (Array.isArray(to) ? to : [to]).map(maskEmailAddress),
-    messageId: providerMessageId || "(missing)",
-  });
-
-  return {
-    ...body,
-    providerMessageId,
-  };
 }
