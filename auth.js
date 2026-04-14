@@ -11,15 +11,41 @@ import {
   buildResetPasswordEmail,
   buildVerificationEmail,
 } from "./utils/authEmailTemplates.js";
+import {
+  buildPasswordResetEmailActionUrl,
+  buildVerificationEmailActionUrl,
+} from "./utils/authCallbackUrls.js";
 import { sendTransactionalEmail } from "./utils/email.js";
 import { captureSentryException } from "./utils/sentry.js";
 
 const prisma = new PrismaClient();
 
 const isProduction = process.env.NODE_ENV === "production";
+function resolveBetterAuthBaseUrl() {
+  const rawBaseUrl = process.env.BETTER_AUTH_URL ?? process.env.BETTER_AUTH_BASE_URL ?? "";
+  const trimmed = rawBaseUrl.trim();
+  if (!trimmed) return "";
+
+  try {
+    const url = new URL(trimmed);
+    const pathname = url.pathname.replace(/\/+$/, "");
+    if (!pathname || pathname === "/") {
+      url.pathname = "/api/auth";
+    } else if (!pathname.endsWith("/api/auth")) {
+      url.pathname = `${pathname}/api/auth`;
+    } else {
+      url.pathname = pathname;
+    }
+    return url.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
 const supportEmail = process.env.AUTH_EMAIL_SUPPORT_EMAIL?.trim()
   || process.env.AUTH_EMAIL_REPLY_TO?.trim()
   || "";
+export const resolvedBetterAuthBaseURL = resolveBetterAuthBaseUrl();
 
 async function sendAuthEmail(sendPromise, context) {
   try {
@@ -37,16 +63,16 @@ export const auth = betterAuth({
   database: prismaAdapter(prisma, {
     provider: "postgresql", 
   }),
-  baseURL:
-    process.env.BETTER_AUTH_URL ?? process.env.BETTER_AUTH_BASE_URL,
+  baseURL: resolvedBetterAuthBaseURL,
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: true,
     autoSignIn: false,
-    sendResetPassword: async ({ user, url }) => {
+    sendResetPassword: async ({ user, url, token }) => {
+      const resetUrl = buildPasswordResetEmailActionUrl({ url, token });
       const message = buildResetPasswordEmail({
         name: user.name,
-        resetUrl: url,
+        resetUrl,
         supportEmail,
       });
 
@@ -87,10 +113,12 @@ export const auth = betterAuth({
   emailVerification: {
     sendOnSignUp: true,
     sendOnSignIn: true,
-    sendVerificationEmail: async ({ user, url }) => {
+    autoSignInAfterVerification: false,
+    sendVerificationEmail: async ({ user, url, token }) => {
+      const verificationUrl = buildVerificationEmailActionUrl({ url, token });
       const message = buildVerificationEmail({
         name: user.name,
-        verificationUrl: url,
+        verificationUrl,
         supportEmail,
       });
 
