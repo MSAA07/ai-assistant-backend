@@ -67,6 +67,6 @@ export function createCorsOriginValidator({ allowNoOrigin = true } = {}) {
       return callback(null, true);
     }
 
-    return callback(new Error("Not allowed by CORS"));
+    return callback(null, false);
   };
 }

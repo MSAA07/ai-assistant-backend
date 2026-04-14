@@ -17,6 +17,7 @@ import { createJobsRouter } from "./routes/jobs.js";
 import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { createCorsOriginValidator } from "./utils/frontendOrigins.js";
+import { getAuthEmailDiagnostics } from "./utils/email.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 
 dotenv.config();
@@ -46,7 +47,11 @@ const requireAuth = createRequireAuth({ auth, prisma });
 const requireAdmin = createRequireAdmin({ prisma });
 
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", message: "AI Study Assistant API is running" });
+  res.json({
+    status: "ok",
+    message: "AI Study Assistant API is running",
+    authEmail: getAuthEmailDiagnostics(),
+  });
 });
 
 app.use("/api/user", createUserRouter({ prisma, requireAuth }));
