@@ -21,13 +21,16 @@ const supportEmail = process.env.AUTH_EMAIL_SUPPORT_EMAIL?.trim()
   || process.env.AUTH_EMAIL_REPLY_TO?.trim()
   || "";
 
-function fireAndForget(promise, context) {
-  promise.catch((error) => {
+async function sendAuthEmail(sendPromise, context) {
+  try {
+    return await sendPromise;
+  } catch (error) {
     console.error(`[auth-email] ${context} failed:`, error);
     captureSentryException(error, {
       tags: { authEmail: context },
     });
-  });
+    throw error;
+  }
 }
 
 export const auth = betterAuth({
@@ -47,7 +50,7 @@ export const auth = betterAuth({
         supportEmail,
       });
 
-      fireAndForget(
+      await sendAuthEmail(
         sendTransactionalEmail({
           to: user.email,
           subject: message.subject,
@@ -68,7 +71,7 @@ export const auth = betterAuth({
     }),
     onExistingUserSignUp: async ({ user }) => {
       const message = buildExistingUserSignUpEmail({ supportEmail });
-      fireAndForget(
+      await sendAuthEmail(
         sendTransactionalEmail({
           to: user.email,
           subject: message.subject,
@@ -89,7 +92,7 @@ export const auth = betterAuth({
         supportEmail,
       });
 
-      fireAndForget(
+      await sendAuthEmail(
         sendTransactionalEmail({
           to: user.email,
           subject: message.subject,

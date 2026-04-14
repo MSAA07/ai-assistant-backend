@@ -6,6 +6,15 @@ function getRequiredEnv(name) {
   return value;
 }
 
+function maskEmailAddress(address = "") {
+  const [localPart = "", domain = ""] = String(address).split("@");
+  if (!domain) return "***";
+  if (localPart.length <= 2) {
+    return `${localPart[0] || "*"}***@${domain}`;
+  }
+  return `${localPart.slice(0, 2)}***@${domain}`;
+}
+
 function getSenderConfig() {
   const fromEmail = getRequiredEnv("AUTH_EMAIL_FROM_EMAIL");
   const fromName = process.env.AUTH_EMAIL_FROM_NAME?.trim() || "Studymaxing";
@@ -48,10 +57,41 @@ export async function sendTransactionalEmail({
     }),
   });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Resend email request failed (${response.status}): ${body || response.statusText}`);
+  const bodyText = await response.text();
+  let body = null;
+  if (bodyText) {
+    try {
+      body = JSON.parse(bodyText);
+    } catch {
+      body = { raw: bodyText };
+    }
   }
 
-  return response.json();
+  if (!response.ok) {
+    console.error("[auth-email] provider rejected send", {
+      provider,
+      status: response.status,
+      subject,
+      to: (Array.isArray(to) ? to : [to]).map(maskEmailAddress),
+      error: body ?? response.statusText,
+    });
+
+    throw new Error(
+      `Resend email request failed (${response.status}): ${JSON.stringify(body ?? response.statusText)}`,
+    );
+  }
+
+  const providerMessageId = body?.id || body?.data?.id || "";
+
+  console.info("[auth-email] provider accepted send", {
+    provider,
+    subject,
+    to: (Array.isArray(to) ? to : [to]).map(maskEmailAddress),
+    messageId: providerMessageId || "(missing)",
+  });
+
+  return {
+    ...body,
+    providerMessageId,
+  };
 }

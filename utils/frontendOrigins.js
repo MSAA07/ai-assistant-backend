@@ -15,6 +15,10 @@ const DEPLOYED_FRONTEND_ORIGINS = [
   "https://www.studymaxing.com",
 ];
 
+const REMOVED_FRONTEND_ORIGINS = new Set([
+  "https://my-ai-assistant-git-stage-msaa07.vercel.app",
+]);
+
 function normalizeOrigin(origin = "") {
   const value = origin.trim();
   return value.endsWith("/") ? value.slice(0, -1) : value;
@@ -28,7 +32,13 @@ function parseOriginList(raw = "") {
 }
 
 export function isAllowedVercelPreviewOrigin(origin = "") {
-  return origin.endsWith(".vercel.app") && origin.includes("my-ai-assistant");
+  const normalizedOrigin = normalizeOrigin(origin);
+  if (REMOVED_FRONTEND_ORIGINS.has(normalizedOrigin)) {
+    return false;
+  }
+
+  return normalizedOrigin.endsWith(".vercel.app")
+    && normalizedOrigin.includes("my-ai-assistant");
 }
 
 export function getAllowedFrontendOrigins() {
@@ -36,7 +46,7 @@ export function getAllowedFrontendOrigins() {
     ...LOCAL_FRONTEND_ORIGINS,
     ...DEPLOYED_FRONTEND_ORIGINS,
     ...parseOriginList(process.env.FRONTEND_ORIGINS || ""),
-  ];
+  ].filter((origin) => !REMOVED_FRONTEND_ORIGINS.has(origin));
 }
 
 export function isAllowedFrontendOrigin(origin = "") {
