@@ -1,4 +1,5 @@
 import { captureSentryException } from "../utils/sentry.js";
+import { maskEmailAddress, maskIpAddress, recordAuthEvent } from "../utils/authTelemetry.js";
 
 const parseAdminEmails = () => {
   const raw = process.env.ADMIN_EMAILS || "";
@@ -25,6 +26,54 @@ export const createRequireAuth = ({ auth, prisma }) => {
 
       req.session = session;
 
+      const userRecord = await prisma.user.findUnique({
+        where: { id: session.user.id },
+        select: {
+          id: true,
+          email: true,
+          banned: true,
+          banReason: true,
+          banExpires: true,
+          role: true,
+        },
+      });
+
+      if (!userRecord) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      if (userRecord.banned && userRecord.banExpires && new Date(userRecord.banExpires).getTime() <= Date.now()) {
+        await prisma.user.update({
+          where: { id: userRecord.id },
+          data: {
+            banned: false,
+            banReason: null,
+            banExpires: null,
+          },
+        });
+        userRecord.banned = false;
+        userRecord.banReason = null;
+        userRecord.banExpires = null;
+      }
+
+      if (userRecord.banned) {
+        const revoked = await prisma.session.deleteMany({
+          where: { userId: session.user.id },
+        });
+        recordAuthEvent("auth.blocked.protected_route", {
+          outcome: "blocked",
+          userId: session.user.id,
+          email: maskEmailAddress(userRecord.email),
+          ip: maskIpAddress(req.ip || req.socket?.remoteAddress || ""),
+          revokedSessions: revoked.count,
+          path: req.originalUrl || req.url,
+        });
+        return res.status(423).json({
+          error: "This account is suspended. Contact support for help.",
+          code: "account_suspended",
+        });
+      }
+
       const email = session.user?.email?.toLowerCase?.() || "";
       const shouldElevate = adminEmails.has(email);
       const updates = {
@@ -34,6 +83,10 @@ export const createRequireAuth = ({ auth, prisma }) => {
       if (shouldElevate && session.user.role !== "admin") {
         updates.role = "admin";
         req.session.user.role = "admin";
+      }
+
+      if (userRecord.role && session.user.role !== userRecord.role) {
+        req.session.user.role = userRecord.role;
       }
 
       try {

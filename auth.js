@@ -17,6 +17,7 @@ import {
 } from "./utils/authCallbackUrls.js";
 import { sendTransactionalEmail } from "./utils/email.js";
 import { captureSentryException } from "./utils/sentry.js";
+import { maskEmailAddress, recordAuthEvent, recordAuthFailure } from "./utils/authTelemetry.js";
 
 const prisma = new PrismaClient();
 
@@ -47,11 +48,21 @@ const supportEmail = process.env.AUTH_EMAIL_SUPPORT_EMAIL?.trim()
   || "";
 export const resolvedBetterAuthBaseURL = resolveBetterAuthBaseUrl();
 
-async function sendAuthEmail(sendPromise, context) {
+async function sendAuthEmail(sendPromise, context, metadata = {}) {
   try {
-    return await sendPromise;
+    const result = await sendPromise;
+    recordAuthEvent(`auth.email.${context}.success`, {
+      outcome: "success",
+      email: maskEmailAddress(metadata.email),
+      context,
+    });
+    return result;
   } catch (error) {
     console.error(`[auth-email] ${context} failed:`, error);
+    recordAuthFailure(`auth.email.${context}.failure`, error, {
+      context,
+      email: maskEmailAddress(metadata.email),
+    });
     captureSentryException(error, {
       tags: { authEmail: context },
     });
@@ -85,6 +96,7 @@ export const auth = betterAuth({
           context: "send-reset-password",
         }),
         "send-reset-password",
+        { email: user.email },
       );
     },
     customSyntheticUser: ({ coreFields, additionalFields, id }) => ({
@@ -107,6 +119,7 @@ export const auth = betterAuth({
           context: "existing-user-signup",
         }),
         "existing-user-signup",
+        { email: user.email },
       );
     },
   },
@@ -131,6 +144,7 @@ export const auth = betterAuth({
           context: "send-verification",
         }),
         "send-verification",
+        { email: user.email },
       );
     },
   },

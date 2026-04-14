@@ -6,6 +6,7 @@ import { toNodeHandler } from "better-auth/node";
 
 import { auth, resolvedBetterAuthBaseURL } from "./auth.js";
 import { createRequireAuth } from "./middleware/auth.js";
+import { createAuthHardeningMiddleware, getAuthSecurityDiagnostics } from "./middleware/authHardening.js";
 import { createRequireAdmin } from "./middleware/adminGuard.js";
 import { createUserRouter } from "./routes/user.js";
 import { createDocumentsRouter } from "./routes/documents.js";
@@ -19,6 +20,7 @@ import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { createCorsOriginValidator } from "./utils/frontendOrigins.js";
 import { getAuthEmailDiagnostics } from "./utils/email.js";
 import { getAuthCallbackDiagnostics } from "./utils/authCallbackUrls.js";
+import { getAuthTelemetrySnapshot } from "./utils/authTelemetry.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 
 dotenv.config();
@@ -31,6 +33,7 @@ initSentry({ serviceName: "backend" });
 
 const app = express();
 const prisma = new PrismaClient();
+app.set("trust proxy", 1);
 
 function buildBetterAuthRedirectUrl(pathname, query = {}) {
   const baseUrl = resolvedBetterAuthBaseURL?.trim();
@@ -70,6 +73,7 @@ app.use(
   }),
 );
 app.use(express.json());
+app.use("/api/auth", createAuthHardeningMiddleware({ auth, prisma }));
 
 app.get("/verify-email", (req, res) => {
   const redirectUrl = buildBetterAuthRedirectUrl("/verify-email", req.query);
@@ -100,6 +104,8 @@ app.get("/api/health", (req, res) => {
     message: "AI Study Assistant API is running",
     authEmail: getAuthEmailDiagnostics(),
     authCallbacks: getAuthCallbackDiagnostics(),
+    authTelemetry: getAuthTelemetrySnapshot(),
+    authSecurity: getAuthSecurityDiagnostics(),
     betterAuthBaseURL: resolvedBetterAuthBaseURL,
   });
 });
