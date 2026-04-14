@@ -56,6 +56,7 @@ export const auth = betterAuth({
           subject: message.subject,
           html: message.html,
           text: message.text,
+          context: "send-reset-password",
         }),
         "send-reset-password",
       );
@@ -77,6 +78,7 @@ export const auth = betterAuth({
           subject: message.subject,
           html: message.html,
           text: message.text,
+          context: "existing-user-signup",
         }),
         "existing-user-signup",
       );
@@ -98,6 +100,7 @@ export const auth = betterAuth({
           subject: message.subject,
           html: message.html,
           text: message.text,
+          context: "send-verification",
         }),
         "send-verification",
       );
