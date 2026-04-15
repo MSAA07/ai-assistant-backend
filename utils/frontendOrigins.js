@@ -5,6 +5,8 @@ const LOCAL_FRONTEND_ORIGINS = [
   "http://127.0.0.1:5174",
 ];
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const DEPLOYED_FRONTEND_ORIGINS = [
   "https://my-ai-assistant-ypzx.vercel.app",
   "https://my-ai-assistant-taupe.vercel.app",
@@ -32,6 +34,10 @@ function parseOriginList(raw = "") {
 }
 
 export function isAllowedVercelPreviewOrigin(origin = "") {
+  if (isProduction) {
+    return false;
+  }
+
   const normalizedOrigin = normalizeOrigin(origin);
   if (REMOVED_FRONTEND_ORIGINS.has(normalizedOrigin)) {
     return false;
@@ -42,9 +48,15 @@ export function isAllowedVercelPreviewOrigin(origin = "") {
 }
 
 export function getAllowedFrontendOrigins() {
+  const deployedOrigins = isProduction
+    ? DEPLOYED_FRONTEND_ORIGINS.filter((origin) =>
+      origin === "https://studymaxing.com"
+      || origin === "https://www.studymaxing.com")
+    : DEPLOYED_FRONTEND_ORIGINS;
+
   return [
-    ...LOCAL_FRONTEND_ORIGINS,
-    ...DEPLOYED_FRONTEND_ORIGINS,
+    ...(isProduction ? [] : LOCAL_FRONTEND_ORIGINS),
+    ...deployedOrigins,
     ...parseOriginList(process.env.FRONTEND_ORIGINS || ""),
   ].filter((origin) => !REMOVED_FRONTEND_ORIGINS.has(origin));
 }
