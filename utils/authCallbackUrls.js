@@ -75,14 +75,6 @@ function getFirstConfiguredUrl(envNames = []) {
 }
 
 function resolveFrontendCallbackBase({ rawUrl, action, envNames }) {
-  const configuredCallbackUrl = getFirstConfiguredUrl(envNames);
-  if (configuredCallbackUrl) {
-    return {
-      source: "env",
-      callbackUrl: configuredCallbackUrl,
-    };
-  }
-
   const extractedCallbackUrl = extractCallbackUrl(rawUrl);
   if (extractedCallbackUrl) {
     return {
@@ -91,6 +83,13 @@ function resolveFrontendCallbackBase({ rawUrl, action, envNames }) {
     };
   }
 
+  const configuredCallbackUrl = getFirstConfiguredUrl(envNames);
+  if (configuredCallbackUrl) {
+    return {
+      source: "env",
+      callbackUrl: configuredCallbackUrl,
+    };
+  }
   const appUrl = getFirstConfiguredUrl(["AUTH_EMAIL_APP_URL"]);
   if (appUrl) {
     return {

@@ -49,6 +49,8 @@ API server:
 - mounts Better Auth under `/api/auth/*`
 - mounts REST routes under `/api/*`
 - runs schema and document-state reconciliation on startup
+- uses one shared allowed-origin source for Better Auth trusted origins and Express CORS
+- Better Auth email/password verification emails are sent through the configured transactional email provider
 
 Worker:
 

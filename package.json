@@ -4,13 +4,15 @@
   "type": "module",
   "scripts": {
     "postinstall": "prisma generate",
-    "start": "prisma db push --accept-data-loss && node server.js",
-    "worker": "prisma db push --accept-data-loss && node worker.js",
+    "start": "node scripts/run-with-prisma.js server",
+    "worker": "node scripts/run-with-prisma.js worker",
     "dev": "node server.js",
-    "db:push": "npx prisma db push --accept-data-loss",
+    "db:push": "npx prisma db push",
+    "db:migrate:deploy": "npx prisma migrate deploy",
     "db:studio": "prisma studio",
     "seed": "prisma db seed",
-    "phase2:backfill": "node scripts/backfill-phase2-canonical.js"
+    "phase2:backfill": "node scripts/backfill-phase2-canonical.js",
+    "auth:check-config": "node scripts/print-auth-config.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1000.0",

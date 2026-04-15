@@ -87,3 +87,22 @@ test("buildPasswordResetEmailActionUrl rewrites reset links to the frontend brid
     },
   );
 });
+
+test("request callbackURL takes precedence over env callback overrides", () => {
+  withEnv(
+    {
+      AUTH_PASSWORD_RESET_CALLBACK_URL: "https://stage-fixed.example.com/?auth_action=reset-password",
+      VITE_AUTH_PASSWORD_RESET_CALLBACK_URL: "",
+      AUTH_EMAIL_APP_URL: "https://fallback.example.com",
+    },
+    () => {
+      const frontendCallback = "https://preview.example.com/?auth_action=reset-password";
+      const rawUrl = `https://backend.example.com/api/auth/reset-password/token-123?callbackURL=${encodeURIComponent(frontendCallback)}`;
+
+      assert.equal(
+        buildPasswordResetEmailActionUrl({ url: rawUrl, token: "token-123" }),
+        "https://preview.example.com/?auth_action=reset-password&token=token-123",
+      );
+    },
+  );
+});
