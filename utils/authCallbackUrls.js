@@ -1,3 +1,5 @@
+import { isAllowedFrontendOrigin } from "./frontendOrigins.js";
+
 const authCallbackDiagnostics = {
   lastAction: "",
   lastUpdatedAt: "",
@@ -7,6 +9,12 @@ const authCallbackDiagnostics = {
   lastRawAuthUrl: "",
   lastResolvedActionUrl: "",
 };
+
+const PRODUCTION_AUTH_APP_URL = "https://studymaxing.com";
+
+function isProductionEnvironment() {
+  return process.env.NODE_ENV === "production";
+}
 
 function normalizeAbsoluteUrl(value = "") {
   const trimmed = String(value).trim();
@@ -67,11 +75,22 @@ function getFirstConfiguredUrl(envNames = []) {
   for (const envName of envNames) {
     const value = normalizeAbsoluteUrl(process.env[envName] || "");
     if (value) {
-      return value;
+      const sanitized = sanitizeCallbackUrl(value);
+      if (sanitized) {
+        return sanitized;
+      }
     }
   }
 
   return "";
+}
+
+function sanitizeCallbackUrl(value = "") {
+  const normalized = normalizeAbsoluteUrl(value);
+  if (!normalized) return "";
+  if (!isProductionEnvironment()) return normalized;
+
+  return isAllowedFrontendOrigin(normalized) ? normalized : "";
 }
 
 function resolveFrontendCallbackBase({ rawUrl, action, envNames }) {
@@ -96,6 +115,13 @@ function resolveFrontendCallbackBase({ rawUrl, action, envNames }) {
     return {
       source: "app_url",
       callbackUrl: buildFrontendActionUrl(appUrl, { auth_action: action }),
+    };
+  }
+
+  if (isProductionEnvironment()) {
+    return {
+      source: "production_default",
+      callbackUrl: buildFrontendActionUrl(PRODUCTION_AUTH_APP_URL, { auth_action: action }),
     };
   }
 
