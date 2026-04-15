@@ -75,19 +75,19 @@ function getFirstConfiguredUrl(envNames = []) {
 }
 
 function resolveFrontendCallbackBase({ rawUrl, action, envNames }) {
-  const configuredCallbackUrl = getFirstConfiguredUrl(envNames);
-  if (configuredCallbackUrl) {
-    return {
-      source: "env",
-      callbackUrl: configuredCallbackUrl,
-    };
-  }
-
   const extractedCallbackUrl = extractCallbackUrl(rawUrl);
   if (extractedCallbackUrl) {
     return {
       source: "request",
       callbackUrl: extractedCallbackUrl,
+    };
+  }
+
+  const configuredCallbackUrl = getFirstConfiguredUrl(envNames);
+  if (configuredCallbackUrl) {
+    return {
+      source: "env",
+      callbackUrl: configuredCallbackUrl,
     };
   }
 

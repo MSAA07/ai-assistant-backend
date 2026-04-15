@@ -50,6 +50,28 @@ test("buildVerificationEmailActionUrl rewrites Better Auth links to the frontend
   );
 });
 
+test("buildVerificationEmailActionUrl prefers request callbackURL over env override", () => {
+  withEnv(
+    {
+      AUTH_VERIFICATION_CALLBACK_URL: "https://stale-stage.example.com/?auth_action=verify-email",
+      VITE_AUTH_VERIFICATION_CALLBACK_URL: "",
+      AUTH_EMAIL_APP_URL: "",
+    },
+    () => {
+      const frontendCallback = "https://studymaxing.com/?auth_action=verify-email";
+      const rawUrl = `https://backend.example.com/api/auth/verify-email?token=abc123&callbackURL=${encodeURIComponent(frontendCallback)}`;
+
+      assert.equal(
+        buildVerificationEmailActionUrl({
+          url: rawUrl,
+          token: "abc123",
+        }),
+        "https://studymaxing.com/?auth_action=verify-email&token=abc123",
+      );
+    },
+  );
+});
+
 test("buildVerificationEmailActionUrl falls back to AUTH_EMAIL_APP_URL when callbackURL is missing", () => {
   withEnv(
     {
@@ -83,6 +105,28 @@ test("buildPasswordResetEmailActionUrl rewrites reset links to the frontend brid
       assert.equal(
         buildPasswordResetEmailActionUrl({ url: rawUrl, token: "token-123" }),
         "https://preview.example.com/?auth_action=reset-password&token=token-123",
+      );
+    },
+  );
+});
+
+test("buildPasswordResetEmailActionUrl prefers request callbackURL over env override", () => {
+  withEnv(
+    {
+      AUTH_PASSWORD_RESET_CALLBACK_URL: "https://stale-stage.example.com/?auth_action=reset-password",
+      VITE_AUTH_PASSWORD_RESET_CALLBACK_URL: "",
+      AUTH_EMAIL_APP_URL: "",
+    },
+    () => {
+      const frontendCallback = "https://studymaxing.com/?auth_action=reset-password";
+      const rawUrl = `https://backend.example.com/api/auth/reset-password/token-123?callbackURL=${encodeURIComponent(frontendCallback)}`;
+
+      assert.equal(
+        buildPasswordResetEmailActionUrl({
+          url: rawUrl,
+          token: "token-123",
+        }),
+        "https://studymaxing.com/?auth_action=reset-password&token=token-123",
       );
     },
   );
