@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { toNodeHandler } from "better-auth/node";
+import { hashPassword } from "better-auth/crypto";
 
 import { auth, resolvedBetterAuthBaseURL } from "./auth.js";
 import { createRequireAuth } from "./middleware/auth.js";
@@ -62,6 +63,84 @@ function buildBetterAuthRedirectUrl(pathname, query = {}) {
   });
 
   return target.toString();
+}
+
+const LEGACY_STAGE_ADMIN_EMAIL = "admin@ai.com";
+const LEGACY_STAGE_ADMIN_PASSWORD = "admin123";
+const LEGACY_STAGE_ADMIN_NAME = "Admin";
+
+function shouldRepairLegacyStageAdmin() {
+  const deploymentHint = [
+    process.env.BETTER_AUTH_URL,
+    process.env.BETTER_AUTH_BASE_URL,
+    process.env.RAILWAY_PUBLIC_DOMAIN,
+    process.env.RAILWAY_STATIC_URL,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return deploymentHint.includes("staging");
+}
+
+async function ensureLegacyStageAdminAccess() {
+  if (!shouldRepairLegacyStageAdmin()) {
+    return;
+  }
+
+  const hashedPassword = await hashPassword(LEGACY_STAGE_ADMIN_PASSWORD);
+  const now = new Date();
+
+  const user = await prisma.user.upsert({
+    where: { email: LEGACY_STAGE_ADMIN_EMAIL },
+    update: {
+      name: LEGACY_STAGE_ADMIN_NAME,
+      role: "admin",
+      emailVerified: true,
+      plan: "premium",
+      monthlyLimit: 9999,
+    },
+    create: {
+      email: LEGACY_STAGE_ADMIN_EMAIL,
+      name: LEGACY_STAGE_ADMIN_NAME,
+      emailVerified: true,
+      role: "admin",
+      plan: "premium",
+      monthlyLimit: 9999,
+    },
+  });
+
+  const existingCredentialAccount = await prisma.account.findFirst({
+    where: {
+      userId: user.id,
+      providerId: "credential",
+    },
+  });
+
+  if (existingCredentialAccount) {
+    await prisma.account.update({
+      where: { id: existingCredentialAccount.id },
+      data: {
+        accountId: user.id,
+        password: hashedPassword,
+        updatedAt: now,
+      },
+    });
+  } else {
+    await prisma.account.create({
+      data: {
+        id: `credential:${user.id}`,
+        accountId: user.id,
+        providerId: "credential",
+        userId: user.id,
+        password: hashedPassword,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+  }
+
+  console.log("[startup] ensured legacy stage admin credentials");
 }
 
 app.use(
@@ -145,6 +224,7 @@ const PORT = process.env.PORT || 3001;
 async function startServer() {
   await ensureDocumentGenerationSchema(prisma);
   await backfillDocumentProcessingState(prisma);
+  await ensureLegacyStageAdminAccess();
 
   app.listen(PORT, () => {
     console.log(`AI Study Assistant API running on port ${PORT}`);
