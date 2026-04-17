@@ -6,6 +6,7 @@ const LOCAL_FRONTEND_ORIGINS = [
 ];
 
 const DEPLOYED_FRONTEND_ORIGINS = [
+  "https://my-ai-assistant*.vercel.app",
   "https://my-ai-assistant-ypzx.vercel.app",
   "https://my-ai-assistant-taupe.vercel.app",
   "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
