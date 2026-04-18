@@ -3,6 +3,11 @@ import json
 from pptx import Presentation
 from pptx.util import Inches
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 def extract(filepath):
     prs = Presentation(filepath)
     slides = []
@@ -33,14 +38,14 @@ def extract(filepath):
             "hasImages": has_images
         })
 
-    print(json.dumps({"slides": slides}))
+    print(json.dumps({"slides": slides}, ensure_ascii=False))
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "No file path provided"}), file=sys.stderr)
+        print(json.dumps({"error": "No file path provided"}, ensure_ascii=False), file=sys.stderr)
         sys.exit(1)
     try:
         extract(sys.argv[1])
     except Exception as e:
-        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False), file=sys.stderr)
         sys.exit(1)

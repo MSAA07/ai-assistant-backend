@@ -6,6 +6,7 @@ import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 
 import { countUsableExcerpts } from "./documentStatus.js";
+import { repairPotentialUnicodeCorruption } from "./filenames.js";
 import { updateJobProgress } from "./jobQueue.js";
 import {
   ensureUserLimitExists,
@@ -22,16 +23,18 @@ function buildExtractionResult(documentId, excerptCount, excerptSource) {
   };
 }
 
-function sanitizeExtractedText(value) {
+export function sanitizeExtractedText(value) {
   if (typeof value !== "string") {
     return "";
   }
 
-  return value
+  return repairPotentialUnicodeCorruption(
+    value
     .replace(/\u0000/g, "")
     .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .replace(/\r\n?/g, "\n")
-    .trim();
+    .trim(),
+  );
 }
 
 function sanitizeExcerpt(excerpt) {
@@ -41,22 +44,157 @@ function sanitizeExcerpt(excerpt) {
   };
 }
 
-function detectDocumentLanguage(excerpts = []) {
-  let arabicCharCount = 0;
-  let latinCharCount = 0;
+const LATIN_LANGUAGE_PROFILES = Object.freeze([
+  {
+    key: "english",
+    words: ["the", "and", "is", "are", "with", "from", "this", "that", "for", "of"],
+    chars: [],
+  },
+  {
+    key: "spanish",
+    words: ["el", "la", "los", "las", "de", "del", "para", "una", "que", "con"],
+    chars: ["á", "é", "í", "ó", "ú", "ñ"],
+  },
+  {
+    key: "french",
+    words: ["le", "la", "les", "des", "une", "dans", "pour", "avec", "est", "que"],
+    chars: ["à", "â", "ç", "é", "è", "ê", "ë", "î", "ï", "ô", "ù", "û", "ü"],
+  },
+  {
+    key: "german",
+    words: ["der", "die", "das", "und", "mit", "für", "ist", "nicht", "ein", "eine"],
+    chars: ["ä", "ö", "ü", "ß"],
+  },
+  {
+    key: "portuguese",
+    words: ["de", "do", "da", "dos", "das", "para", "com", "uma", "que", "não"],
+    chars: ["ã", "õ", "á", "â", "ê", "ç"],
+  },
+  {
+    key: "italian",
+    words: ["il", "lo", "gli", "della", "delle", "con", "per", "una", "che", "non"],
+    chars: ["à", "è", "é", "ì", "ò", "ù"],
+  },
+  {
+    key: "dutch",
+    words: ["de", "het", "een", "van", "voor", "met", "dat", "niet", "zijn", "als"],
+    chars: ["ij"],
+  },
+  {
+    key: "turkish",
+    words: ["ve", "bir", "ile", "için", "bu", "olan", "olarak", "da", "de", "çok"],
+    chars: ["ç", "ğ", "ı", "İ", "ö", "ş", "ü"],
+  },
+  {
+    key: "indonesian",
+    words: ["dan", "yang", "untuk", "dengan", "adalah", "ini", "pada", "dari", "dalam", "atau"],
+    chars: [],
+  },
+]);
 
-  for (const excerpt of excerpts) {
-    const content = typeof excerpt?.content === "string" ? excerpt.content : "";
-    for (const char of content) {
-      if (/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(char)) {
-        arabicCharCount += 1;
-      } else if (/[A-Za-z]/.test(char)) {
-        latinCharCount += 1;
-      }
+function buildLanguageAnalysisText(excerpts = []) {
+  return excerpts
+    .map((excerpt) => (typeof excerpt?.content === "string" ? excerpt.content : ""))
+    .join("\n")
+    .slice(0, 60_000);
+}
+
+function countPatternMatches(text, pattern) {
+  const matches = text.match(pattern);
+  return matches ? matches.length : 0;
+}
+
+function countWordMatches(text, words = []) {
+  let total = 0;
+  for (const word of words) {
+    const safeWord = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    total += countPatternMatches(text, new RegExp(`\\b${safeWord}\\b`, "g"));
+  }
+  return total;
+}
+
+export function detectDocumentLanguage(excerpts = []) {
+  const text = buildLanguageAnalysisText(excerpts);
+  if (!text.trim()) {
+    return "english";
+  }
+
+  const lowercaseText = text.toLowerCase();
+  const scriptCounts = {
+    arabic: countPatternMatches(text, /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/g),
+    cyrillic: countPatternMatches(text, /[\u0400-\u04FF]/g),
+    devanagari: countPatternMatches(text, /[\u0900-\u097F]/g),
+    hebrew: countPatternMatches(text, /[\u0590-\u05FF]/g),
+    greek: countPatternMatches(text, /[\u0370-\u03FF]/g),
+    bengali: countPatternMatches(text, /[\u0980-\u09FF]/g),
+    thai: countPatternMatches(text, /[\u0E00-\u0E7F]/g),
+    hiraganaKatakana: countPatternMatches(text, /[\u3040-\u30FF]/g),
+    hangul: countPatternMatches(text, /[\uAC00-\uD7AF]/g),
+    han: countPatternMatches(text, /[\u4E00-\u9FFF]/g),
+    latin: countPatternMatches(text, /[A-Za-z]/g),
+  };
+
+  if (scriptCounts.hiraganaKatakana >= 5) {
+    return "japanese";
+  }
+
+  if (scriptCounts.hangul >= 5) {
+    return "korean";
+  }
+
+  if (scriptCounts.han >= 15) {
+    return "chinese";
+  }
+
+  if (scriptCounts.devanagari >= 5) {
+    return "hindi";
+  }
+
+  if (scriptCounts.bengali >= 5) {
+    return "bengali";
+  }
+
+  if (scriptCounts.thai >= 5) {
+    return "thai";
+  }
+
+  if (scriptCounts.hebrew >= 5) {
+    return "hebrew";
+  }
+
+  if (scriptCounts.greek >= 5) {
+    return "greek";
+  }
+
+  if (scriptCounts.arabic >= 5 && scriptCounts.arabic >= scriptCounts.latin / 2) {
+    return "arabic";
+  }
+
+  if (scriptCounts.cyrillic >= 5) {
+    const ukrainianScore = countPatternMatches(lowercaseText, /[іїєґ]/g)
+      + countWordMatches(lowercaseText, ["та", "це", "для", "що", "з", "до"]);
+    const russianScore = countPatternMatches(lowercaseText, /[ыэъ]/g)
+      + countWordMatches(lowercaseText, ["и", "это", "для", "что", "с", "по"]);
+    return ukrainianScore > russianScore ? "ukrainian" : "russian";
+  }
+
+  let bestLanguage = "english";
+  let bestScore = 0;
+  for (const profile of LATIN_LANGUAGE_PROFILES) {
+    const wordScore = countWordMatches(lowercaseText, profile.words);
+    const charScore = profile.chars.reduce(
+      (sum, value) => sum + countPatternMatches(text, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")),
+      0,
+    );
+    const totalScore = wordScore + (charScore * 2);
+
+    if (totalScore > bestScore) {
+      bestScore = totalScore;
+      bestLanguage = profile.key;
     }
   }
 
-  return arabicCharCount > latinCharCount ? "arabic" : "english";
+  return bestScore >= 2 ? bestLanguage : "english";
 }
 
 export async function processExtraction(prisma, job, workerId) {
@@ -252,9 +390,17 @@ async function extractDocx(filePath) {
 async function extractPptx(filePath) {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(process.cwd(), "scripts", "extract_pptx.py");
-    const child = spawn("python3", [scriptPath, filePath]);
+    const child = spawn("python3", [scriptPath, filePath], {
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: "utf-8",
+      },
+    });
     let stdout = "";
     let stderr = "";
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
 
     child.stdout.on("data", (data) => {
       stdout += data;

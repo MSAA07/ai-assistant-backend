@@ -41,13 +41,14 @@ function scoreFilename(value) {
 
 function decodeUtf8FromLatin1(value) {
   try {
-    return Buffer.from(value, "latin1").toString("utf8");
+    const bytes = Uint8Array.from(value, (char) => char.charCodeAt(0) & 0xff);
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
   } catch {
     return value;
   }
 }
 
-function recoverLikelyMojibake(value) {
+export function repairPotentialUnicodeCorruption(value) {
   const source = sanitizeFilenameText(value);
   if (!source) {
     return "";
@@ -65,12 +66,12 @@ function recoverLikelyMojibake(value) {
 }
 
 export function normalizeDocumentName(value) {
-  return sanitizeFilenameText(value);
+  return repairPotentialUnicodeCorruption(value);
 }
 
 export function normalizeUploadedFilename(value) {
   const stripped = stripDirectorySegments(value);
-  return recoverLikelyMojibake(stripped);
+  return repairPotentialUnicodeCorruption(stripped);
 }
 
 export function getStorageFileExtension(originalFilename) {
