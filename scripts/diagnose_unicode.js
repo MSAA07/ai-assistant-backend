@@ -5,11 +5,27 @@ import { repairPotentialUnicodeCorruption } from "../utils/filenames.js";
 const prisma = new PrismaClient();
 const SHOULD_REPAIR = process.argv.includes("--repair");
 const SAMPLE_LIMIT = 25;
-const MOJIBAKE_PATTERN = /[ÃƒÃ‚ÃÃ‘Ã˜Ã™]/;
+const SUSPICIOUS_TOKENS = ["Ã", "Ø", "Ù"];
+const MOJIBAKE_PATTERN = /[ÃØÙ]/;
 
 function isChanged(value) {
   const normalized = typeof value === "string" ? value : "";
   return repairPotentialUnicodeCorruption(normalized) !== normalized;
+}
+
+function buildContainsClauses(field) {
+  return SUSPICIOUS_TOKENS.map((token) => ({
+    [field]: { contains: token },
+  }));
+}
+
+function summarizeRecords(records, valueKey) {
+  return records.map((record) => ({
+    ...record,
+    looksSuspicious: MOJIBAKE_PATTERN.test(record[valueKey] || ""),
+    wouldChange: isChanged(record[valueKey]),
+    repairedPreview: repairPotentialUnicodeCorruption(record[valueKey]).slice(0, 140),
+  }));
 }
 
 async function fetchEncodingDiagnostics() {
@@ -26,14 +42,14 @@ async function fetchSuspiciousDocuments() {
   return prisma.document.findMany({
     where: {
       OR: [
-        { originalName: { contains: "Ã" } },
-        { originalName: { contains: "Ø" } },
-        { originalName: { contains: "Ù" } },
+        ...buildContainsClauses("originalName"),
+        ...buildContainsClauses("summary"),
       ],
     },
     select: {
       id: true,
       originalName: true,
+      summary: true,
     },
     take: SAMPLE_LIMIT,
     orderBy: { uploadDate: "desc" },
@@ -43,11 +59,7 @@ async function fetchSuspiciousDocuments() {
 async function fetchSuspiciousExcerpts() {
   return prisma.documentExcerpt.findMany({
     where: {
-      OR: [
-        { content: { contains: "Ã" } },
-        { content: { contains: "Ø" } },
-        { content: { contains: "Ù" } },
-      ],
+      OR: buildContainsClauses("content"),
     },
     select: {
       id: true,
@@ -64,19 +76,24 @@ async function repairDocuments() {
     select: {
       id: true,
       originalName: true,
+      summary: true,
     },
   });
 
   let repaired = 0;
   for (const document of documents) {
-    const nextValue = repairPotentialUnicodeCorruption(document.originalName);
-    if (nextValue === document.originalName) {
+    const nextOriginalName = repairPotentialUnicodeCorruption(document.originalName);
+    const nextSummary = repairPotentialUnicodeCorruption(document.summary);
+    if (nextOriginalName === document.originalName && nextSummary === document.summary) {
       continue;
     }
 
     await prisma.document.update({
       where: { id: document.id },
-      data: { originalName: nextValue },
+      data: {
+        originalName: nextOriginalName,
+        summary: nextSummary,
+      },
     });
     repaired += 1;
   }
@@ -87,11 +104,7 @@ async function repairDocuments() {
 async function repairExcerpts() {
   const excerpts = await prisma.documentExcerpt.findMany({
     where: {
-      OR: [
-        { content: { contains: "Ã" } },
-        { content: { contains: "Ø" } },
-        { content: { contains: "Ù" } },
-      ],
+      OR: buildContainsClauses("content"),
     },
     select: {
       id: true,
@@ -116,15 +129,6 @@ async function repairExcerpts() {
   return repaired;
 }
 
-function summarizeRecords(records, valueKey) {
-  return records.map((record) => ({
-    ...record,
-    looksSuspicious: MOJIBAKE_PATTERN.test(record[valueKey] || ""),
-    wouldChange: isChanged(record[valueKey]),
-    repairedPreview: repairPotentialUnicodeCorruption(record[valueKey]).slice(0, 140),
-  }));
-}
-
 async function main() {
   const encoding = await fetchEncodingDiagnostics();
   const [documents, excerpts] = await Promise.all([
@@ -132,9 +136,18 @@ async function main() {
     fetchSuspiciousExcerpts(),
   ]);
 
+  const suspiciousSummaries = documents
+    .filter((document) => MOJIBAKE_PATTERN.test(document.summary || "") || isChanged(document.summary))
+    .map((document) => ({
+      id: document.id,
+      originalName: document.originalName,
+      summary: document.summary,
+    }));
+
   console.log(JSON.stringify({
     encoding,
     suspiciousDocuments: summarizeRecords(documents, "originalName"),
+    suspiciousSummaries: summarizeRecords(suspiciousSummaries, "summary"),
     suspiciousExcerpts: summarizeRecords(excerpts, "content"),
   }, null, 2));
 

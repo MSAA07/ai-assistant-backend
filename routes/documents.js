@@ -550,9 +550,14 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
       const pdfBuffer = await buildStudyPdfBuffer(serializedDocument, feature);
       const fileName = buildStudyPdfFileName(serializedDocument, feature);
+      const asciiFallbackFileName = fileName.replace(/[^\x20-\x7E]+/g, "-");
+      const encodedFileName = encodeURIComponent(fileName);
 
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${asciiFallbackFileName}"; filename*=UTF-8''${encodedFileName}`,
+      );
       res.setHeader("Content-Length", pdfBuffer.length);
       return res.send(pdfBuffer);
     } catch (error) {

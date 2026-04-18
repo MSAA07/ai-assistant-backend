@@ -1,4 +1,12 @@
+import path from "path";
+import { fileURLToPath } from "url";
+
 import PDFDocument from "pdfkit";
+
+import { repairPotentialUnicodeCorruption } from "./filenames.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PDF_LAYOUT = Object.freeze({
   size: "A4",
@@ -11,19 +19,73 @@ const PDF_LAYOUT = Object.freeze({
 });
 
 const FEATURE_LABELS = Object.freeze({
-  summary: "Summary",
-  flashcards: "Flashcards",
-  exam: "Exam",
+  default: {
+    summary: "Summary",
+    flashcards: "Flashcards",
+    exam: "Exam",
+  },
+  arabic: {
+    summary: "الملخص",
+    flashcards: "البطاقات التعليمية",
+    exam: "الاختبار",
+  },
+});
+
+const ARABIC_SCRIPT_PATTERN = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/u;
+const FONT_FILES = Object.freeze({
+  regular: path.join(__dirname, "..", "assets", "fonts", "NotoNaskhArabic-Regular.ttf"),
+  bold: path.join(__dirname, "..", "assets", "fonts", "NotoNaskhArabic-Bold.ttf"),
 });
 
 function normalizeString(value) {
-  return typeof value === "string" ? value.trim() : "";
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return repairPotentialUnicodeCorruption(value).trim();
+}
+
+function hasArabicText(value) {
+  return ARABIC_SCRIPT_PATTERN.test(normalizeString(value));
+}
+
+function documentUsesArabic(document) {
+  return normalizeString(document?.language).toLowerCase() === "arabic"
+    || hasArabicText(document?.originalName)
+    || hasArabicText(document?.summary)
+    || (Array.isArray(document?.flashcards) && document.flashcards.some((card) => hasArabicText(card?.question) || hasArabicText(card?.answer) || hasArabicText(card?.explanation)))
+    || (Array.isArray(document?.examQuestions) && document.examQuestions.some((question) => hasArabicText(question?.question)));
+}
+
+function getFeatureLabel(feature, document) {
+  const dictionary = documentUsesArabic(document) ? FEATURE_LABELS.arabic : FEATURE_LABELS.default;
+  return dictionary[feature] ?? FEATURE_LABELS.default.summary;
+}
+
+function getTextOptions(value, options = {}) {
+  const rtl = options.rtl ?? hasArabicText(value);
+  return {
+    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    indent: rtl ? 0 : (options.indent ?? 0),
+    align: rtl ? "right" : (options.align ?? "left"),
+    features: { liga: true, rlig: true },
+  };
+}
+
+function applyTextFont(doc, value, options = {}) {
+  const usesArabic = options.forceArabic || hasArabicText(value);
+  if (usesArabic) {
+    doc.font(options.bold ? FONT_FILES.bold : FONT_FILES.regular);
+    return;
+  }
+
+  doc.font(options.bold ? "Helvetica-Bold" : "Helvetica");
 }
 
 function sanitizeFileSegment(value, fallback = "document") {
   const normalized = normalizeString(value)
     .replace(/\.[a-z0-9]{1,8}$/i, "")
-    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "")
     .toLowerCase();
 
@@ -37,21 +99,22 @@ function wrapUp(doc) {
 }
 
 function renderMeta(doc, documentTitle, featureLabel) {
+  applyTextFont(doc, documentTitle, { bold: true });
   doc
-    .font("Helvetica-Bold")
     .fontSize(PDF_LAYOUT.titleFontSize)
     .fillColor("#111827")
-    .text(documentTitle);
+    .text(documentTitle, getTextOptions(documentTitle));
 
   doc.moveDown(0.35);
 
+  applyTextFont(doc, featureLabel);
   doc
-    .font("Helvetica")
     .fontSize(PDF_LAYOUT.smallFontSize)
     .fillColor("#6B7280")
-    .text(`Study Hub export - ${featureLabel}`, { lineGap: 2 });
+    .text(`Study Hub export - ${featureLabel}`, getTextOptions(featureLabel, { lineGap: 2 }));
 
   doc
+    .font("Helvetica")
     .text(`Generated ${new Date().toLocaleString("en-US")}`, { lineGap: 2 });
 
   doc.moveDown(1.1);
@@ -59,11 +122,11 @@ function renderMeta(doc, documentTitle, featureLabel) {
 
 function renderSectionHeading(doc, value) {
   wrapUp(doc);
+  applyTextFont(doc, value, { bold: true });
   doc
-    .font("Helvetica-Bold")
     .fontSize(PDF_LAYOUT.sectionFontSize)
     .fillColor("#111827")
-    .text(value);
+    .text(value, getTextOptions(value));
   doc.moveDown(0.45);
 }
 
@@ -74,14 +137,11 @@ function renderParagraph(doc, value, options = {}) {
   }
 
   wrapUp(doc);
+  applyTextFont(doc, text, { bold: options.bold, forceArabic: options.forceArabic });
   doc
-    .font(options.bold ? "Helvetica-Bold" : "Helvetica")
     .fontSize(options.fontSize ?? PDF_LAYOUT.bodyFontSize)
     .fillColor(options.color ?? "#1F2937")
-    .text(text, {
-      lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
-      indent: options.indent ?? 0,
-    });
+    .text(text, getTextOptions(text, options));
   doc.moveDown(options.spacing ?? 0.7);
 }
 
@@ -166,7 +226,7 @@ export function hasStudyExportContent(document, feature) {
 }
 
 export async function buildStudyPdfBuffer(document, feature) {
-  const featureLabel = FEATURE_LABELS[feature] ?? "Study";
+  const featureLabel = getFeatureLabel(feature, document) ?? "Study";
   const documentTitle = normalizeString(document?.originalName || document?.title || document?.filename) || "Study document";
 
   const pdf = new PDFDocument({
@@ -191,13 +251,13 @@ export async function buildStudyPdfBuffer(document, feature) {
   renderMeta(pdf, documentTitle, featureLabel);
 
   if (feature === "summary") {
-    renderSectionHeading(pdf, "Summary");
+    renderSectionHeading(pdf, featureLabel);
     renderSummary(pdf, document?.summary);
   } else if (feature === "flashcards") {
-    renderSectionHeading(pdf, "Flashcards");
+    renderSectionHeading(pdf, featureLabel);
     renderFlashcards(pdf, document?.flashcards);
   } else {
-    renderSectionHeading(pdf, "Exam");
+    renderSectionHeading(pdf, featureLabel);
     renderExam(pdf, document?.examQuestions);
   }
 
