@@ -13,6 +13,7 @@ const bidi = bidiFactory();
 const PDF_LAYOUT = Object.freeze({
   size: "A4",
   margin: 56,
+  cardPadding: 16,
   titleFontSize: 22,
   headerEyebrowFontSize: 10,
   sectionFontSize: 16,
@@ -30,50 +31,62 @@ const FEATURE_LABELS = Object.freeze({
   arabic: {
     summary: "\u0627\u0644\u0645\u0644\u062e\u0635",
     flashcards: "\u0627\u0644\u0628\u0637\u0627\u0642\u0627\u062a \u0627\u0644\u062a\u0639\u0644\u064a\u0645\u064a\u0629",
-    exam: "\u0627\u0644\u0627\u062e\u062a\u0628\u0627\u0631",
+    exam: "\u0627\u0644\u0627\u062e\u062a\u0628\u0627\u0631 \u0627\u0644\u062a\u062c\u0631\u064a\u0628\u064a",
   },
 });
 
 const EXPORT_COPY = Object.freeze({
   default: {
     headerEyebrow: "Study Hub export",
-    generatedAt: "Generated",
-    flashcardQuestion: "Q:",
-    flashcardAnswer: "A:",
-    flashcardExplanation: "Explanation:",
+    exportType: "Export type",
+    generatedAt: "Generated at",
+    flashcardCard: "Card",
+    flashcardQuestion: "Question",
+    flashcardAnswer: "Answer",
+    flashcardExplanation: "Explanation",
     examQuestion: "Question",
+    examOption: "Option",
   },
   arabic: {
     headerEyebrow: "\u062a\u0635\u062f\u064a\u0631 \u062f\u0631\u0627\u0633\u064a",
-    generatedAt: "\u062a\u0645 \u0627\u0644\u0625\u0646\u0634\u0627\u0621",
-    flashcardQuestion: "\u0633:",
-    flashcardAnswer: "\u062c:",
-    flashcardExplanation: "\u0627\u0644\u062a\u0648\u0636\u064a\u062d:",
+    exportType: "\u0646\u0648\u0639 \u0627\u0644\u062a\u0635\u062f\u064a\u0631",
+    generatedAt: "\u062a\u0645 \u0627\u0644\u0625\u0646\u0634\u0627\u0621 \u0641\u064a",
+    flashcardCard: "\u0627\u0644\u0628\u0637\u0627\u0642\u0629",
+    flashcardQuestion: "\u0627\u0644\u0633\u0624\u0627\u0644",
+    flashcardAnswer: "\u0627\u0644\u0625\u062c\u0627\u0628\u0629",
+    flashcardExplanation: "\u0627\u0644\u062a\u0648\u0636\u064a\u062d",
     examQuestion: "\u0627\u0644\u0633\u0624\u0627\u0644",
+    examOption: "\u0627\u0644\u062e\u064a\u0627\u0631",
   },
 });
 
+const ARABIC_OPTION_LABELS = ["\u0623", "\u0628", "\u062c", "\u062f", "\u0647", "\u0648"];
+const ENGLISH_OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 const ARABIC_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
 const LATIN_CHARS = /[A-Za-z]/;
+const RESERVED_FILENAME_CHARS = /[<>:"/\\|?*]/g;
+const TRAILING_WINDOWS_CHARS = /[. ]+$/g;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const PDF_FONT_ALIASES = Object.freeze({
   latin: "NotoSansLatin-Regular",
   latinBold: "NotoSansLatin-Bold",
   arabic: "NotoNaskhArabic-Regular",
   arabicBold: "NotoNaskhArabic-Bold",
 });
+
 const PDF_FONT_PATHS = Object.freeze({
   [PDF_FONT_ALIASES.latin]: path.join(__dirname, "..", "node_modules", "@fontsource", "noto-sans", "files", "noto-sans-latin-400-normal.woff"),
   [PDF_FONT_ALIASES.latinBold]: path.join(__dirname, "..", "node_modules", "@fontsource", "noto-sans", "files", "noto-sans-latin-700-normal.woff"),
   [PDF_FONT_ALIASES.arabic]: path.join(__dirname, "..", "assets", "fonts", "NotoNaskhArabic-Regular.ttf"),
   [PDF_FONT_ALIASES.arabicBold]: path.join(__dirname, "..", "assets", "fonts", "NotoNaskhArabic-Bold.ttf"),
 });
+
 const graphemeSegmenter = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
   ? new Intl.Segmenter("ar", { granularity: "grapheme" })
   : null;
-const RESERVED_FILENAME_CHARS = /[<>:"/\\|?*]/g;
-const TRAILING_WINDOWS_CHARS = /[. ]+$/g;
 
 function normalizeString(value) {
   return typeof value === "string"
@@ -104,8 +117,11 @@ function documentUsesArabic(document) {
   return normalizeString(document?.language).toLowerCase() === "arabic"
     || containsArabic(document?.originalName)
     || containsArabic(document?.summary)
-    || (Array.isArray(document?.flashcards) && document.flashcards.some((card) => containsArabic(card?.question) || containsArabic(card?.answer) || containsArabic(card?.explanation)))
-    || (Array.isArray(document?.examQuestions) && document.examQuestions.some((question) => containsArabic(question?.question)));
+    || (Array.isArray(document?.flashcards) && document.flashcards.some((card) => [card?.question, card?.answer, card?.explanation].some(containsArabic)))
+    || (Array.isArray(document?.examQuestions) && document.examQuestions.some((question) => {
+      const options = Array.isArray(question?.options) ? question.options : [];
+      return [question?.question, ...options].some(containsArabic);
+    }));
 }
 
 function getLocaleKey(document) {
@@ -153,11 +169,7 @@ function reverseText(value) {
 
 function toVisualPdfText(value, direction = getTextDirection(value)) {
   const normalized = normalizeString(value);
-  if (!normalized) {
-    return normalized;
-  }
-
-  if (!containsArabic(normalized)) {
+  if (!normalized || !containsArabic(normalized)) {
     return normalized;
   }
 
@@ -204,12 +216,35 @@ function splitVisualLineIntoFontRuns(value) {
   return segments;
 }
 
+function resolveFontName(value, { bold = false } = {}) {
+  if (!containsArabic(value)) {
+    return bold ? PDF_FONT_ALIASES.latinBold : PDF_FONT_ALIASES.latin;
+  }
+
+  return bold ? PDF_FONT_ALIASES.arabicBold : PDF_FONT_ALIASES.arabic;
+}
+
+function applyFont(doc, value, options = {}) {
+  doc.font(resolveFontName(value, options));
+}
+
+function drawVisualLine(doc, visualLine, x, y, options = {}) {
+  const segments = splitVisualLineIntoFontRuns(visualLine);
+  let cursorX = x;
+
+  segments.forEach((segment) => {
+    applyFont(doc, segment.bucket === "arabic" ? "\u0627\u0644\u0639\u0631\u0628\u064a\u0629" : segment.text, { bold: options.bold });
+    doc.text(segment.text, cursorX, y, { lineBreak: false });
+    cursorX += doc.widthOfString(segment.text);
+  });
+}
+
 function measureLogicalTextWidth(doc, value, direction, options = {}) {
   const visualLine = toVisualPdfText(value, direction);
   const segments = splitVisualLineIntoFontRuns(visualLine);
 
   return segments.reduce((total, segment) => {
-    applyFont(doc, segment.bucket === "arabic" ? "العربية" : segment.text, { bold: options.bold });
+    applyFont(doc, segment.bucket === "arabic" ? "\u0627\u0644\u0639\u0631\u0628\u064a\u0629" : segment.text, { bold: options.bold });
     return total + doc.widthOfString(segment.text);
   }, 0);
 }
@@ -236,26 +271,27 @@ function splitOversizedToken(doc, token, maxWidth, direction) {
   return segments.length > 0 ? segments : [token];
 }
 
-function wrapLogicalText(doc, value, width, direction) {
+function wrapLogicalText(doc, value, width, direction, options = {}) {
   const normalized = normalizeString(value).replace(/\s+/g, " ");
   if (!normalized) {
     return [];
   }
 
+  applyFont(doc, normalized, { bold: options.bold });
   const tokens = normalized.split(" ");
   const lines = [];
   let current = "";
 
   const pushToken = (token) => {
     const candidate = current ? `${current} ${token}` : token;
-    if (!current || measureLogicalTextWidth(doc, candidate, direction) <= width) {
+    if (!current || measureLogicalTextWidth(doc, candidate, direction, options) <= width) {
       current = candidate;
       return;
     }
 
     lines.push(current);
 
-    if (measureLogicalTextWidth(doc, token, direction) <= width) {
+    if (measureLogicalTextWidth(doc, token, direction, options) <= width) {
       current = token;
       return;
     }
@@ -272,29 +308,6 @@ function wrapLogicalText(doc, value, width, direction) {
   }
 
   return lines;
-}
-
-function resolveFontName(value, { bold = false } = {}) {
-  if (!containsArabic(value)) {
-    return bold ? PDF_FONT_ALIASES.latinBold : PDF_FONT_ALIASES.latin;
-  }
-
-  return bold ? PDF_FONT_ALIASES.arabicBold : PDF_FONT_ALIASES.arabic;
-}
-
-function applyFont(doc, value, options = {}) {
-  doc.font(resolveFontName(value, options));
-}
-
-function drawVisualLine(doc, visualLine, x, y, options = {}) {
-  const segments = splitVisualLineIntoFontRuns(visualLine);
-  let cursorX = x;
-
-  segments.forEach((segment) => {
-    applyFont(doc, segment.bucket === "arabic" ? "العربية" : segment.text, { bold: options.bold });
-    doc.text(segment.text, cursorX, y, { lineBreak: false });
-    cursorX += doc.widthOfString(segment.text);
-  });
 }
 
 function registerPdfFonts(doc) {
@@ -320,12 +333,12 @@ function getLineAdvance(doc, lineGap) {
   return doc.currentLineHeight(true) + lineGap;
 }
 
-function drawDivider(doc) {
+function drawDivider(doc, color = "#E5E7EB") {
   const y = doc.y;
   doc
     .save()
     .lineWidth(1)
-    .strokeColor("#E5E7EB")
+    .strokeColor(color)
     .moveTo(PDF_LAYOUT.margin, y)
     .lineTo(doc.page.width - PDF_LAYOUT.margin, y)
     .stroke()
@@ -333,14 +346,39 @@ function drawDivider(doc) {
   doc.moveDown(0.9);
 }
 
+function getLocalizedNumber(value, localeKey) {
+  const locale = localeKey === "arabic" ? "ar-SA" : "en-US";
+  return new Intl.NumberFormat(locale).format(value);
+}
+
+function formatTimestamp(localeKey) {
+  const locale = localeKey === "arabic" ? "ar-SA" : "en-US";
+  const now = new Date();
+  const dateText = new Intl.DateTimeFormat(locale, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(now);
+  const timeText = new Intl.DateTimeFormat(locale, {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(now);
+
+  return localeKey === "arabic"
+    ? `${dateText}\u060c ${timeText}`
+    : `${dateText}, ${timeText}`;
+}
+
 function normalizeArabicPunctuation(text) {
   return text
-    .replace(/(^|\s)\.(\d{4}\b)/g, "$1$2")
-    .replace(/(\d(?:[.,]\d+)?)\s*و،\s*(\d(?:[.,]\d+)?)/g, "$1، و$2")
-    .replace(/(\d(?:[.,]\d+)?)\s*،\s*و\s*(\d(?:[.,]\d+)?)/g, "$1، و$2")
-    .replace(/\s+([،؛:.!?])/g, "$1")
-    .replace(/([،؛])(?=\S)/g, "$1 ")
-    .replace(/(?<=\d)\s*[–—-]\s*(?=\d)/gu, "–")
+    .replace(/(^|\s)\.(\d{2,4}\b)/g, "$1$2")
+    .replace(/(\d(?:[.,]\d+)?)\s*[\u0648w]\u060c\s*(\d(?:[.,]\d+)?)/g, "$1\u060c \u0648$2")
+    .replace(/(\d(?:[.,]\d+)?)\s*\u060c\s*\u0648\s*(\d(?:[.,]\d+)?)/g, "$1\u060c \u0648$2")
+    .replace(/([A-Za-z])\.(?=\S)/g, "$1. ")
+    .replace(/\s+([\u060c\u061b:.!?])/g, "$1")
+    .replace(/([\u060c\u061b])(?=\S)/g, "$1 ")
+    .replace(/(?<=\d)\s*[–—-]\s*(?=\d)/gu, "\u2013")
     .replace(/\s{2,}/g, " ");
 }
 
@@ -373,22 +411,11 @@ function normalizeMarkdownLine(value) {
   };
 }
 
-function formatTimestamp(localeKey) {
-  const now = new Date();
-  const locale = localeKey === "arabic" ? "ar-SA" : "en-US";
-  const dateText = new Intl.DateTimeFormat(locale, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  }).format(now);
-  const timeText = new Intl.DateTimeFormat(locale, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(now);
-
-  return localeKey === "arabic"
-    ? `${dateText}، ${timeText}`
-    : `${dateText}, ${timeText}`;
+function getOptionLabel(index, localeKey) {
+  if (localeKey === "arabic") {
+    return ARABIC_OPTION_LABELS[index] ?? getLocalizedNumber(index + 1, localeKey);
+  }
+  return ENGLISH_OPTION_LABELS[index] ?? String(index + 1);
 }
 
 function renderTextBlock(doc, value, options = {}) {
@@ -408,12 +435,11 @@ function renderTextBlock(doc, value, options = {}) {
     .fontSize(fontSize)
     .fillColor(options.color ?? "#1F2937");
 
-  const lines = wrapLogicalText(doc, text, width, direction);
+  const lines = wrapLogicalText(doc, text, width, direction, { bold: options.bold });
   const lineAdvance = getLineAdvance(doc, lineGap);
 
   lines.forEach((line) => {
     ensureVerticalSpace(doc, lineAdvance);
-
     const visualLine = toVisualPdfText(line, direction);
     const lineWidth = Math.min(measureLogicalTextWidth(doc, line, direction, { bold: options.bold }), width);
     const x = direction === "rtl"
@@ -421,7 +447,6 @@ function renderTextBlock(doc, value, options = {}) {
       : PDF_LAYOUT.margin + inset;
 
     drawVisualLine(doc, visualLine, x, doc.y, { bold: options.bold });
-
     doc.y += lineAdvance;
   });
 
@@ -430,9 +455,7 @@ function renderTextBlock(doc, value, options = {}) {
 
 function renderMeta(doc, { documentTitle, featureLabel, localeKey }) {
   const copy = getCopy(localeKey);
-  const timestampLine = localeKey === "arabic"
-    ? `${copy.generatedAt}: ${formatTimestamp(localeKey)}`
-    : `${copy.generatedAt} ${formatTimestamp(localeKey)}`;
+  const direction = localeKey === "arabic" ? "rtl" : "ltr";
 
   renderTextBlock(doc, copy.headerEyebrow, {
     bold: true,
@@ -440,7 +463,7 @@ function renderMeta(doc, { documentTitle, featureLabel, localeKey }) {
     color: "#6B7280",
     lineGap: 2,
     spacing: 0.2,
-    direction: localeKey === "arabic" ? "rtl" : "ltr",
+    direction,
   });
 
   renderTextBlock(doc, documentTitle, {
@@ -449,15 +472,23 @@ function renderMeta(doc, { documentTitle, featureLabel, localeKey }) {
     color: "#111827",
     lineGap: 6,
     spacing: 0.2,
-    direction: localeKey === "arabic" ? "rtl" : "ltr",
+    direction,
   });
 
-  renderTextBlock(doc, timestampLine, {
+  renderTextBlock(doc, `${copy.exportType}: ${featureLabel}`, {
+    fontSize: PDF_LAYOUT.smallFontSize,
+    color: "#374151",
+    lineGap: 2,
+    spacing: 0.2,
+    direction,
+  });
+
+  renderTextBlock(doc, `${copy.generatedAt} ${formatTimestamp(localeKey)}`, {
     fontSize: PDF_LAYOUT.smallFontSize,
     color: "#6B7280",
     lineGap: 2,
     spacing: 0.5,
-    direction: localeKey === "arabic" ? "rtl" : "ltr",
+    direction,
   });
 
   drawDivider(doc);
@@ -485,6 +516,27 @@ function renderParagraph(doc, value, options = {}) {
   renderTextBlock(doc, text, options);
 }
 
+function renderLabelValueBlock(doc, label, value, options = {}) {
+  const text = normalizeExportText(value, { rtl: options.direction === "rtl" || containsArabic(value) });
+  if (!text) {
+    return;
+  }
+
+  renderTextBlock(doc, label, {
+    bold: true,
+    fontSize: PDF_LAYOUT.smallFontSize,
+    color: "#4B5563",
+    spacing: 0.15,
+    lineGap: 2,
+    direction: options.direction,
+  });
+
+  renderParagraph(doc, text, {
+    ...options,
+    spacing: options.spacing ?? 0.45,
+  });
+}
+
 function renderBulletItem(doc, value, options = {}) {
   const normalized = normalizeMarkdownLine(value);
   if (!normalized.text) {
@@ -492,12 +544,12 @@ function renderBulletItem(doc, value, options = {}) {
   }
 
   const bulletText = options.direction === "rtl"
-    ? `${normalized.text} •`
-    : `• ${normalized.text}`;
+    ? `${normalized.text} \u2022`
+    : `\u2022 ${normalized.text}`;
 
   renderParagraph(doc, bulletText, {
     ...options,
-    bold: normalized.bold,
+    bold: normalized.bold || options.bold,
     spacing: options.spacing ?? 0.35,
   });
 }
@@ -506,6 +558,7 @@ function classifySummaryBlocks(summary) {
   const lines = normalizeExportText(summary, { rtl: containsArabic(summary) })
     .split("\n")
     .map((line) => line.trim());
+
   const blocks = [];
   let paragraphBuffer = [];
 
@@ -556,11 +609,13 @@ function classifySummaryBlocks(summary) {
 }
 
 function renderSummary(doc, summary, options = {}) {
+  renderSectionHeading(doc, getFeatureLabel("summary", options.localeKey), options);
   const blocks = classifySummaryBlocks(summary);
-  for (const block of blocks) {
+
+  blocks.forEach((block) => {
     if (block.type === "heading") {
       renderSectionHeading(doc, block.text, options);
-      continue;
+      return;
     }
 
     if (block.type === "bullet") {
@@ -568,61 +623,140 @@ function renderSummary(doc, summary, options = {}) {
         ...options,
         bold: block.bold,
       });
-      continue;
+      return;
     }
 
     renderParagraph(doc, block.text, {
       ...options,
       bold: block.bold,
     });
+  });
+}
+
+function estimateTextHeight(doc, value, options = {}) {
+  const text = normalizeExportText(value, { rtl: options.direction === "rtl" || containsArabic(value) });
+  if (!text) {
+    return 0;
   }
+
+  applyFont(doc, text, { bold: options.bold });
+  doc.fontSize(options.fontSize ?? PDF_LAYOUT.bodyFontSize);
+  const lines = wrapLogicalText(doc, text, getContentWidth(doc, options.indent ?? 0), options.direction ?? getTextDirection(text), {
+    bold: options.bold,
+  });
+  const lineAdvance = getLineAdvance(doc, options.lineGap ?? PDF_LAYOUT.lineGap);
+  const spacing = (options.spacing ?? 0.7) * doc.currentLineHeight(true);
+  return (lines.length * lineAdvance) + spacing;
+}
+
+function renderCardShell(doc, title, bodyRenderer, options = {}) {
+  const width = getContentWidth(doc);
+  const x = PDF_LAYOUT.margin;
+  const startY = doc.y;
+  const direction = options.direction ?? "ltr";
+  const finalHeight = options.minHeight ?? 140;
+
+  ensureVerticalSpace(doc, finalHeight);
+
+  doc
+    .save()
+    .roundedRect(x, startY, width, finalHeight, 12)
+    .fillAndStroke("#FAFAF9", "#E5E7EB")
+    .restore();
+
+  doc.x = x + PDF_LAYOUT.cardPadding;
+  doc.y = startY + PDF_LAYOUT.cardPadding;
+
+  renderTextBlock(doc, title, {
+    bold: true,
+    fontSize: PDF_LAYOUT.smallFontSize,
+    color: "#6B7280",
+    spacing: 0.25,
+    lineGap: 2,
+    direction,
+  });
+
+  bodyRenderer();
+  doc.x = PDF_LAYOUT.margin;
+  doc.y = startY + finalHeight + 16;
+}
+
+function estimateFlashcardHeight(doc, flashcard, options) {
+  const copy = getCopy(options.localeKey);
+  return 64
+    + estimateTextHeight(doc, copy.flashcardQuestion, { ...options, bold: true, fontSize: PDF_LAYOUT.smallFontSize, lineGap: 2, spacing: 0.15 })
+    + estimateTextHeight(doc, flashcard?.question, { ...options, spacing: 0.4 })
+    + estimateTextHeight(doc, copy.flashcardAnswer, { ...options, bold: true, fontSize: PDF_LAYOUT.smallFontSize, lineGap: 2, spacing: 0.15 })
+    + estimateTextHeight(doc, flashcard?.answer, { ...options, spacing: 0.4 })
+    + estimateTextHeight(doc, copy.flashcardExplanation, { ...options, bold: true, fontSize: PDF_LAYOUT.smallFontSize, lineGap: 2, spacing: 0.15 })
+    + estimateTextHeight(doc, flashcard?.explanation, { ...options, spacing: 0.2 });
 }
 
 function renderFlashcards(doc, flashcards = [], options = {}) {
   const copy = getCopy(options.localeKey);
-  flashcards.forEach((flashcard) => {
-    renderParagraph(doc, `${copy.flashcardQuestion} ${normalizeExportText(flashcard?.question, options)}`, {
-      bold: true,
-      spacing: 0.3,
-      ...options,
-    });
-    renderParagraph(doc, `${copy.flashcardAnswer} ${normalizeExportText(flashcard?.answer, options)}`, {
-      spacing: 0.35,
-      ...options,
-    });
+  renderSectionHeading(doc, getFeatureLabel("flashcards", options.localeKey), options);
 
-    const explanation = normalizeExportText(flashcard?.explanation, options);
-    if (explanation) {
-      renderParagraph(doc, `${copy.flashcardExplanation} ${explanation}`, {
-        color: "#4B5563",
-        spacing: 0.75,
+  flashcards.forEach((flashcard, index) => {
+    const cardNumber = getLocalizedNumber(index + 1, options.localeKey);
+    const title = `${copy.flashcardCard} ${cardNumber}`;
+    const minHeight = Math.max(148, estimateFlashcardHeight(doc, flashcard, options));
+
+    renderCardShell(doc, title, () => {
+      renderLabelValueBlock(doc, copy.flashcardQuestion, flashcard?.question, options);
+      renderLabelValueBlock(doc, copy.flashcardAnswer, flashcard?.answer, options);
+      renderLabelValueBlock(doc, copy.flashcardExplanation, flashcard?.explanation, {
         ...options,
+        color: "#4B5563",
       });
-    }
+    }, {
+      ...options,
+      minHeight,
+    });
   });
+}
+
+function estimateExamQuestionHeight(doc, question, options) {
+  const copy = getCopy(options.localeKey);
+  const optionValues = Array.isArray(question?.options) ? question.options : [];
+
+  return 56
+    + estimateTextHeight(doc, question?.question, { ...options, bold: true, spacing: 0.35 })
+    + optionValues.reduce((total, option, optionIndex) => total
+      + estimateTextHeight(doc, `${copy.examOption} ${getOptionLabel(optionIndex, options.localeKey)}`, {
+        ...options,
+        bold: true,
+        fontSize: PDF_LAYOUT.smallFontSize,
+        lineGap: 2,
+        spacing: 0.15,
+      })
+      + estimateTextHeight(doc, option, { ...options, spacing: 0.2 }), 0);
 }
 
 function renderExam(doc, questions = [], options = {}) {
   const copy = getCopy(options.localeKey);
-  questions.forEach((question, index) => {
-    renderSectionHeading(doc, `${copy.examQuestion} ${index + 1}`, options);
-    renderParagraph(doc, normalizeExportText(question?.question, options), {
-      bold: true,
-      spacing: 0.35,
-      ...options,
-    });
+  renderSectionHeading(doc, getFeatureLabel("exam", options.localeKey), options);
 
-    const optionValues = Array.isArray(question?.options) ? question.options : [];
-    if (optionValues.length > 0) {
-      optionValues.forEach((option, optionIndex) => {
-        const optionLabel = String.fromCharCode(65 + optionIndex);
-        renderBulletItem(doc, `${optionLabel}. ${normalizeExportText(option, options)}`, {
-          spacing: 0.25,
-          ...options,
-        });
+  questions.forEach((question, index) => {
+    const questionNumber = getLocalizedNumber(index + 1, options.localeKey);
+    const title = `${copy.examQuestion} ${questionNumber}`;
+    const minHeight = Math.max(148, estimateExamQuestionHeight(doc, question, options));
+
+    renderCardShell(doc, title, () => {
+      renderParagraph(doc, question?.question, {
+        ...options,
+        bold: true,
+        spacing: 0.45,
       });
-      doc.moveDown(0.35);
-    }
+
+      const optionValues = Array.isArray(question?.options) ? question.options : [];
+      optionValues.forEach((option, optionIndex) => {
+        const optionLabel = `${copy.examOption} ${getOptionLabel(optionIndex, options.localeKey)}`;
+        renderLabelValueBlock(doc, optionLabel, option, options);
+      });
+    }, {
+      ...options,
+      minHeight,
+    });
   });
 }
 
@@ -704,10 +838,8 @@ export async function buildStudyPdfBuffer(document, feature) {
   if (feature === "summary") {
     renderSummary(pdf, document?.summary, sectionOptions);
   } else if (feature === "flashcards") {
-    renderSectionHeading(pdf, featureLabel, sectionOptions);
     renderFlashcards(pdf, document?.flashcards, sectionOptions);
   } else {
-    renderSectionHeading(pdf, featureLabel, sectionOptions);
     renderExam(pdf, document?.examQuestions, sectionOptions);
   }
 
