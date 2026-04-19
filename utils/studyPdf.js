@@ -3,106 +3,87 @@ import PDFDocument from "pdfkit";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import {
-  normalizeDocumentName,
-  repairPotentialUnicodeCorruption,
-} from "./filenames.js";
+import { normalizeDocumentName, sanitizeDownloadFilename } from "./filenames.js";
 
 const bidi = bidiFactory();
 
+const SPACING = Object.freeze({
+  xs: 4,
+  sm: 8,
+  md: 16,
+  lg: 24,
+  xl: 32,
+  xxl: 40,
+});
+
 const PDF_LAYOUT = Object.freeze({
   size: "A4",
-  margin: 56,
+  margins: {
+    top: 40,
+    bottom: 40,
+    left: 48,
+    right: 48,
+  },
+  maxContentWidth: 468,
+  radius: 10,
   cardPadding: 16,
-  titleFontSize: 22,
-  headerEyebrowFontSize: 10,
-  sectionFontSize: 16,
+  titleFontSize: 24,
+  sectionFontSize: 18,
+  subsectionFontSize: 14,
   bodyFontSize: 11,
-  smallFontSize: 9,
-  lineGap: 4,
+  labelFontSize: 9,
+  metaFontSize: 10,
+  lineHeight: 1.6,
+  lineGap: 6,
+  paragraphGap: SPACING.md,
+  sectionGap: SPACING.xl,
+  blockGap: SPACING.lg,
+});
+
+const COLORS = Object.freeze({
+  text: "#111827",
+  muted: "#4B5563",
+  subtle: "#6B7280",
+  border: "#D7DEEA",
+  softBorder: "#E5EAF3",
+  panel: "#F8FAFC",
+  accentPanel: "#F4F7FB",
 });
 
 const FEATURE_LABELS = Object.freeze({
-  default: {
-    summary: "Summary",
-    flashcards: "Flashcards",
-    exam: "Exam",
-  },
-  arabic: {
-    summary: "\u0627\u0644\u0645\u0644\u062e\u0635",
-    flashcards: "\u0627\u0644\u0628\u0637\u0627\u0642\u0627\u062a \u0627\u0644\u062a\u0639\u0644\u064a\u0645\u064a\u0629",
-    exam: "\u0627\u0644\u0627\u062e\u062a\u0628\u0627\u0631 \u0627\u0644\u062a\u062c\u0631\u064a\u0628\u064a",
-  },
+  summary: "Summary",
+  flashcards: "Flashcards",
+  exam: "Exam",
 });
 
-const EXPORT_COPY = Object.freeze({
-  default: {
-    headerEyebrow: "Study Hub export",
-    exportType: "Export type",
-    generatedAt: "Generated at",
-    flashcardCard: "Card",
-    flashcardQuestion: "Question",
-    flashcardAnswer: "Answer",
-    flashcardExplanation: "Explanation",
-    examQuestion: "Question",
-    examOption: "Option",
-  },
-  arabic: {
-    headerEyebrow: "\u062a\u0635\u062f\u064a\u0631 \u062f\u0631\u0627\u0633\u064a",
-    exportType: "\u0646\u0648\u0639 \u0627\u0644\u062a\u0635\u062f\u064a\u0631",
-    generatedAt: "\u062a\u0645 \u0627\u0644\u0625\u0646\u0634\u0627\u0621 \u0641\u064a",
-    flashcardCard: "\u0627\u0644\u0628\u0637\u0627\u0642\u0629",
-    flashcardQuestion: "\u0627\u0644\u0633\u0624\u0627\u0644",
-    flashcardAnswer: "\u0627\u0644\u0625\u062c\u0627\u0628\u0629",
-    flashcardExplanation: "\u0627\u0644\u062a\u0648\u0636\u064a\u062d",
-    examQuestion: "\u0627\u0644\u0633\u0624\u0627\u0644",
-    examOption: "\u0627\u0644\u062e\u064a\u0627\u0631",
-  },
-});
+const SUMMARY_SECTION_ORDER = Object.freeze([
+  "Key Themes",
+  "Assessment Areas",
+  "Interview Structure",
+]);
 
-const ARABIC_OPTION_LABELS = ["\u0623", "\u0628", "\u062c", "\u062f", "\u0647", "\u0648"];
-const ENGLISH_OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 const ARABIC_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
 const LATIN_CHARS = /[A-Za-z]/;
-const RESERVED_FILENAME_CHARS = /[<>:"/\\|?*]/g;
-const TRAILING_WINDOWS_CHARS = /[. ]+$/g;
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const PDF_FONT_ALIASES = Object.freeze({
   latin: "NotoSansLatin-Regular",
   latinBold: "NotoSansLatin-Bold",
-  arabic: "NotoNaskhArabic-Regular",
-  arabicBold: "NotoNaskhArabic-Bold",
+  arabic: "NotoSansArabic-Regular",
+  arabicBold: "NotoSansArabic-Bold",
 });
-
 const PDF_FONT_PATHS = Object.freeze({
   [PDF_FONT_ALIASES.latin]: path.join(__dirname, "..", "node_modules", "@fontsource", "noto-sans", "files", "noto-sans-latin-400-normal.woff"),
   [PDF_FONT_ALIASES.latinBold]: path.join(__dirname, "..", "node_modules", "@fontsource", "noto-sans", "files", "noto-sans-latin-700-normal.woff"),
-  [PDF_FONT_ALIASES.arabic]: path.join(__dirname, "..", "assets", "fonts", "NotoNaskhArabic-Regular.ttf"),
-  [PDF_FONT_ALIASES.arabicBold]: path.join(__dirname, "..", "assets", "fonts", "NotoNaskhArabic-Bold.ttf"),
+  [PDF_FONT_ALIASES.arabic]: path.join(__dirname, "..", "assets", "fonts", "NotoSansArabic-Regular.ttf"),
+  [PDF_FONT_ALIASES.arabicBold]: path.join(__dirname, "..", "assets", "fonts", "NotoSansArabic-Bold.ttf"),
 });
-
 const graphemeSegmenter = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
   ? new Intl.Segmenter("ar", { granularity: "grapheme" })
   : null;
 
 function normalizeString(value) {
-  return typeof value === "string"
-    ? repairPotentialUnicodeCorruption(value).replace(/\r\n?/g, "\n").trim()
-    : "";
-}
-
-function sanitizeDownloadFilename(value, fallback = "document") {
-  const normalizeFilename = (input) => normalizeString(input)
-    .replace(RESERVED_FILENAME_CHARS, " ")
-    .replace(/\s+/g, " ")
-    .replace(TRAILING_WINDOWS_CHARS, "")
-    .trim();
-
-  const normalizedFallback = normalizeFilename(fallback) || "document";
-  return normalizeFilename(value) || normalizedFallback;
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function stripTrailingExtension(value) {
@@ -113,31 +94,15 @@ function containsArabic(value) {
   return ARABIC_CHARS.test(normalizeString(value));
 }
 
-function documentUsesArabic(document) {
-  return normalizeString(document?.language).toLowerCase() === "arabic"
-    || containsArabic(document?.originalName)
-    || containsArabic(document?.summary)
-    || (Array.isArray(document?.flashcards) && document.flashcards.some((card) => [card?.question, card?.answer, card?.explanation].some(containsArabic)))
-    || (Array.isArray(document?.examQuestions) && document.examQuestions.some((question) => {
-      const options = Array.isArray(question?.options) ? question.options : [];
-      return [question?.question, ...options].some(containsArabic);
-    }));
+function getPageInnerWidth(doc) {
+  return doc.page.width - PDF_LAYOUT.margins.left - PDF_LAYOUT.margins.right;
 }
 
-function getLocaleKey(document) {
-  return documentUsesArabic(document) ? "arabic" : "default";
-}
-
-function getFeatureLabel(feature, localeKey) {
-  return FEATURE_LABELS[localeKey]?.[feature] ?? FEATURE_LABELS.default[feature] ?? "Study";
-}
-
-function getCopy(localeKey) {
-  return EXPORT_COPY[localeKey] ?? EXPORT_COPY.default;
-}
-
-function getContentWidth(doc, inset = 0) {
-  return doc.page.width - (PDF_LAYOUT.margin * 2) - inset;
+function getContentMetrics(doc) {
+  const pageInnerWidth = getPageInnerWidth(doc);
+  const width = Math.min(PDF_LAYOUT.maxContentWidth, pageInnerWidth);
+  const x = PDF_LAYOUT.margins.left + Math.max(0, (pageInnerWidth - width) / 2);
+  return { x, width };
 }
 
 function getTextDirection(value) {
@@ -169,7 +134,11 @@ function reverseText(value) {
 
 function toVisualPdfText(value, direction = getTextDirection(value)) {
   const normalized = normalizeString(value);
-  if (!normalized || !containsArabic(normalized)) {
+  if (!normalized) {
+    return normalized;
+  }
+
+  if (!containsArabic(normalized)) {
     return normalized;
   }
 
@@ -228,15 +197,22 @@ function applyFont(doc, value, options = {}) {
   doc.font(resolveFontName(value, options));
 }
 
-function drawVisualLine(doc, visualLine, x, y, options = {}) {
-  const segments = splitVisualLineIntoFontRuns(visualLine);
-  let cursorX = x;
+function registerPdfFonts(doc) {
+  doc.registerFont(PDF_FONT_ALIASES.latin, PDF_FONT_PATHS[PDF_FONT_ALIASES.latin]);
+  doc.registerFont(PDF_FONT_ALIASES.latinBold, PDF_FONT_PATHS[PDF_FONT_ALIASES.latinBold]);
+  doc.registerFont(PDF_FONT_ALIASES.arabic, PDF_FONT_PATHS[PDF_FONT_ALIASES.arabic]);
+  doc.registerFont(PDF_FONT_ALIASES.arabicBold, PDF_FONT_PATHS[PDF_FONT_ALIASES.arabicBold]);
+}
 
-  segments.forEach((segment) => {
-    applyFont(doc, segment.bucket === "arabic" ? "\u0627\u0644\u0639\u0631\u0628\u064a\u0629" : segment.text, { bold: options.bold });
-    doc.text(segment.text, cursorX, y, { lineBreak: false });
-    cursorX += doc.widthOfString(segment.text);
-  });
+function ensureVerticalSpace(doc, height) {
+  if (doc.y + height > doc.page.height - PDF_LAYOUT.margins.bottom) {
+    doc.addPage();
+    doc.y = PDF_LAYOUT.margins.top;
+  }
+}
+
+function getLineAdvance(doc, lineGap) {
+  return doc.currentLineHeight(true) + lineGap;
 }
 
 function measureLogicalTextWidth(doc, value, direction, options = {}) {
@@ -244,7 +220,7 @@ function measureLogicalTextWidth(doc, value, direction, options = {}) {
   const segments = splitVisualLineIntoFontRuns(visualLine);
 
   return segments.reduce((total, segment) => {
-    applyFont(doc, segment.bucket === "arabic" ? "\u0627\u0644\u0639\u0631\u0628\u064a\u0629" : segment.text, { bold: options.bold });
+    applyFont(doc, segment.bucket === "arabic" ? "العربية" : segment.text, { bold: options.bold });
     return total + doc.widthOfString(segment.text);
   }, 0);
 }
@@ -271,27 +247,26 @@ function splitOversizedToken(doc, token, maxWidth, direction) {
   return segments.length > 0 ? segments : [token];
 }
 
-function wrapLogicalText(doc, value, width, direction, options = {}) {
+function wrapLogicalText(doc, value, width, direction) {
   const normalized = normalizeString(value).replace(/\s+/g, " ");
   if (!normalized) {
     return [];
   }
 
-  applyFont(doc, normalized, { bold: options.bold });
   const tokens = normalized.split(" ");
   const lines = [];
   let current = "";
 
   const pushToken = (token) => {
     const candidate = current ? `${current} ${token}` : token;
-    if (!current || measureLogicalTextWidth(doc, candidate, direction, options) <= width) {
+    if (!current || measureLogicalTextWidth(doc, candidate, direction) <= width) {
       current = candidate;
       return;
     }
 
     lines.push(current);
 
-    if (measureLogicalTextWidth(doc, token, direction, options) <= width) {
+    if (measureLogicalTextWidth(doc, token, direction) <= width) {
       current = token;
       return;
     }
@@ -310,462 +285,645 @@ function wrapLogicalText(doc, value, width, direction, options = {}) {
   return lines;
 }
 
-function registerPdfFonts(doc) {
-  doc.registerFont(PDF_FONT_ALIASES.latin, PDF_FONT_PATHS[PDF_FONT_ALIASES.latin]);
-  doc.registerFont(PDF_FONT_ALIASES.latinBold, PDF_FONT_PATHS[PDF_FONT_ALIASES.latinBold]);
-  doc.registerFont(PDF_FONT_ALIASES.arabic, PDF_FONT_PATHS[PDF_FONT_ALIASES.arabic]);
-  doc.registerFont(PDF_FONT_ALIASES.arabicBold, PDF_FONT_PATHS[PDF_FONT_ALIASES.arabicBold]);
+function drawVisualLine(doc, visualLine, x, y, options = {}) {
+  const segments = splitVisualLineIntoFontRuns(visualLine);
+  let cursorX = x;
+
+  segments.forEach((segment) => {
+    applyFont(doc, segment.bucket === "arabic" ? "العربية" : segment.text, { bold: options.bold });
+    doc.text(segment.text, cursorX, y, { lineBreak: false });
+    cursorX += doc.widthOfString(segment.text);
+  });
 }
 
-function wrapUp(doc, minBottomGap = 72) {
-  if (doc.y > doc.page.height - PDF_LAYOUT.margin - minBottomGap) {
-    doc.addPage();
-  }
-}
+function getLineMetrics(doc, value, options = {}) {
+  const direction = options.direction ?? getTextDirection(value);
+  const fontSize = options.fontSize ?? PDF_LAYOUT.bodyFontSize;
+  const lineGap = options.lineGap ?? PDF_LAYOUT.lineGap;
 
-function ensureVerticalSpace(doc, height) {
-  if (doc.y + height > doc.page.height - PDF_LAYOUT.margin) {
-    doc.addPage();
-  }
-}
+  applyFont(doc, value, { bold: options.bold });
+  doc.fontSize(fontSize);
 
-function getLineAdvance(doc, lineGap) {
-  return doc.currentLineHeight(true) + lineGap;
-}
-
-function drawDivider(doc, color = "#E5E7EB") {
-  const y = doc.y;
-  doc
-    .save()
-    .lineWidth(1)
-    .strokeColor(color)
-    .moveTo(PDF_LAYOUT.margin, y)
-    .lineTo(doc.page.width - PDF_LAYOUT.margin, y)
-    .stroke()
-    .restore();
-  doc.moveDown(0.9);
-}
-
-function getLocalizedNumber(value, localeKey) {
-  const locale = localeKey === "arabic" ? "ar-SA" : "en-US";
-  return new Intl.NumberFormat(locale).format(value);
-}
-
-function formatTimestamp(localeKey) {
-  const locale = localeKey === "arabic" ? "ar-SA" : "en-US";
-  const now = new Date();
-  const dateText = new Intl.DateTimeFormat(locale, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  }).format(now);
-  const timeText = new Intl.DateTimeFormat(locale, {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  }).format(now);
-
-  return localeKey === "arabic"
-    ? `${dateText}\u060c ${timeText}`
-    : `${dateText}, ${timeText}`;
-}
-
-function normalizeArabicPunctuation(text) {
-  return text
-    .replace(/(^|\s)\.(\d{2,4}\b)/g, "$1$2")
-    .replace(/(\d(?:[.,]\d+)?)\s*[\u0648w]\u060c\s*(\d(?:[.,]\d+)?)/g, "$1\u060c \u0648$2")
-    .replace(/(\d(?:[.,]\d+)?)\s*\u060c\s*\u0648\s*(\d(?:[.,]\d+)?)/g, "$1\u060c \u0648$2")
-    .replace(/([A-Za-z])\.(?=\S)/g, "$1. ")
-    .replace(/\s+([\u060c\u061b:.!?])/g, "$1")
-    .replace(/([\u060c\u061b])(?=\S)/g, "$1 ")
-    .replace(/(?<=\d)\s*[–—-]\s*(?=\d)/gu, "\u2013")
-    .replace(/\s{2,}/g, " ");
-}
-
-function normalizeExportText(value, { rtl = false } = {}) {
-  let text = normalizeString(value)
-    .replace(/^[*_=-]{3,}$/gm, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n");
-
-  if (rtl || containsArabic(text)) {
-    text = normalizeArabicPunctuation(text);
-  }
-
-  return text.trim();
-}
-
-function normalizeMarkdownLine(value) {
-  const text = normalizeExportText(value, { rtl: containsArabic(value) });
-  const boldMatch = text.match(/^\*\*(.+?)\*\*$/);
-  if (boldMatch) {
-    return {
-      text: normalizeExportText(boldMatch[1], { rtl: containsArabic(boldMatch[1]) }),
-      bold: true,
-    };
-  }
+  const lines = wrapLogicalText(doc, value, options.width, direction);
+  const lineAdvance = getLineAdvance(doc, lineGap);
 
   return {
-    text: text.replace(/\*\*(.+?)\*\*/g, "$1"),
-    bold: false,
+    direction,
+    lines,
+    lineAdvance,
+    height: lines.length * lineAdvance,
   };
 }
 
-function getOptionLabel(index, localeKey) {
-  if (localeKey === "arabic") {
-    return ARABIC_OPTION_LABELS[index] ?? getLocalizedNumber(index + 1, localeKey);
-  }
-  return ENGLISH_OPTION_LABELS[index] ?? String(index + 1);
-}
-
-function renderTextBlock(doc, value, options = {}) {
-  const text = normalizeExportText(value, { rtl: options.direction === "rtl" || containsArabic(value) });
-  if (!text) {
-    return;
-  }
-
-  const direction = options.direction ?? getTextDirection(text);
-  const fontSize = options.fontSize ?? PDF_LAYOUT.bodyFontSize;
-  const lineGap = options.lineGap ?? PDF_LAYOUT.lineGap;
-  const inset = options.indent ?? 0;
-  const width = getContentWidth(doc, inset);
-
-  applyFont(doc, text, { bold: options.bold });
-  doc
-    .fontSize(fontSize)
-    .fillColor(options.color ?? "#1F2937");
-
-  const lines = wrapLogicalText(doc, text, width, direction, { bold: options.bold });
-  const lineAdvance = getLineAdvance(doc, lineGap);
-
-  lines.forEach((line) => {
-    ensureVerticalSpace(doc, lineAdvance);
-    const visualLine = toVisualPdfText(line, direction);
-    const lineWidth = Math.min(measureLogicalTextWidth(doc, line, direction, { bold: options.bold }), width);
-    const x = direction === "rtl"
-      ? doc.page.width - PDF_LAYOUT.margin - inset - lineWidth
-      : PDF_LAYOUT.margin + inset;
-
-    drawVisualLine(doc, visualLine, x, doc.y, { bold: options.bold });
-    doc.y += lineAdvance;
-  });
-
-  doc.y += (options.spacing ?? 0.7) * doc.currentLineHeight(true);
-}
-
-function renderMeta(doc, { documentTitle, featureLabel, localeKey }) {
-  const copy = getCopy(localeKey);
-  const direction = localeKey === "arabic" ? "rtl" : "ltr";
-
-  renderTextBlock(doc, copy.headerEyebrow, {
-    bold: true,
-    fontSize: PDF_LAYOUT.headerEyebrowFontSize,
-    color: "#6B7280",
-    lineGap: 2,
-    spacing: 0.2,
-    direction,
-  });
-
-  renderTextBlock(doc, documentTitle, {
-    bold: true,
-    fontSize: PDF_LAYOUT.titleFontSize,
-    color: "#111827",
-    lineGap: 6,
-    spacing: 0.2,
-    direction,
-  });
-
-  renderTextBlock(doc, `${copy.exportType}: ${featureLabel}`, {
-    fontSize: PDF_LAYOUT.smallFontSize,
-    color: "#374151",
-    lineGap: 2,
-    spacing: 0.2,
-    direction,
-  });
-
-  renderTextBlock(doc, `${copy.generatedAt} ${formatTimestamp(localeKey)}`, {
-    fontSize: PDF_LAYOUT.smallFontSize,
-    color: "#6B7280",
-    lineGap: 2,
-    spacing: 0.5,
-    direction,
-  });
-
-  drawDivider(doc);
-}
-
-function renderSectionHeading(doc, value, options = {}) {
-  wrapUp(doc);
-  renderTextBlock(doc, value, {
-    bold: true,
-    fontSize: PDF_LAYOUT.sectionFontSize,
-    color: "#111827",
-    lineGap: 5,
-    spacing: 0.45,
-    direction: options.direction,
-  });
-}
-
-function renderParagraph(doc, value, options = {}) {
-  const text = normalizeExportText(value, { rtl: options.direction === "rtl" || containsArabic(value) });
-  if (!text) {
-    return;
-  }
-
-  wrapUp(doc);
-  renderTextBlock(doc, text, options);
-}
-
-function renderLabelValueBlock(doc, label, value, options = {}) {
-  const text = normalizeExportText(value, { rtl: options.direction === "rtl" || containsArabic(value) });
-  if (!text) {
-    return;
-  }
-
-  renderTextBlock(doc, label, {
-    bold: true,
-    fontSize: PDF_LAYOUT.smallFontSize,
-    color: "#4B5563",
-    spacing: 0.15,
-    lineGap: 2,
-    direction: options.direction,
-  });
-
-  renderParagraph(doc, text, {
-    ...options,
-    spacing: options.spacing ?? 0.45,
-  });
-}
-
-function renderBulletItem(doc, value, options = {}) {
-  const normalized = normalizeMarkdownLine(value);
-  if (!normalized.text) {
-    return;
-  }
-
-  const bulletText = options.direction === "rtl"
-    ? `${normalized.text} \u2022`
-    : `\u2022 ${normalized.text}`;
-
-  renderParagraph(doc, bulletText, {
-    ...options,
-    bold: normalized.bold || options.bold,
-    spacing: options.spacing ?? 0.35,
-  });
-}
-
-function classifySummaryBlocks(summary) {
-  const lines = normalizeExportText(summary, { rtl: containsArabic(summary) })
-    .split("\n")
-    .map((line) => line.trim());
-
-  const blocks = [];
-  let paragraphBuffer = [];
-
-  function flushParagraph() {
-    if (paragraphBuffer.length === 0) {
-      return;
-    }
-
-    const merged = paragraphBuffer.join(" ").trim();
-    if (merged) {
-      blocks.push({
-        type: "paragraph",
-        ...normalizeMarkdownLine(merged),
-      });
-    }
-    paragraphBuffer = [];
-  }
-
-  for (const line of lines) {
-    if (!line) {
-      flushParagraph();
-      continue;
-    }
-
-    if (/^#{1,6}\s+/.test(line)) {
-      flushParagraph();
-      blocks.push({
-        type: "heading",
-        text: normalizeExportText(line.replace(/^#{1,6}\s+/, ""), { rtl: containsArabic(line) }),
-      });
-      continue;
-    }
-
-    if (/^(?:[-*]\s+|\d+[.)]\s+)/.test(line)) {
-      flushParagraph();
-      blocks.push({
-        type: "bullet",
-        ...normalizeMarkdownLine(line.replace(/^(?:[-*]\s+|\d+[.)]\s+)/, "")),
-      });
-      continue;
-    }
-
-    paragraphBuffer.push(line);
-  }
-
-  flushParagraph();
-  return blocks;
-}
-
-function renderSummary(doc, summary, options = {}) {
-  renderSectionHeading(doc, getFeatureLabel("summary", options.localeKey), options);
-  const blocks = classifySummaryBlocks(summary);
-
-  blocks.forEach((block) => {
-    if (block.type === "heading") {
-      renderSectionHeading(doc, block.text, options);
-      return;
-    }
-
-    if (block.type === "bullet") {
-      renderBulletItem(doc, block.text, {
-        ...options,
-        bold: block.bold,
-      });
-      return;
-    }
-
-    renderParagraph(doc, block.text, {
-      ...options,
-      bold: block.bold,
-    });
-  });
-}
-
-function estimateTextHeight(doc, value, options = {}) {
-  const text = normalizeExportText(value, { rtl: options.direction === "rtl" || containsArabic(value) });
+function drawWrappedText(doc, value, options = {}) {
+  const text = normalizeString(value);
   if (!text) {
     return 0;
   }
 
+  const { x: contentX, width: contentWidth } = getContentMetrics(doc);
+  const width = options.width ?? contentWidth;
+  const x = options.x ?? contentX;
+  const y = options.y ?? doc.y;
+  const direction = options.direction ?? getTextDirection(text);
+  const fontSize = options.fontSize ?? PDF_LAYOUT.bodyFontSize;
+  const lineGap = options.lineGap ?? PDF_LAYOUT.lineGap;
+  const color = options.color ?? COLORS.text;
+
   applyFont(doc, text, { bold: options.bold });
-  doc.fontSize(options.fontSize ?? PDF_LAYOUT.bodyFontSize);
-  const lines = wrapLogicalText(doc, text, getContentWidth(doc, options.indent ?? 0), options.direction ?? getTextDirection(text), {
-    bold: options.bold,
+  doc.fontSize(fontSize).fillColor(color);
+
+  const lines = wrapLogicalText(doc, text, width, direction);
+  const lineAdvance = getLineAdvance(doc, lineGap);
+  let cursorY = y;
+
+  lines.forEach((line) => {
+    const lineWidth = Math.min(measureLogicalTextWidth(doc, line, direction, { bold: options.bold }), width);
+    const lineX = direction === "rtl" ? x + width - lineWidth : x;
+    drawVisualLine(doc, toVisualPdfText(line, direction), lineX, cursorY, { bold: options.bold });
+    cursorY += lineAdvance;
   });
-  const lineAdvance = getLineAdvance(doc, options.lineGap ?? PDF_LAYOUT.lineGap);
-  const spacing = (options.spacing ?? 0.7) * doc.currentLineHeight(true);
-  return (lines.length * lineAdvance) + spacing;
+
+  if (options.advanceCursor !== false) {
+    doc.y = cursorY;
+  }
+
+  return cursorY - y;
 }
 
-function renderCardShell(doc, title, bodyRenderer, options = {}) {
-  const width = getContentWidth(doc);
-  const x = PDF_LAYOUT.margin;
-  const startY = doc.y;
-  const direction = options.direction ?? "ltr";
-  const finalHeight = options.minHeight ?? 140;
+function drawDivider(doc, spacingBefore = SPACING.lg, spacingAfter = SPACING.lg) {
+  const { x, width } = getContentMetrics(doc);
+  ensureVerticalSpace(doc, spacingBefore + 1 + spacingAfter);
+  doc.y += spacingBefore;
+  doc
+    .save()
+    .lineWidth(1)
+    .strokeColor(COLORS.softBorder)
+    .moveTo(x, doc.y)
+    .lineTo(x + width, doc.y)
+    .stroke()
+    .restore();
+  doc.y += spacingAfter;
+}
 
-  ensureVerticalSpace(doc, finalHeight);
+function renderDocumentHeader(doc, documentTitle, featureLabel) {
+  const { x, width } = getContentMetrics(doc);
+  const headerTitleHeight = getLineMetrics(doc, documentTitle, {
+    width,
+    bold: true,
+    fontSize: PDF_LAYOUT.titleFontSize,
+    lineGap: 8,
+  }).height;
+  const headerMeta = `Study Hub export • ${featureLabel}`;
+  const generatedAt = `Generated ${new Date().toLocaleString("en-US")}`;
+  const metaHeight = getLineMetrics(doc, headerMeta, {
+    width,
+    fontSize: PDF_LAYOUT.metaFontSize,
+    lineGap: 3,
+  }).height + getLineMetrics(doc, generatedAt, {
+    width,
+    fontSize: PDF_LAYOUT.metaFontSize,
+    lineGap: 3,
+  }).height;
+  const blockHeight = headerTitleHeight + SPACING.md + metaHeight + SPACING.xl;
+
+  ensureVerticalSpace(doc, blockHeight);
+  drawWrappedText(doc, documentTitle, {
+    x,
+    width,
+    bold: true,
+    fontSize: PDF_LAYOUT.titleFontSize,
+    lineGap: 8,
+    color: COLORS.text,
+  });
+  doc.y += SPACING.md;
+  drawWrappedText(doc, headerMeta, {
+    x,
+    width,
+    fontSize: PDF_LAYOUT.metaFontSize,
+    lineGap: 3,
+    color: COLORS.subtle,
+  });
+  drawWrappedText(doc, generatedAt, {
+    x,
+    width,
+    fontSize: PDF_LAYOUT.metaFontSize,
+    lineGap: 3,
+    color: COLORS.subtle,
+  });
+  drawDivider(doc, SPACING.md, SPACING.xl);
+}
+
+function renderSectionTitle(doc, value) {
+  const { x, width } = getContentMetrics(doc);
+  const height = getLineMetrics(doc, value, {
+    width,
+    bold: true,
+    fontSize: PDF_LAYOUT.sectionFontSize,
+    lineGap: 6,
+  }).height + SPACING.md;
+
+  ensureVerticalSpace(doc, height);
+  drawWrappedText(doc, value, {
+    x,
+    width,
+    bold: true,
+    fontSize: PDF_LAYOUT.sectionFontSize,
+    lineGap: 6,
+    color: COLORS.text,
+  });
+  doc.y += SPACING.md;
+}
+
+function renderSubsectionTitle(doc, value) {
+  const { x, width } = getContentMetrics(doc);
+  const height = getLineMetrics(doc, value, {
+    width,
+    bold: true,
+    fontSize: PDF_LAYOUT.subsectionFontSize,
+    lineGap: 5,
+  }).height + SPACING.sm;
+
+  ensureVerticalSpace(doc, height);
+  drawWrappedText(doc, value, {
+    x,
+    width,
+    bold: true,
+    fontSize: PDF_LAYOUT.subsectionFontSize,
+    lineGap: 5,
+    color: COLORS.text,
+  });
+  doc.y += SPACING.sm;
+}
+
+function renderBodyParagraph(doc, value, options = {}) {
+  const { x, width } = getContentMetrics(doc);
+  const height = getLineMetrics(doc, value, {
+    width: options.width ?? width,
+    bold: options.bold,
+    fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
+    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    direction: options.direction,
+  }).height + (options.spacingAfter ?? PDF_LAYOUT.paragraphGap);
+
+  ensureVerticalSpace(doc, height);
+  drawWrappedText(doc, value, {
+    x: options.x ?? x,
+    width: options.width ?? width,
+    bold: options.bold,
+    fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
+    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    color: options.color ?? COLORS.text,
+    direction: options.direction,
+  });
+  doc.y += options.spacingAfter ?? PDF_LAYOUT.paragraphGap;
+}
+
+function normalizeBulletText(value) {
+  return normalizeString(value)
+    .replace(/^[-*•]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "");
+}
+
+function splitSentenceGroups(text) {
+  return normalizeString(text)
+    .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function parseSummaryBlocks(summary) {
+  const source = normalizeString(summary);
+  if (!source) {
+    return [];
+  }
+
+  const rawBlocks = source
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  const blocks = [];
+
+  rawBlocks.forEach((block) => {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 1 && /^##\s+/.test(lines[0])) {
+      blocks.push({ type: "heading", text: lines[0].replace(/^##\s+/, "").trim() });
+      return;
+    }
+
+    const bulletItems = [];
+    const proseLines = [];
+
+    lines.forEach((line) => {
+      if (/^[-*•]\s+/.test(line) || /^\d+[.)]\s+/.test(line)) {
+        bulletItems.push(normalizeBulletText(line));
+      } else {
+        proseLines.push(line);
+      }
+    });
+
+    if (bulletItems.length > 0 && proseLines.length === 0) {
+      blocks.push({ type: "list", items: bulletItems });
+      return;
+    }
+
+    const normalizedParagraph = proseLines.join(" ").replace(/\s+/g, " ").trim();
+    if (!normalizedParagraph) {
+      if (bulletItems.length > 0) {
+        blocks.push({ type: "list", items: bulletItems });
+      }
+      return;
+    }
+
+    const inlineListParts = normalizedParagraph.split(/\s+-\s+/).map((part) => part.trim()).filter(Boolean);
+    if (inlineListParts.length >= 3) {
+      blocks.push({ type: "list", items: inlineListParts });
+      return;
+    }
+
+    splitSentenceGroups(normalizedParagraph).forEach((sentence) => {
+      blocks.push({ type: "paragraph", text: sentence });
+    });
+
+    if (bulletItems.length > 0) {
+      blocks.push({ type: "list", items: bulletItems });
+    }
+  });
+
+  return blocks;
+}
+
+function classifySummarySection(title = "", text = "") {
+  const haystack = `${normalizeString(title)} ${normalizeString(text)}`.toLowerCase();
+
+  if (/(interview|conversation|discussion|format|flow|opening|closing|structure)/.test(haystack)) {
+    return "Interview Structure";
+  }
+  if (/(assessment|evaluation|criteria|competenc|skill|strength|weakness|question area|screening)/.test(haystack)) {
+    return "Assessment Areas";
+  }
+
+  return "Key Themes";
+}
+
+function buildSummarySections(summary) {
+  const parsedBlocks = parseSummaryBlocks(summary);
+  const sections = new Map(SUMMARY_SECTION_ORDER.map((title) => [title, []]));
+  let currentSection = "Key Themes";
+
+  parsedBlocks.forEach((block) => {
+    if (block.type === "heading") {
+      currentSection = classifySummarySection(block.text, block.text);
+      return;
+    }
+
+    const sampleText = block.type === "list" ? block.items.join(" ") : block.text;
+    const targetSection = currentSection || classifySummarySection("", sampleText);
+    sections.get(targetSection).push(block);
+  });
+
+  const assignedCount = SUMMARY_SECTION_ORDER.reduce((total, title) => total + sections.get(title).length, 0);
+  if (assignedCount === 0) {
+    return SUMMARY_SECTION_ORDER.map((title) => ({ title, blocks: [] }));
+  }
+
+  const nonEmpty = SUMMARY_SECTION_ORDER.filter((title) => sections.get(title).length > 0);
+  if (nonEmpty.length === 1) {
+    const [sourceTitle] = nonEmpty;
+    const sourceBlocks = sections.get(sourceTitle);
+    const bucketed = SUMMARY_SECTION_ORDER.map((title) => ({ title, blocks: [] }));
+
+    sourceBlocks.forEach((block, index) => {
+      const bucketIndex = Math.min(index, SUMMARY_SECTION_ORDER.length - 1);
+      bucketed[bucketIndex].blocks.push(block);
+    });
+
+    return bucketed;
+  }
+
+  return SUMMARY_SECTION_ORDER.map((title) => ({ title, blocks: sections.get(title) }));
+}
+
+function renderBulletList(doc, items, options = {}) {
+  const { x, width } = getContentMetrics(doc);
+  const indent = options.indent ?? 18;
+  const markerGap = options.markerGap ?? 10;
+  const marker = options.marker ?? "•";
+  const contentWidth = width - indent;
+
+  items.forEach((item) => {
+    const bulletText = normalizeString(item);
+    if (!bulletText) {
+      return;
+    }
+
+    const lineMetrics = getLineMetrics(doc, bulletText, {
+      width: contentWidth - markerGap,
+      fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
+      lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+      direction: options.direction,
+    });
+    const blockHeight = Math.max(lineMetrics.height, 12) + (options.itemGap ?? SPACING.sm);
+
+    ensureVerticalSpace(doc, blockHeight);
+    drawWrappedText(doc, marker, {
+      x,
+      y: doc.y,
+      width: indent,
+      fontSize: PDF_LAYOUT.labelFontSize,
+      bold: true,
+      lineGap: 2,
+      color: COLORS.text,
+      advanceCursor: false,
+    });
+    drawWrappedText(doc, bulletText, {
+      x: x + indent,
+      y: doc.y,
+      width: contentWidth - markerGap,
+      fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
+      lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+      color: options.color ?? COLORS.text,
+      direction: options.direction,
+      advanceCursor: false,
+    });
+    doc.y += blockHeight;
+  });
+}
+
+function measureCardHeight(doc, segments, width) {
+  let total = PDF_LAYOUT.cardPadding * 2;
+
+  segments.forEach((segment, index) => {
+    const metrics = getLineMetrics(doc, segment.text, {
+      width,
+      bold: segment.bold,
+      fontSize: segment.fontSize,
+      lineGap: segment.lineGap,
+      direction: segment.direction,
+    });
+    total += metrics.height;
+
+    if (segment.spacingAfter) {
+      total += segment.spacingAfter;
+    }
+
+    if (index < segments.length - 1) {
+      total += segment.gapAfter ?? 0;
+    }
+  });
+
+  return total;
+}
+
+function renderCard(doc, segments, options = {}) {
+  const { x, width } = getContentMetrics(doc);
+  const cardWidth = options.width ?? width;
+  const cardX = options.x ?? x;
+  const contentX = cardX + PDF_LAYOUT.cardPadding;
+  const contentWidth = cardWidth - (PDF_LAYOUT.cardPadding * 2);
+  const cardHeight = measureCardHeight(doc, segments, contentWidth);
+
+  ensureVerticalSpace(doc, cardHeight);
 
   doc
     .save()
-    .roundedRect(x, startY, width, finalHeight, 12)
-    .fillAndStroke("#FAFAF9", "#E5E7EB")
+    .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_LAYOUT.radius)
+    .fillAndStroke(options.fillColor ?? COLORS.panel, options.strokeColor ?? COLORS.border)
     .restore();
 
-  doc.x = x + PDF_LAYOUT.cardPadding;
-  doc.y = startY + PDF_LAYOUT.cardPadding;
+  let cursorY = doc.y + PDF_LAYOUT.cardPadding;
 
-  renderTextBlock(doc, title, {
-    bold: true,
-    fontSize: PDF_LAYOUT.smallFontSize,
-    color: "#6B7280",
-    spacing: 0.25,
-    lineGap: 2,
-    direction,
+  segments.forEach((segment, index) => {
+    const drawnHeight = drawWrappedText(doc, segment.text, {
+      x: contentX,
+      y: cursorY,
+      width: contentWidth,
+      fontSize: segment.fontSize,
+      lineGap: segment.lineGap,
+      bold: segment.bold,
+      color: segment.color,
+      direction: segment.direction,
+      advanceCursor: false,
+    });
+    cursorY += drawnHeight;
+
+    if (segment.spacingAfter) {
+      cursorY += segment.spacingAfter;
+    }
+
+    if (index < segments.length - 1 && segment.gapAfter) {
+      cursorY += segment.gapAfter;
+    }
   });
 
-  bodyRenderer();
-  doc.x = PDF_LAYOUT.margin;
-  doc.y = startY + finalHeight + 16;
+  doc.y += cardHeight + (options.spacingAfter ?? PDF_LAYOUT.blockGap);
 }
 
-function estimateFlashcardHeight(doc, flashcard, options) {
-  const copy = getCopy(options.localeKey);
-  return 64
-    + estimateTextHeight(doc, copy.flashcardQuestion, { ...options, bold: true, fontSize: PDF_LAYOUT.smallFontSize, lineGap: 2, spacing: 0.15 })
-    + estimateTextHeight(doc, flashcard?.question, { ...options, spacing: 0.4 })
-    + estimateTextHeight(doc, copy.flashcardAnswer, { ...options, bold: true, fontSize: PDF_LAYOUT.smallFontSize, lineGap: 2, spacing: 0.15 })
-    + estimateTextHeight(doc, flashcard?.answer, { ...options, spacing: 0.4 })
-    + estimateTextHeight(doc, copy.flashcardExplanation, { ...options, bold: true, fontSize: PDF_LAYOUT.smallFontSize, lineGap: 2, spacing: 0.15 })
-    + estimateTextHeight(doc, flashcard?.explanation, { ...options, spacing: 0.2 });
-}
+function renderSummary(doc, summary) {
+  const sections = buildSummarySections(summary);
 
-function renderFlashcards(doc, flashcards = [], options = {}) {
-  const copy = getCopy(options.localeKey);
-  renderSectionHeading(doc, getFeatureLabel("flashcards", options.localeKey), options);
+  sections.forEach((section, sectionIndex) => {
+    renderSubsectionTitle(doc, section.title);
 
-  flashcards.forEach((flashcard, index) => {
-    const cardNumber = getLocalizedNumber(index + 1, options.localeKey);
-    const title = `${copy.flashcardCard} ${cardNumber}`;
-    const minHeight = Math.max(148, estimateFlashcardHeight(doc, flashcard, options));
-
-    renderCardShell(doc, title, () => {
-      renderLabelValueBlock(doc, copy.flashcardQuestion, flashcard?.question, options);
-      renderLabelValueBlock(doc, copy.flashcardAnswer, flashcard?.answer, options);
-      renderLabelValueBlock(doc, copy.flashcardExplanation, flashcard?.explanation, {
-        ...options,
-        color: "#4B5563",
+    if (section.blocks.length === 0) {
+      renderBodyParagraph(doc, "No content was available for this section.", {
+        color: COLORS.muted,
       });
-    }, {
-      ...options,
-      minHeight,
-    });
-  });
-}
+    } else {
+      section.blocks.forEach((block) => {
+        if (block.type === "list") {
+          renderBulletList(doc, block.items, { itemGap: SPACING.sm });
+          doc.y += SPACING.sm;
+          return;
+        }
 
-function estimateExamQuestionHeight(doc, question, options) {
-  const copy = getCopy(options.localeKey);
-  const optionValues = Array.isArray(question?.options) ? question.options : [];
-
-  return 56
-    + estimateTextHeight(doc, question?.question, { ...options, bold: true, spacing: 0.35 })
-    + optionValues.reduce((total, option, optionIndex) => total
-      + estimateTextHeight(doc, `${copy.examOption} ${getOptionLabel(optionIndex, options.localeKey)}`, {
-        ...options,
-        bold: true,
-        fontSize: PDF_LAYOUT.smallFontSize,
-        lineGap: 2,
-        spacing: 0.15,
-      })
-      + estimateTextHeight(doc, option, { ...options, spacing: 0.2 }), 0);
-}
-
-function renderExam(doc, questions = [], options = {}) {
-  const copy = getCopy(options.localeKey);
-  renderSectionHeading(doc, getFeatureLabel("exam", options.localeKey), options);
-
-  questions.forEach((question, index) => {
-    const questionNumber = getLocalizedNumber(index + 1, options.localeKey);
-    const title = `${copy.examQuestion} ${questionNumber}`;
-    const minHeight = Math.max(148, estimateExamQuestionHeight(doc, question, options));
-
-    renderCardShell(doc, title, () => {
-      renderParagraph(doc, question?.question, {
-        ...options,
-        bold: true,
-        spacing: 0.45,
+        renderBodyParagraph(doc, block.text, {
+          spacingAfter: PDF_LAYOUT.paragraphGap,
+        });
       });
+    }
 
-      const optionValues = Array.isArray(question?.options) ? question.options : [];
-      optionValues.forEach((option, optionIndex) => {
-        const optionLabel = `${copy.examOption} ${getOptionLabel(optionIndex, options.localeKey)}`;
-        renderLabelValueBlock(doc, optionLabel, option, options);
-      });
-    }, {
-      ...options,
-      minHeight,
-    });
+    if (sectionIndex < sections.length - 1) {
+      doc.y += SPACING.sm;
+    }
   });
 }
 
 export const __studyPdfTestables = Object.freeze({
   getTextDirection,
-  normalizeExportText,
   toVisualPdfText,
   wrapLogicalText,
+  parseSummaryBlocks,
+  buildSummarySections,
 });
+
+function renderFlashcards(doc, flashcards = []) {
+  flashcards.forEach((flashcard, index) => {
+    const segments = [
+      {
+        text: "Question",
+        bold: true,
+        fontSize: PDF_LAYOUT.labelFontSize,
+        lineGap: 2,
+        color: COLORS.subtle,
+        spacingAfter: SPACING.xs,
+      },
+      {
+        text: normalizeString(flashcard?.question) || "No question provided.",
+        bold: true,
+        fontSize: PDF_LAYOUT.subsectionFontSize,
+        lineGap: 5,
+        color: COLORS.text,
+        spacingAfter: SPACING.md,
+      },
+      {
+        text: "Answer",
+        bold: true,
+        fontSize: PDF_LAYOUT.labelFontSize,
+        lineGap: 2,
+        color: COLORS.subtle,
+        spacingAfter: SPACING.xs,
+      },
+      {
+        text: normalizeString(flashcard?.answer) || "No answer provided.",
+        fontSize: PDF_LAYOUT.bodyFontSize,
+        lineGap: PDF_LAYOUT.lineGap,
+        color: COLORS.text,
+        spacingAfter: 0,
+      },
+    ];
+
+    const explanation = normalizeString(flashcard?.explanation);
+    if (explanation) {
+      segments.push({
+        text: "Explanation",
+        bold: true,
+        fontSize: PDF_LAYOUT.labelFontSize,
+        lineGap: 2,
+        color: COLORS.subtle,
+        spacingAfter: SPACING.xs,
+        gapAfter: SPACING.md,
+      });
+      segments.push({
+        text: explanation,
+        fontSize: PDF_LAYOUT.bodyFontSize,
+        lineGap: PDF_LAYOUT.lineGap,
+        color: COLORS.muted,
+        spacingAfter: 0,
+      });
+    }
+
+    renderCard(doc, segments, {
+      fillColor: index % 2 === 0 ? COLORS.panel : COLORS.accentPanel,
+      strokeColor: COLORS.softBorder,
+      spacingAfter: SPACING.xl,
+    });
+  });
+}
+
+function renderExam(doc, questions = []) {
+  questions.forEach((question, index) => {
+    const questionSegments = [
+      {
+        text: `Question ${index + 1}`,
+        bold: true,
+        fontSize: PDF_LAYOUT.labelFontSize,
+        lineGap: 2,
+        color: COLORS.subtle,
+        spacingAfter: SPACING.xs,
+      },
+      {
+        text: normalizeString(question?.question) || "No question provided.",
+        bold: true,
+        fontSize: PDF_LAYOUT.subsectionFontSize,
+        lineGap: 5,
+        color: COLORS.text,
+        spacingAfter: SPACING.md,
+      },
+    ];
+
+    const { x, width } = getContentMetrics(doc);
+    const cardWidth = width;
+    const cardX = x;
+    const contentX = cardX + PDF_LAYOUT.cardPadding;
+    const contentWidth = cardWidth - (PDF_LAYOUT.cardPadding * 2);
+
+    let cardHeight = measureCardHeight(doc, questionSegments, contentWidth);
+    const options = Array.isArray(question?.options) ? question.options : [];
+
+    if (options.length > 0) {
+      cardHeight += SPACING.xs;
+      options.forEach((option) => {
+        const optionMetrics = getLineMetrics(doc, normalizeString(option), {
+          width: contentWidth - 24,
+          fontSize: PDF_LAYOUT.bodyFontSize,
+          lineGap: PDF_LAYOUT.lineGap,
+        });
+        cardHeight += Math.max(optionMetrics.height, 12) + SPACING.sm;
+      });
+    }
+
+    ensureVerticalSpace(doc, cardHeight + SPACING.xl);
+
+    doc
+      .save()
+      .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_LAYOUT.radius)
+      .fillAndStroke(COLORS.panel, COLORS.border)
+      .restore();
+
+    let cursorY = doc.y + PDF_LAYOUT.cardPadding;
+    questionSegments.forEach((segment) => {
+      const drawnHeight = drawWrappedText(doc, segment.text, {
+        x: contentX,
+        y: cursorY,
+        width: contentWidth,
+        fontSize: segment.fontSize,
+        lineGap: segment.lineGap,
+        bold: segment.bold,
+        color: segment.color,
+        advanceCursor: false,
+      });
+      cursorY += drawnHeight + (segment.spacingAfter ?? 0);
+    });
+
+    if (options.length > 0) {
+      cursorY += SPACING.xs;
+    }
+
+    options.forEach((option, optionIndex) => {
+      const label = `${String.fromCharCode(65 + optionIndex)}.`;
+      drawWrappedText(doc, label, {
+        x: contentX,
+        y: cursorY,
+        width: 20,
+        fontSize: PDF_LAYOUT.labelFontSize,
+        lineGap: 2,
+        bold: true,
+        color: COLORS.text,
+        advanceCursor: false,
+      });
+
+      const optionHeight = drawWrappedText(doc, normalizeString(option), {
+        x: contentX + 24,
+        y: cursorY,
+        width: contentWidth - 24,
+        fontSize: PDF_LAYOUT.bodyFontSize,
+        lineGap: PDF_LAYOUT.lineGap,
+        color: COLORS.text,
+        advanceCursor: false,
+      });
+
+      cursorY += Math.max(optionHeight, 12) + SPACING.sm;
+    });
+
+    doc.y += cardHeight + SPACING.xl;
+  });
+}
 
 export function normalizeStudyExportFeature(value) {
   const normalized = normalizeString(value).toLowerCase();
@@ -798,15 +956,14 @@ export function hasStudyExportContent(document, feature) {
 }
 
 export async function buildStudyPdfBuffer(document, feature) {
-  const localeKey = getLocaleKey(document);
-  const featureLabel = getFeatureLabel(feature, localeKey);
+  const featureLabel = FEATURE_LABELS[feature] ?? "Study";
   const documentTitle = stripTrailingExtension(
     normalizeDocumentName(document?.originalName || document?.title || document?.filename),
   ) || "Study document";
 
   const pdf = new PDFDocument({
     size: PDF_LAYOUT.size,
-    margin: PDF_LAYOUT.margin,
+    margins: PDF_LAYOUT.margins,
     info: {
       Title: `${documentTitle} - ${featureLabel}`,
       Author: "AI Study Assistant",
@@ -824,23 +981,17 @@ export async function buildStudyPdfBuffer(document, feature) {
   });
 
   registerPdfFonts(pdf);
-  renderMeta(pdf, {
-    documentTitle,
-    featureLabel,
-    localeKey,
-  });
+  pdf.y = PDF_LAYOUT.margins.top;
 
-  const sectionOptions = {
-    localeKey,
-    direction: localeKey === "arabic" ? "rtl" : "ltr",
-  };
+  renderDocumentHeader(pdf, documentTitle, featureLabel);
+  renderSectionTitle(pdf, featureLabel);
 
   if (feature === "summary") {
-    renderSummary(pdf, document?.summary, sectionOptions);
+    renderSummary(pdf, document?.summary);
   } else if (feature === "flashcards") {
-    renderFlashcards(pdf, document?.flashcards, sectionOptions);
+    renderFlashcards(pdf, document?.flashcards);
   } else {
-    renderExam(pdf, document?.examQuestions, sectionOptions);
+    renderExam(pdf, document?.examQuestions);
   }
 
   pdf.end();
