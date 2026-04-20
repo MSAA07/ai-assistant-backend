@@ -4,15 +4,15 @@ import PDFDocument from "pdfkit";
 
 import { __studyPdfTestables, buildStudyPdfBuffer, buildStudyPdfFileName } from "./studyPdf.js";
 
-test("buildStudyPdfFileName preserves Arabic and mixed-language document names", () => {
+test("buildStudyPdfFileName uses the canonical document-feature format", () => {
   assert.equal(
     buildStudyPdfFileName({ originalName: "ملخص المحاضرة.pdf" }, "summary"),
-    "summary-ملخص المحاضرة.pdf",
+    "ملخص_المحاضرة-summary.pdf",
   );
 
   assert.equal(
     buildStudyPdfFileName({ originalName: "Chapter 3 - المراجعة النهائية.docx" }, "flashcards"),
-    "flashcards-Chapter 3 - المراجعة النهائية.pdf",
+    "Chapter_3_-_المراجعة_النهائية-flashcards.pdf",
   );
 });
 
@@ -58,6 +58,17 @@ test("pdf system spacing uses only approved scale values", () => {
   values.forEach((value) => {
     assert.ok(allowed.has(value), `unexpected spacing value: ${value}`);
   });
+});
+
+test("component spacing is identical across similar PDF blocks", () => {
+  const { PDF_SYSTEM } = __studyPdfTestables;
+
+  assert.equal(PDF_SYSTEM.components.flashcard.padding, 24);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 32);
+  assert.equal(PDF_SYSTEM.components.exam.padding, 24);
+  assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 32);
+  assert.equal(PDF_SYSTEM.components.summary.paragraphGap, 16);
+  assert.equal(PDF_SYSTEM.components.summary.listItemGap, 8);
 });
 
 test("buildStudyPdfBuffer emits a PDF buffer for Arabic content", async () => {
@@ -142,6 +153,17 @@ test("paragraph normalization removes accidental line breaks inside sentences", 
   );
 });
 
+test("paragraph normalization removes empty lines inside a sentence", () => {
+  assert.equal(
+    __studyPdfTestables.normalizeParagraphText("What is discussed in\n\nthe study material?"),
+    "What is discussed in the study material?",
+  );
+  assert.doesNotMatch(
+    __studyPdfTestables.normalizeParagraphText("What is discussed in\n\nthe study material?"),
+    /\n/,
+  );
+});
+
 test("inline spacing normalization fixes punctuation and parenthesis spacing", () => {
   assert.equal(
     __studyPdfTestables.normalizeInlineSpacing("Hello ,world!This is ( spaced ) text 2026/04/19 +noise"),
@@ -154,6 +176,17 @@ test("paragraph normalization preserves hyphenated compounds while cleaning stra
     __studyPdfTestables.normalizeParagraphText("cross-functional\nresponse plan"),
     "cross-functional response plan",
   );
+});
+
+test("summary parsing isolates Example Case into its own paragraph block", () => {
+  const blocks = __studyPdfTestables.parseSummaryBlocks(
+    "Leadership expectations. Example Case: The candidate explains a product outage clearly. Next, they propose a response plan.",
+  );
+
+  assert.deepEqual(blocks, [
+    { type: "paragraph", text: "Leadership expectations." },
+    { type: "paragraph", text: "Example Case: The candidate explains a product outage clearly. Next, they propose a response plan." },
+  ]);
 });
 
 test("logical wrapping rebalances a single-word final line", () => {
@@ -199,4 +232,13 @@ test("canonical hierarchy keeps questions above body text and labels below both"
   assert.ok(PDF_SYSTEM.typography.questionText.size > PDF_SYSTEM.typography.body.size);
   assert.ok(PDF_SYSTEM.typography.flashcardQuestion.size > PDF_SYSTEM.typography.body.size);
   assert.ok(PDF_SYSTEM.typography.body.size > PDF_SYSTEM.typography.label.size);
+});
+
+test("flashcards and exam blocks retain component styling instead of plain text spacing", () => {
+  const { PDF_SYSTEM } = __studyPdfTestables;
+
+  assert.ok(PDF_SYSTEM.components.flashcard.padding >= 16);
+  assert.ok(PDF_SYSTEM.components.flashcard.gapBetweenCards >= 24);
+  assert.ok(PDF_SYSTEM.components.exam.gapBetweenQuestions >= 24);
+  assert.ok(PDF_SYSTEM.components.exam.optionIndent > PDF_SYSTEM.components.summary.listItemGap);
 });

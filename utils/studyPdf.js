@@ -81,6 +81,7 @@ const SUMMARY_SECTION_ORDER = Object.freeze([
   "Assessment Areas",
   "Interview Structure",
 ]);
+const PARAGRAPH_BREAK_TOKEN = "__PARA_BREAK__";
 
 const ARABIC_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
 const LATIN_CHARS = /[A-Za-z]/;
@@ -122,17 +123,54 @@ function normalizeInlineSpacing(value) {
     .trim();
 }
 
-function normalizeParagraphText(value) {
+function splitNormalizedParagraphFragments(value) {
   return normalizeString(value)
     .replace(/\r\n?/g, "\n")
-    .replace(/\n{2,}/g, "__PARA_BREAK__")
-    .replace(/\n[ \t]*\n+/g, "__PARA_BREAK__")
-    .replace(/(?<!\n)\n(?!\n)/g, " ")
-    .split("__PARA_BREAK__")
-    .map((part) => normalizeInlineSpacing(part))
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
+    .replace(/\n[ \t]*\n+/g, PARAGRAPH_BREAK_TOKEN)
+    .split(PARAGRAPH_BREAK_TOKEN)
+    .map((part) => normalizeInlineSpacing(part.replace(/\n+/g, " ")))
+    .filter(Boolean);
+}
+
+function endsParagraphSentence(value) {
+  return /[.!?]["')\]]*$/.test(normalizeString(value));
+}
+
+function shouldMergeParagraphFragments(previous, next) {
+  if (!previous || !next) {
+    return false;
+  }
+
+  if (/^[A-Z]/.test(next)) {
+    return false;
+  }
+
+  if (!endsParagraphSentence(previous)) {
+    return true;
+  }
+
+  return /^[a-z(]/.test(next);
+}
+
+function normalizeParagraphText(value) {
+  const fragments = splitNormalizedParagraphFragments(value);
+  if (fragments.length === 0) {
+    return "";
+  }
+
+  const mergedFragments = [];
+
+  fragments.forEach((fragment) => {
+    const previous = mergedFragments.at(-1);
+    if (shouldMergeParagraphFragments(previous, fragment)) {
+      mergedFragments[mergedFragments.length - 1] = normalizeInlineSpacing(`${previous} ${fragment}`);
+      return;
+    }
+
+    mergedFragments.push(fragment);
+  });
+
+  return mergedFragments.join("\n\n").trim();
 }
 
 function stripTrailingExtension(value) {
@@ -559,6 +597,31 @@ function splitSentenceGroups(text) {
     .filter(Boolean);
 }
 
+function splitEditorialParagraphs(text) {
+  const normalized = normalizeParagraphText(text);
+  if (!normalized) {
+    return [];
+  }
+
+  const exampleSplit = normalized
+    .split(/\s+(?=Example Case[:\-])/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return exampleSplit.flatMap((part) => {
+    const sentences = splitSentenceGroups(part);
+    if (sentences.length <= 2) {
+      return [part];
+    }
+
+    const grouped = [];
+    for (let index = 0; index < sentences.length; index += 2) {
+      grouped.push(sentences.slice(index, index + 2).join(" "));
+    }
+    return grouped;
+  });
+}
+
 function parseSummaryBlocks(summary) {
   const source = normalizeString(summary);
   if (!source) {
@@ -566,9 +629,29 @@ function parseSummaryBlocks(summary) {
   }
 
   const rawBlocks = source
+    .replace(/\r\n?/g, "\n")
     .split(/\n\s*\n/)
     .map((block) => block.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .reduce((blocks, block) => {
+      const previous = blocks.at(-1);
+      if (
+        previous
+        && !/^##\s+/.test(previous)
+        && !/^[-*•]\s+/.test(previous)
+        && !/^\d+[.)]\s+/.test(previous)
+        && !/^##\s+/.test(block)
+        && !/^[-*•]\s+/.test(block)
+        && !/^\d+[.)]\s+/.test(block)
+        && shouldMergeParagraphFragments(normalizeParagraphText(previous), normalizeParagraphText(block))
+      ) {
+        blocks[blocks.length - 1] = `${previous}\n\n${block}`;
+        return blocks;
+      }
+
+      blocks.push(block);
+      return blocks;
+    }, []);
 
   const blocks = [];
 
@@ -613,8 +696,8 @@ function parseSummaryBlocks(summary) {
       return;
     }
 
-    splitSentenceGroups(normalizedParagraph).forEach((sentence) => {
-      blocks.push({ type: "paragraph", text: sentence });
+    splitEditorialParagraphs(normalizedParagraph).forEach((paragraph) => {
+      blocks.push({ type: "paragraph", text: paragraph });
     });
 
     if (bulletItems.length > 0) {
@@ -682,8 +765,9 @@ function renderBulletList(doc, items, options = {}) {
   const markerGap = options.markerGap ?? SPACING.sm;
   const marker = options.marker ?? "•";
   const contentWidth = width - indent;
+  const itemGap = options.itemGap ?? PDF_SYSTEM.components.summary.listItemGap;
 
-  items.forEach((item) => {
+  items.forEach((item, index) => {
     const bulletText = normalizeString(item);
     if (!bulletText) {
       return;
@@ -695,9 +779,10 @@ function renderBulletList(doc, items, options = {}) {
       lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
       direction: options.direction,
     });
-    const blockHeight = Math.max(lineMetrics.height, PDF_SYSTEM.typography.body.size) + (options.itemGap ?? PDF_SYSTEM.components.summary.listItemGap);
+    const blockHeight = Math.max(lineMetrics.height, PDF_SYSTEM.typography.body.size);
+    const spacingAfter = index < items.length - 1 ? itemGap : 0;
 
-    ensureVerticalSpace(doc, blockHeight);
+    ensureVerticalSpace(doc, blockHeight + spacingAfter);
     drawWrappedText(doc, marker, {
       x,
       y: doc.y,
@@ -718,7 +803,7 @@ function renderBulletList(doc, items, options = {}) {
       direction: options.direction,
       advanceCursor: false,
     });
-    doc.y += blockHeight;
+    doc.y += blockHeight + spacingAfter;
   });
 }
 
@@ -856,7 +941,7 @@ function renderSummary(doc, summary) {
       section.blocks.forEach((block) => {
         if (block.type === "list") {
           renderBulletList(doc, block.items, { itemGap: PDF_SYSTEM.components.summary.listItemGap });
-          doc.y += SPACING.sm;
+          doc.y += PDF_SYSTEM.components.summary.paragraphGap;
           return;
         }
 
@@ -867,7 +952,7 @@ function renderSummary(doc, summary) {
     }
 
     if (sectionIndex < sections.length - 1) {
-      doc.y += SPACING.sm;
+      doc.y += PDF_SYSTEM.components.summary.sectionGap;
     }
   });
 }
@@ -948,7 +1033,7 @@ function renderFlashcards(doc, flashcards = []) {
       width: contentWidth,
       fontSize: PDF_SYSTEM.typography.body.size,
       lineGap: PDF_SYSTEM.typography.body.lineGap,
-      color: COLORS.text,
+      color: COLORS.muted,
     }).nextY;
 
     if (explanation) {
@@ -1055,7 +1140,7 @@ function renderExam(doc, questions = []) {
         width: contentWidth - PDF_SYSTEM.components.exam.optionIndent,
         fontSize: PDF_SYSTEM.typography.body.size,
         lineGap: PDF_SYSTEM.typography.body.lineGap,
-        color: COLORS.text,
+        color: COLORS.muted,
         advanceCursor: false,
       });
 
@@ -1078,9 +1163,13 @@ export function buildStudyPdfFileName(document, feature) {
   const baseName = sanitizeDownloadFilename(
     stripTrailingExtension(normalizeDocumentName(document?.originalName || document?.title || document?.filename)),
     "study-document",
-  );
-  const featureLabel = sanitizeDownloadFilename(feature, "study");
-  return sanitizeDownloadFilename(`${featureLabel}-${baseName}.pdf`, `${featureLabel}-study-document.pdf`);
+  )
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .trim();
+  const featureLabel = normalizeStudyExportFeature(feature) || "study";
+  return sanitizeDownloadFilename(`${baseName}-${featureLabel}.pdf`, `study-document-${featureLabel}.pdf`)
+    .replace(/\s+/g, "_");
 }
 
 export function hasStudyExportContent(document, feature) {
