@@ -41,7 +41,7 @@ const PDF_SYSTEM = Object.freeze({
     radius: 8,
     flashcard: {
       padding: SPACING.lg,
-      gapBetweenCards: SPACING.xl,
+      gapBetweenCards: SPACING.lg,
       sectionGap: SPACING.md,
     },
     exam: {
@@ -478,18 +478,22 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
     fontSize: PDF_SYSTEM.typography.documentTitle.size,
     lineGap: PDF_SYSTEM.typography.documentTitle.lineGap,
   }).height;
-  const headerMeta = `Study Hub export • ${featureLabel}`;
-  const generatedAt = `Generated ${new Date().toLocaleString("en-US")}`;
-  const metaHeight = getLineMetrics(doc, headerMeta, {
+  const headerFeatureHeight = getLineMetrics(doc, featureLabel, {
     width,
-    fontSize: PDF_SYSTEM.typography.meta.size,
-    lineGap: PDF_SYSTEM.typography.meta.lineGap,
-  }).height + getLineMetrics(doc, generatedAt, {
+    fontSize: PDF_SYSTEM.typography.sectionTitle.size,
+    lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
+  }).height;
+  const generatedAt = `Generated ${new Date().toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  })}`;
+  const metaHeight = getLineMetrics(doc, generatedAt, {
     width,
     fontSize: PDF_SYSTEM.typography.meta.size,
     lineGap: PDF_SYSTEM.typography.meta.lineGap,
   }).height;
-  const blockHeight = headerTitleHeight + SPACING.md + metaHeight + SPACING.xl;
+  const blockHeight = headerTitleHeight + SPACING.sm + headerFeatureHeight + SPACING.md + metaHeight + SPACING.xl;
 
   ensureVerticalSpace(doc, blockHeight);
   drawWrappedText(doc, documentTitle, {
@@ -500,14 +504,15 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
     lineGap: PDF_SYSTEM.typography.documentTitle.lineGap,
     color: COLORS.strongText,
   });
-  doc.y += SPACING.md;
-  drawWrappedText(doc, headerMeta, {
+  doc.y += SPACING.sm;
+  drawWrappedText(doc, featureLabel, {
     x,
     width,
-    fontSize: PDF_SYSTEM.typography.meta.size,
-    lineGap: PDF_SYSTEM.typography.meta.lineGap,
-    color: COLORS.subtle,
+    fontSize: PDF_SYSTEM.typography.sectionTitle.size,
+    lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
+    color: COLORS.text,
   });
+  doc.y += SPACING.md;
   drawWrappedText(doc, generatedAt, {
     x,
     width,
@@ -980,11 +985,11 @@ function renderFlashcards(doc, flashcards = []) {
     const cardWidth = width;
     const contentX = cardX + PDF_SYSTEM.components.flashcard.padding;
     const contentWidth = cardWidth - (PDF_SYSTEM.components.flashcard.padding * 2);
+    const questionLabel = `Question ${index + 1}`;
 
     let cardHeight = PDF_SYSTEM.components.flashcard.padding * 2;
-    cardHeight += measureLabeledTextBlock(doc, "Question", questionText, {
+    cardHeight += measureLabeledTextBlock(doc, questionLabel, questionText, {
       width: contentWidth,
-      bold: true,
       fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
       lineGap: PDF_SYSTEM.typography.flashcardQuestion.lineGap,
     });
@@ -1015,11 +1020,10 @@ function renderFlashcards(doc, flashcards = []) {
 
     let cursorY = doc.y + PDF_SYSTEM.components.flashcard.padding;
 
-    cursorY = drawLabeledTextBlock(doc, "Question", questionText, {
+    cursorY = drawLabeledTextBlock(doc, questionLabel, questionText, {
       x: contentX,
       y: cursorY,
       width: contentWidth,
-      bold: true,
       fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
       lineGap: PDF_SYSTEM.typography.flashcardQuestion.lineGap,
       color: COLORS.strongText,
@@ -1214,7 +1218,6 @@ export async function buildStudyPdfBuffer(document, feature) {
   pdf.y = PDF_SYSTEM.page.margins.top;
 
   renderDocumentHeader(pdf, documentTitle, featureLabel);
-  renderSectionTitle(pdf, featureLabel);
 
   if (feature === "summary") {
     renderSummary(pdf, document?.summary);

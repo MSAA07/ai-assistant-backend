@@ -64,7 +64,7 @@ test("component spacing is identical across similar PDF blocks", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
   assert.equal(PDF_SYSTEM.components.flashcard.padding, 24);
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 32);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 24);
   assert.equal(PDF_SYSTEM.components.exam.padding, 24);
   assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 32);
   assert.equal(PDF_SYSTEM.components.summary.paragraphGap, 16);
