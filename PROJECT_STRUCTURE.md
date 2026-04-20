@@ -86,6 +86,7 @@ Operational support:
 
 - `utils/storage.js`
 - `utils/limits.js`
+- `utils/frontendOrigins.js`
 - `utils/featureFlags.js`
 - `utils/costGuard.js`
 - `utils/auditLog.js`
@@ -110,6 +111,8 @@ Current migration folders:
 
 - `scripts/extract_pptx.py`: PPTX extraction helper
 - `scripts/backfill-phase2-canonical.js`: legacy-to-canonical backfill and reconciliation
+- `scripts/run-with-prisma.js`: env-aware startup wrapper for safe Prisma schema application
+- `scripts/print-auth-config.js`: prints Better Auth base URL and shared allowed-origin config
 
 ## Structure Notes
 

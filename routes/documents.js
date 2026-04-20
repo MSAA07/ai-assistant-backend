@@ -33,6 +33,7 @@ import {
   normalizeDocumentName,
   normalizeUploadedFilename,
 } from "../utils/filenames.js";
+import { buildAttachmentContentDisposition } from "../utils/httpHeaders.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,7 +49,9 @@ const storage = multer.diskStorage({
     cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
-    const normalizedOriginalName = normalizeUploadedFilename(file.originalname);
+    file.rawOriginalName = typeof file.originalname === "string" ? file.originalname : "";
+    const normalizedOriginalName = normalizeUploadedFilename(file.rawOriginalName);
+    file.safeDisplayName = normalizeDocumentName(file.rawOriginalName) || normalizedOriginalName;
     file.originalname = normalizedOriginalName;
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
     cb(null, `${uniqueSuffix}${getStorageFileExtension(normalizedOriginalName)}`);
@@ -550,14 +553,9 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
       const pdfBuffer = await buildStudyPdfBuffer(serializedDocument, feature);
       const fileName = buildStudyPdfFileName(serializedDocument, feature);
-      const asciiFallbackFileName = fileName.replace(/[^\x20-\x7E]+/g, "-");
-      const encodedFileName = encodeURIComponent(fileName);
 
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="${asciiFallbackFileName}"; filename*=UTF-8''${encodedFileName}`,
-      );
+      res.setHeader("Content-Disposition", buildAttachmentContentDisposition(fileName, `${feature}.pdf`));
       res.setHeader("Content-Length", pdfBuffer.length);
       return res.send(pdfBuffer);
     } catch (error) {

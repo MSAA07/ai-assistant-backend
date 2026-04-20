@@ -13,4 +13,4 @@ cmds = [
 cmds = ["npm run postinstall"]
 
 [start]
-cmd = "npm start"
+cmd = "node scripts/run-with-prisma.js server"

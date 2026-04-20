@@ -1,58 +1,50 @@
 import { spawn } from "node:child_process";
 
-const target = process.argv[2];
+const [, , target] = process.argv;
 
-const TARGETS = {
-  server: "server.js",
-  worker: "worker.js",
-};
-
-if (!TARGETS[target]) {
-  console.error(
-    `Usage: node scripts/run-with-prisma.js <${Object.keys(TARGETS).join("|")}>`,
-  );
+if (!target || (target !== "server" && target !== "worker")) {
+  console.error('Usage: node scripts/run-with-prisma.js <server|worker>');
   process.exit(1);
 }
 
-function run(command, args) {
-  return new Promise((resolve, reject) => {
-    const isWindowsCmd = process.platform === "win32" && command.endsWith(".cmd");
-    const child = spawn(
-      isWindowsCmd ? "cmd.exe" : command,
-      isWindowsCmd ? ["/c", command, ...args] : args,
-      {
-        stdio: "inherit",
-        env: process.env,
-        shell: false,
-        windowsHide: true,
-      },
-    );
+const isProduction = process.env.NODE_ENV === "production";
+const prismaArgs = isProduction
+  ? ["prisma", "migrate", "deploy"]
+  : ["prisma", "db", "push"];
 
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (signal) {
-        reject(new Error(`${command} terminated by signal ${signal}`));
+const targetFile = target === "worker" ? "worker.js" : "server.js";
+
+function runCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: "inherit",
+      shell: process.platform === "win32",
+      env: process.env,
+    });
+
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
         return;
       }
 
-      resolve(code ?? 0);
+      reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
     });
+
+    child.on("error", reject);
   });
 }
 
-const prismaCommand = process.platform === "win32" ? "npx.cmd" : "npx";
-const nodeCommand = process.platform === "win32" ? "node.exe" : "node";
-const prismaArgs = ["prisma", "db", "push", "--accept-data-loss"];
+async function main() {
+  console.log(
+    `[startup] prisma strategy=${isProduction ? "migrate deploy" : "db push"} target=${target}`,
+  );
 
-try {
-  const prismaExitCode = await run(prismaCommand, prismaArgs);
-  if (prismaExitCode !== 0) {
-    process.exit(prismaExitCode);
-  }
-
-  const targetExitCode = await run(nodeCommand, [TARGETS[target]]);
-  process.exit(targetExitCode);
-} catch (error) {
-  console.error("[run-with-prisma] startup failed:", error);
-  process.exit(1);
+  await runCommand("npx", prismaArgs);
+  await runCommand("node", [targetFile]);
 }
+
+main().catch((error) => {
+  console.error("[startup] failed:", error);
+  process.exit(1);
+});

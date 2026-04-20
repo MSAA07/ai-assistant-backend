@@ -4,6 +4,7 @@ import path from "path";
 
 import { captureSentryException } from "../utils/sentry.js";
 import { downloadFileToTmp, safeUnlink } from "../utils/storage.js";
+import { buildAttachmentContentDisposition } from "../utils/httpHeaders.js";
 import { serializeExportArtifact } from "../utils/phase2Exports.js";
 
 function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) {
@@ -213,7 +214,8 @@ export const createExportsRouter = ({ prisma, requireAuth }) => {
           where: { id: artifact.id },
           data: { lastDownloadedAt: new Date() },
         });
-        return res.download(artifact.storageKey, fileName);
+        res.setHeader("Content-Disposition", buildAttachmentContentDisposition(fileName, `${artifact.id}.${artifact.format || "pdf"}`));
+        return res.sendFile(artifact.storageKey);
       }
 
       const tmpPath = await downloadFileToTmp(artifact.storageKey);
@@ -222,7 +224,8 @@ export const createExportsRouter = ({ prisma, requireAuth }) => {
         data: { lastDownloadedAt: new Date() },
       });
 
-      res.download(tmpPath, fileName, async () => {
+      res.setHeader("Content-Disposition", buildAttachmentContentDisposition(fileName, `${artifact.id}.${artifact.format || "pdf"}`));
+      res.sendFile(tmpPath, async () => {
         await safeUnlink(tmpPath);
       });
 

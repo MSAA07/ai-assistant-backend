@@ -6,6 +6,8 @@ const ARABIC_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/g;
 const LATIN_CHARS = /[A-Za-z]/g;
 const DIGITS = /\d/g;
 const REPLACEMENT_CHARS = /\uFFFD/g;
+const RESERVED_FILENAME_CHARS = /[<>:"/\\|?*]/g;
+const TRAILING_WINDOWS_CHARS = /[. ]+$/g;
 
 function normalizeString(value) {
   return typeof value === "string" ? value : "";
@@ -24,6 +26,14 @@ function sanitizeFilenameText(value) {
     .replace(CONTROL_CHARS, "")
     .trim()
     .normalize("NFC");
+}
+
+function replaceReservedFilenameChars(value) {
+  return sanitizeFilenameText(value)
+    .replace(RESERVED_FILENAME_CHARS, " ")
+    .replace(/\s+/g, " ")
+    .replace(TRAILING_WINDOWS_CHARS, "")
+    .trim();
 }
 
 function scoreFilename(value) {
@@ -72,6 +82,11 @@ export function normalizeDocumentName(value) {
 export function normalizeUploadedFilename(value) {
   const stripped = stripDirectorySegments(value);
   return repairPotentialUnicodeCorruption(stripped);
+}
+
+export function sanitizeDownloadFilename(value, fallback = "document") {
+  const normalizedFallback = replaceReservedFilenameChars(fallback) || "document";
+  return replaceReservedFilenameChars(value) || normalizedFallback;
 }
 
 export function getStorageFileExtension(originalFilename) {
