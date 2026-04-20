@@ -67,7 +67,7 @@ test("component spacing is identical across similar PDF blocks", () => {
   assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
   assert.equal(PDF_SYSTEM.components.flashcard.sectionGap, 8);
   assert.equal(PDF_SYSTEM.components.exam.padding, 24);
-  assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 32);
+  assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 8);
   assert.equal(PDF_SYSTEM.components.summary.paragraphGap, 16);
   assert.equal(PDF_SYSTEM.components.summary.listItemGap, 8);
 });
@@ -310,6 +310,39 @@ test("exam question block measurement includes question content and options", ()
   assert.ok(expanded > compact);
 });
 
+test("exam question typing and render options default true/false choices correctly", () => {
+  assert.equal(__studyPdfTestables.getExamQuestionType({ questionType: "mcq", options: ["A", "B"] }), "mcq");
+  assert.equal(__studyPdfTestables.getExamQuestionType({ type: "true_false", options: [] }), "true_false");
+  assert.equal(__studyPdfTestables.getExamQuestionType({ options: [] }), "true_false");
+
+  assert.deepEqual(
+    __studyPdfTestables.getRenderableExamOptions({ questionType: "true_false", options: [] }),
+    ["True", "False"],
+  );
+  assert.deepEqual(
+    __studyPdfTestables.getRenderableExamOptions({ questionType: "mcq", options: ["A", "B"] }),
+    ["A", "B"],
+  );
+});
+
+test("exam ordering keeps multiple choice before true/false questions", () => {
+  const ordered = __studyPdfTestables.orderExamQuestionsForPdf([
+    { question: "TF 1", questionType: "true_false" },
+    { question: "MCQ 1", questionType: "mcq", options: ["A", "B"] },
+    { question: "TF 2", questionType: "true_false" },
+    { question: "MCQ 2", questionType: "multiple_choice", options: ["A", "B"] },
+  ]);
+
+  assert.deepEqual(
+    ordered.map((entry) => entry.question),
+    ["MCQ 1", "MCQ 2", "TF 1", "TF 2"],
+  );
+});
+
+test("exam section label is mock exam", () => {
+  assert.equal(__studyPdfTestables.FEATURE_LABELS.exam, "Mock Exam");
+});
+
 test("canonical hierarchy keeps questions above body text and labels below both", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
@@ -323,7 +356,7 @@ test("flashcards and exam blocks retain component styling instead of plain text 
 
   assert.ok(PDF_SYSTEM.components.flashcard.padding >= 16 && PDF_SYSTEM.components.flashcard.padding <= 20);
   assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
-  assert.ok(PDF_SYSTEM.components.exam.gapBetweenQuestions >= 24);
+  assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 8);
   assert.ok(PDF_SYSTEM.components.exam.optionIndent > PDF_SYSTEM.components.summary.listItemGap);
 });
 

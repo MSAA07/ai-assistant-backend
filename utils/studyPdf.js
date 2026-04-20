@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import { normalizeDocumentName, sanitizeDownloadFilename } from "./filenames.js";
 
 const bidi = bidiFactory();
-export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-gap8-tight-v5";
+export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-exam-mock-gap8-v6";
 
 const SPACING = Object.freeze({
   xs: 4,
@@ -47,7 +47,7 @@ const PDF_SYSTEM = Object.freeze({
     },
     exam: {
       padding: SPACING.lg,
-      gapBetweenQuestions: SPACING.xl,
+      gapBetweenQuestions: SPACING.sm,
       optionsGap: SPACING.sm,
       optionIndent: SPACING.lg,
       dividerGap: SPACING.md,
@@ -74,7 +74,7 @@ const COLORS = Object.freeze({
 const FEATURE_LABELS = Object.freeze({
   summary: "Summary",
   flashcards: "Flashcards",
-  exam: "Exam",
+  exam: "Mock Exam",
 });
 const HEADER_LAYOUT = Object.freeze({
   titleToFeatureGap: SPACING.xs,
@@ -1112,6 +1112,7 @@ function renderSummary(doc, summary) {
 
 export const __studyPdfTestables = Object.freeze({
   PDF_SYSTEM,
+  FEATURE_LABELS,
   getTextDirection,
   toVisualPdfText,
   wrapLogicalText,
@@ -1125,6 +1126,10 @@ export const __studyPdfTestables = Object.freeze({
   measureFlashcardCardHeight,
   computeFlashcardLayoutPlan,
   measureExamQuestionBlock,
+  getExamQuestionType,
+  getRenderableExamOptions,
+  getExamQuestionLabel,
+  orderExamQuestionsForPdf,
   registerPdfFonts,
 });
 
@@ -1268,16 +1273,66 @@ function renderFlashcards(doc, flashcards = []) {
   });
 }
 
+function getExamQuestionType(question) {
+  const explicitType = normalizeString(question?.questionType || question?.type).toLowerCase();
+  if (explicitType === "mcq" || explicitType === "multiple_choice" || explicitType === "multiplechoice") {
+    return "mcq";
+  }
+  if (explicitType === "true_false" || explicitType === "truefalse" || explicitType === "tf") {
+    return "true_false";
+  }
+
+  const options = Array.isArray(question?.options)
+    ? question.options.map((option) => normalizeParagraphText(option)).filter(Boolean)
+    : [];
+  return options.length > 0 ? "mcq" : "true_false";
+}
+
+function getRenderableExamOptions(question, questionType = getExamQuestionType(question)) {
+  const normalizedOptions = Array.isArray(question?.options)
+    ? question.options.map((option) => normalizeParagraphText(option)).filter(Boolean)
+    : [];
+
+  if (questionType === "true_false") {
+    return ["True", "False"];
+  }
+
+  return normalizedOptions;
+}
+
+function getExamQuestionLabel(index, questionType) {
+  const typeSuffix = questionType === "true_false" ? "True/False" : "Multiple Choice";
+  return `Question ${index + 1} (${typeSuffix})`;
+}
+
+function orderExamQuestionsForPdf(questions = []) {
+  const normalizedQuestions = Array.isArray(questions) ? questions : [];
+  const mcq = [];
+  const trueFalse = [];
+
+  normalizedQuestions.forEach((question) => {
+    if (getExamQuestionType(question) === "true_false") {
+      trueFalse.push(question);
+      return;
+    }
+    mcq.push(question);
+  });
+
+  return [...mcq, ...trueFalse];
+}
+
 function measureExamQuestionBlock(doc, question, index, width) {
   let height = PDF_SYSTEM.components.exam.padding * 2;
-  height += measureLabeledTextBlock(doc, `Question ${index + 1}`, normalizeParagraphText(question?.question) || "No question provided.", {
+  const questionType = getExamQuestionType(question);
+  const questionLabel = getExamQuestionLabel(index, questionType);
+  height += measureLabeledTextBlock(doc, questionLabel, normalizeParagraphText(question?.question) || "No question provided.", {
     width,
     bold: true,
     fontSize: PDF_SYSTEM.typography.questionText.size,
     lineGap: PDF_SYSTEM.typography.questionText.lineGap,
   });
 
-  const options = Array.isArray(question?.options) ? question.options : [];
+  const options = getRenderableExamOptions(question, questionType);
   if (options.length > 0) {
     height += PDF_SYSTEM.components.exam.dividerGap;
     options.forEach((option) => {
@@ -1294,13 +1349,17 @@ function measureExamQuestionBlock(doc, question, index, width) {
 }
 
 function renderExam(doc, questions = []) {
-  questions.forEach((question, index) => {
+  const orderedQuestions = orderExamQuestionsForPdf(questions);
+
+  orderedQuestions.forEach((question, index) => {
     const { x, width } = getContentMetrics(doc);
     const blockX = x;
     const blockWidth = width;
     const contentX = blockX + PDF_SYSTEM.components.exam.padding;
     const contentWidth = blockWidth - (PDF_SYSTEM.components.exam.padding * 2);
-    const options = Array.isArray(question?.options) ? question.options : [];
+    const questionType = getExamQuestionType(question);
+    const questionLabel = getExamQuestionLabel(index, questionType);
+    const options = getRenderableExamOptions(question, questionType);
     const questionText = normalizeParagraphText(question?.question) || "No question provided.";
     const blockHeight = measureExamQuestionBlock(doc, question, index, contentWidth);
 
@@ -1314,7 +1373,7 @@ function renderExam(doc, questions = []) {
       .restore();
 
     let cursorY = doc.y + PDF_SYSTEM.components.exam.padding;
-    cursorY = drawLabeledTextBlock(doc, `Question ${index + 1}`, questionText, {
+    cursorY = drawLabeledTextBlock(doc, questionLabel, questionText, {
       x: contentX,
       y: cursorY,
       width: contentWidth,
