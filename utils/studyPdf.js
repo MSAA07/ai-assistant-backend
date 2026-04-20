@@ -41,7 +41,7 @@ const PDF_SYSTEM = Object.freeze({
     radius: 8,
     flashcard: {
       padding: SPACING.md,
-      gapBetweenCards: SPACING.xs,
+      gapBetweenCards: 0,
       sectionGap: SPACING.sm,
     },
     exam: {
