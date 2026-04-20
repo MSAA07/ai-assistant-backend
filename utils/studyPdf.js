@@ -41,8 +41,8 @@ const PDF_SYSTEM = Object.freeze({
     radius: 8,
     flashcard: {
       padding: SPACING.md,
-      gapBetweenCards: SPACING.lg,
-      sectionGap: SPACING.md,
+      gapBetweenCards: SPACING.md,
+      sectionGap: SPACING.sm,
     },
     exam: {
       padding: SPACING.lg,
@@ -74,6 +74,12 @@ const FEATURE_LABELS = Object.freeze({
   summary: "Summary",
   flashcards: "Flashcards",
   exam: "Exam",
+});
+const HEADER_LAYOUT = Object.freeze({
+  titleToFeatureGap: SPACING.xs,
+  featureToMetaGap: SPACING.xs,
+  dividerBefore: SPACING.xs,
+  dividerAfter: SPACING.sm,
 });
 
 const SUMMARY_SECTION_ORDER = Object.freeze([
@@ -533,7 +539,7 @@ function fitHeaderTitleLayout(doc, documentTitle, width) {
   const titleText = normalizeInlineSpacing(documentTitle) || "Study document";
   const direction = getTextDirection(titleText);
   const baseSize = PDF_SYSTEM.typography.documentTitle.size;
-  const lineGap = PDF_SYSTEM.typography.documentTitle.lineGap;
+  const lineGap = SPACING.xs;
   const sizeSteps = [baseSize, 21, 20, 19];
   const minSize = Math.max(baseSize * 0.85, 18.5);
 
@@ -584,15 +590,46 @@ function drawDivider(doc, spacingBefore = SPACING.lg, spacingAfter = SPACING.lg)
 }
 
 function renderDocumentHeader(doc, documentTitle, featureLabel) {
-  const { x, width } = getContentMetrics(doc);
-  const titleLayout = fitHeaderTitleLayout(doc, documentTitle, width);
-  const headerTitleHeight = titleLayout.lines.length * (
-    getLineAdvance(doc, titleLayout.lineGap)
-  );
-  const headerFeatureHeight = getLineMetrics(doc, featureLabel, {
-    width,
-    fontSize: PDF_SYSTEM.typography.sectionTitle.size,
-    lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
+  const headerMetrics = computeHeaderLayoutMetrics(doc, documentTitle, featureLabel);
+  const { container, titleLayout, generatedAt, spacing, totalHeight } = headerMetrics;
+
+  ensureVerticalSpace(doc, totalHeight);
+  drawPreparedLines(doc, titleLayout.lines, {
+    x: container.x,
+    width: container.width,
+    bold: true,
+    fontSize: titleLayout.fontSize,
+    lineGap: titleLayout.lineGap,
+    color: COLORS.strongText,
+    direction: titleLayout.direction,
+  });
+  doc.y += spacing.titleToFeatureGap;
+  drawWrappedText(doc, featureLabel, {
+    x: container.x,
+    width: container.width,
+    fontSize: 12,
+    lineGap: SPACING.xs,
+    color: COLORS.text,
+  });
+  doc.y += spacing.featureToMetaGap;
+  drawWrappedText(doc, generatedAt, {
+    x: container.x,
+    width: container.width,
+    fontSize: PDF_SYSTEM.typography.meta.size,
+    lineGap: SPACING.xs,
+    color: COLORS.subtle,
+  });
+  drawDivider(doc, spacing.dividerBefore, spacing.dividerAfter);
+}
+
+function computeHeaderLayoutMetrics(doc, documentTitle, featureLabel) {
+  const container = getContentMetrics(doc);
+  const titleLayout = fitHeaderTitleLayout(doc, documentTitle, container.width);
+  const titleHeight = titleLayout.lines.length * getLineAdvance(doc, titleLayout.lineGap);
+  const featureHeight = getLineMetrics(doc, featureLabel, {
+    width: container.width,
+    fontSize: 12,
+    lineGap: SPACING.xs,
   }).height;
   const generatedAt = `Generated ${new Date().toLocaleDateString("en-US", {
     year: "numeric",
@@ -600,39 +637,32 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
     day: "numeric",
   })}`;
   const metaHeight = getLineMetrics(doc, generatedAt, {
-    width,
+    width: container.width,
     fontSize: PDF_SYSTEM.typography.meta.size,
-    lineGap: PDF_SYSTEM.typography.meta.lineGap,
+    lineGap: SPACING.xs,
   }).height;
-  const blockHeight = headerTitleHeight + SPACING.xs + headerFeatureHeight + SPACING.xs + metaHeight + SPACING.md;
+  const spacing = HEADER_LAYOUT;
+  const totalHeight = (
+    titleHeight
+    + spacing.titleToFeatureGap
+    + featureHeight
+    + spacing.featureToMetaGap
+    + metaHeight
+    + spacing.dividerBefore
+    + 1
+    + spacing.dividerAfter
+  );
 
-  ensureVerticalSpace(doc, blockHeight);
-  drawPreparedLines(doc, titleLayout.lines, {
-    x,
-    width,
-    bold: true,
-    fontSize: titleLayout.fontSize,
-    lineGap: titleLayout.lineGap,
-    color: COLORS.strongText,
-    direction: titleLayout.direction,
-  });
-  doc.y += SPACING.xs;
-  drawWrappedText(doc, featureLabel, {
-    x,
-    width,
-    fontSize: PDF_SYSTEM.typography.sectionTitle.size,
-    lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
-    color: COLORS.text,
-  });
-  doc.y += SPACING.xs;
-  drawWrappedText(doc, generatedAt, {
-    x,
-    width,
-    fontSize: PDF_SYSTEM.typography.meta.size,
-    lineGap: PDF_SYSTEM.typography.meta.lineGap,
-    color: COLORS.subtle,
-  });
-  drawDivider(doc, SPACING.sm, SPACING.lg);
+  return {
+    container,
+    titleLayout,
+    generatedAt,
+    titleHeight,
+    featureHeight,
+    metaHeight,
+    spacing,
+    totalHeight,
+  };
 }
 
 function renderSectionTitle(doc, value) {
@@ -1080,50 +1110,111 @@ export const __studyPdfTestables = Object.freeze({
   toVisualPdfText,
   wrapLogicalText,
   fitHeaderTitleLayout,
+  computeHeaderLayoutMetrics,
   parseSummaryBlocks,
   buildSummarySections,
   normalizeInlineSpacing,
   normalizeParagraphText,
+  measureFlashcardCardHeight,
+  computeFlashcardLayoutPlan,
   measureExamQuestionBlock,
   registerPdfFonts,
 });
 
-function renderFlashcards(doc, flashcards = []) {
-  flashcards.forEach((flashcard, index) => {
-    const questionText = normalizeParagraphText(flashcard?.question) || "No question provided.";
-    const answerText = normalizeParagraphText(flashcard?.answer) || "No answer provided.";
-    const explanation = normalizeString(flashcard?.explanation);
-    const { x, width } = getContentMetrics(doc);
-    const cardX = x;
-    const cardWidth = width;
-    const contentX = cardX + PDF_SYSTEM.components.flashcard.padding;
-    const contentWidth = cardWidth - (PDF_SYSTEM.components.flashcard.padding * 2);
-    const questionLabel = `Question ${index + 1}`;
+function measureFlashcardCardHeight(doc, flashcard, index, contentWidth) {
+  const questionText = normalizeParagraphText(flashcard?.question) || "No question provided.";
+  const answerText = normalizeParagraphText(flashcard?.answer) || "No answer provided.";
+  const explanation = normalizeString(flashcard?.explanation);
+  const questionLabel = `Question ${index + 1}`;
 
-    let cardHeight = PDF_SYSTEM.components.flashcard.padding * 2;
-    cardHeight += measureLabeledTextBlock(doc, questionLabel, questionText, {
-      width: contentWidth,
-      fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
-      lineGap: PDF_SYSTEM.typography.flashcardQuestion.lineGap,
-    });
+  let cardHeight = PDF_SYSTEM.components.flashcard.padding * 2;
+  cardHeight += measureLabeledTextBlock(doc, questionLabel, questionText, {
+    width: contentWidth,
+    fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
+    lineGap: PDF_SYSTEM.typography.flashcardQuestion.lineGap,
+  });
+  cardHeight += PDF_SYSTEM.components.flashcard.sectionGap;
+  cardHeight += measureLabeledTextBlock(doc, "Answer", answerText, {
+    width: contentWidth,
+    fontSize: PDF_SYSTEM.typography.body.size,
+    lineGap: PDF_SYSTEM.typography.body.lineGap,
+  });
+
+  if (explanation) {
     cardHeight += PDF_SYSTEM.components.flashcard.sectionGap;
-    cardHeight += measureLabeledTextBlock(doc, "Answer", answerText, {
+    cardHeight += measureLabeledTextBlock(doc, "Explanation", explanation, {
       width: contentWidth,
       fontSize: PDF_SYSTEM.typography.body.size,
       lineGap: PDF_SYSTEM.typography.body.lineGap,
+      color: COLORS.muted,
+    });
+  }
+
+  return {
+    questionLabel,
+    questionText,
+    answerText,
+    explanation,
+    cardHeight,
+  };
+}
+
+function computeFlashcardLayoutPlan(doc, flashcards = [], startY = doc.y) {
+  const container = getContentMetrics(doc);
+  const cardX = container.x;
+  const cardWidth = container.width;
+  const contentX = cardX + PDF_SYSTEM.components.flashcard.padding;
+  const contentWidth = cardWidth - (PDF_SYSTEM.components.flashcard.padding * 2);
+  const cards = [];
+  let cursorY = startY;
+
+  flashcards.forEach((flashcard, index) => {
+    const measured = measureFlashcardCardHeight(doc, flashcard, index, contentWidth);
+    const gapAfter = index < flashcards.length - 1 ? PDF_SYSTEM.components.flashcard.gapBetweenCards : 0;
+    const nextY = cursorY + measured.cardHeight + gapAfter;
+
+    cards.push({
+      index,
+      cardX,
+      cardWidth,
+      contentX,
+      contentWidth,
+      yStart: cursorY,
+      nextY,
+      gapAfter,
+      ...measured,
     });
 
-    if (explanation) {
-      cardHeight += PDF_SYSTEM.components.flashcard.sectionGap;
-      cardHeight += measureLabeledTextBlock(doc, "Explanation", explanation, {
-        width: contentWidth,
-        fontSize: PDF_SYSTEM.typography.body.size,
-        lineGap: PDF_SYSTEM.typography.body.lineGap,
-        color: COLORS.muted,
-      });
-    }
+    cursorY = nextY;
+  });
 
-    ensureVerticalSpace(doc, cardHeight + PDF_SYSTEM.components.flashcard.gapBetweenCards);
+  return {
+    container,
+    startY,
+    endY: cursorY,
+    cards,
+  };
+}
+
+function renderFlashcards(doc, flashcards = []) {
+  const { cards } = computeFlashcardLayoutPlan(doc, flashcards, doc.y);
+
+  cards.forEach((card) => {
+    const {
+      cardX,
+      cardWidth,
+      contentX,
+      contentWidth,
+      questionLabel,
+      questionText,
+      answerText,
+      explanation,
+      cardHeight,
+      gapAfter,
+      index,
+    } = card;
+
+    ensureVerticalSpace(doc, cardHeight + gapAfter);
     doc
       .save()
       .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_SYSTEM.components.radius)
@@ -1165,7 +1256,8 @@ function renderFlashcards(doc, flashcards = []) {
       });
     }
 
-    doc.y += cardHeight + PDF_SYSTEM.components.flashcard.gapBetweenCards;
+    // Single source of inter-card spacing (no stacked margins).
+    doc.y += cardHeight + gapAfter;
   });
 }
 

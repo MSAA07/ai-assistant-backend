@@ -64,7 +64,8 @@ test("component spacing is identical across similar PDF blocks", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
   assert.equal(PDF_SYSTEM.components.flashcard.padding, 16);
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 24);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 16);
+  assert.equal(PDF_SYSTEM.components.flashcard.sectionGap, 8);
   assert.equal(PDF_SYSTEM.components.exam.padding, 24);
   assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 32);
   assert.equal(PDF_SYSTEM.components.summary.paragraphGap, 16);
@@ -89,6 +90,21 @@ test("header title layout never exceeds content width and stays within two lines
   });
 });
 
+test("header stack metrics stay within content container and tight safe-zone rhythm", () => {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  __studyPdfTestables.registerPdfFonts(doc);
+
+  const metrics = __studyPdfTestables.computeHeaderLayoutMetrics(doc, "english_heavy_test", "Flashcards");
+  const { container, spacing } = metrics;
+
+  assert.equal(container.width, __studyPdfTestables.PDF_SYSTEM.page.maxContentWidth);
+  assert.equal(spacing.titleToFeatureGap, 4);
+  assert.equal(spacing.featureToMetaGap, 4);
+  assert.equal(spacing.dividerBefore, 4);
+  assert.equal(spacing.dividerAfter, 8);
+  assert.ok(metrics.totalHeight < 100, `header is too tall: ${metrics.totalHeight}`);
+});
+
 test("header title fitting uses wrap-first strategy and scales/truncates only when needed", () => {
   const doc = new PDFDocument({ size: "A4", margin: 40 });
   __studyPdfTestables.registerPdfFonts(doc);
@@ -105,6 +121,20 @@ test("header title fitting uses wrap-first strategy and scales/truncates only wh
   );
   assert.ok(veryLongLayout.lines.length <= 2);
   assert.ok(veryLongLayout.fontSize >= __studyPdfTestables.PDF_SYSTEM.typography.documentTitle.size * 0.85);
+});
+
+test("header metrics cap long title to two lines and retain aligned width", () => {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  __studyPdfTestables.registerPdfFonts(doc);
+
+  const longMetrics = __studyPdfTestables.computeHeaderLayoutMetrics(
+    doc,
+    "A very long document title that should still remain in the header safe zone and never overflow the aligned content boundary across export pages and rendering variants",
+    "Flashcards",
+  );
+
+  assert.ok(longMetrics.titleLayout.lines.length <= 2);
+  assert.ok(longMetrics.container.width <= __studyPdfTestables.PDF_SYSTEM.page.maxContentWidth);
 });
 
 test("buildStudyPdfBuffer emits a PDF buffer for Arabic content", async () => {
@@ -274,7 +304,7 @@ test("flashcards and exam blocks retain component styling instead of plain text 
   const { PDF_SYSTEM } = __studyPdfTestables;
 
   assert.ok(PDF_SYSTEM.components.flashcard.padding >= 16 && PDF_SYSTEM.components.flashcard.padding <= 20);
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 24);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 16);
   assert.ok(PDF_SYSTEM.components.exam.gapBetweenQuestions >= 24);
   assert.ok(PDF_SYSTEM.components.exam.optionIndent > PDF_SYSTEM.components.summary.listItemGap);
 });
@@ -282,6 +312,29 @@ test("flashcards and exam blocks retain component styling instead of plain text 
 test("flashcard vertical rhythm uses one strict inter-card spacing value", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 24);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 16);
   assert.notEqual(PDF_SYSTEM.components.flashcard.sectionGap, PDF_SYSTEM.components.flashcard.gapBetweenCards);
+});
+
+test("first card starts immediately after header and each next card advances by one gap only", () => {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  __studyPdfTestables.registerPdfFonts(doc);
+
+  const header = __studyPdfTestables.computeHeaderLayoutMetrics(doc, "english_heavy_test", "Flashcards");
+  const startY = __studyPdfTestables.PDF_SYSTEM.page.margins.top + header.totalHeight;
+  const flashcards = [
+    { question: "Q1", answer: "A1" },
+    { question: "Q2", answer: "A2" },
+    { question: "Q3", answer: "A3" },
+  ];
+  const plan = __studyPdfTestables.computeFlashcardLayoutPlan(doc, flashcards, startY);
+
+  assert.equal(plan.cards[0].yStart, startY);
+  for (let index = 0; index < plan.cards.length - 1; index += 1) {
+    const current = plan.cards[index];
+    const next = plan.cards[index + 1];
+    assert.equal(current.gapAfter, __studyPdfTestables.PDF_SYSTEM.components.flashcard.gapBetweenCards);
+    assert.equal(next.yStart - (current.yStart + current.cardHeight), current.gapAfter);
+  }
+  assert.equal(plan.cards.at(-1)?.gapAfter ?? -1, 0);
 });
