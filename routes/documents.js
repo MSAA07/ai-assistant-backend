@@ -27,6 +27,7 @@ import {
   buildStudyPdfFileName,
   hasStudyExportContent,
   normalizeStudyExportFeature,
+  STUDY_PDF_LAYOUT_VERSION,
 } from "../utils/studyPdf.js";
 import {
   getStorageFileExtension,
@@ -557,6 +558,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", buildAttachmentContentDisposition(fileName, `${feature}.pdf`));
       res.setHeader("Content-Length", pdfBuffer.length);
+      res.setHeader("X-Study-Pdf-Layout-Version", STUDY_PDF_LAYOUT_VERSION);
       return res.send(pdfBuffer);
     } catch (error) {
       console.error("Error exporting study PDF:", error);

@@ -23,6 +23,7 @@ import { getAuthEmailDiagnostics } from "./utils/email.js";
 import { getAuthCallbackDiagnostics } from "./utils/authCallbackUrls.js";
 import { getAuthTelemetrySnapshot } from "./utils/authTelemetry.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
+import { STUDY_PDF_LAYOUT_VERSION } from "./utils/studyPdf.js";
 
 dotenv.config();
 
@@ -181,6 +182,7 @@ app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
     message: "AI Study Assistant API is running",
+    studyPdfLayoutVersion: STUDY_PDF_LAYOUT_VERSION,
     authEmail: getAuthEmailDiagnostics(),
     authCallbacks: getAuthCallbackDiagnostics(),
     authTelemetry: getAuthTelemetrySnapshot(),

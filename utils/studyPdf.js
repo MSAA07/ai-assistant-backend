@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { normalizeDocumentName, sanitizeDownloadFilename } from "./filenames.js";
 
 const bidi = bidiFactory();
+export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-gap0-investigation";
 
 const SPACING = Object.freeze({
   xs: 4,
