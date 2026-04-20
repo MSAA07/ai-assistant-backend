@@ -41,7 +41,7 @@ const PDF_SYSTEM = Object.freeze({
     radius: 8,
     flashcard: {
       padding: SPACING.lg,
-      gapBetweenCards: SPACING.lg,
+      gapBetweenCards: SPACING.sm,
       sectionGap: SPACING.md,
     },
     exam: {
@@ -493,7 +493,7 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
     fontSize: PDF_SYSTEM.typography.meta.size,
     lineGap: PDF_SYSTEM.typography.meta.lineGap,
   }).height;
-  const blockHeight = headerTitleHeight + SPACING.sm + headerFeatureHeight + SPACING.md + metaHeight + SPACING.xl;
+  const blockHeight = headerTitleHeight + SPACING.xs + headerFeatureHeight + SPACING.xs + metaHeight + SPACING.md;
 
   ensureVerticalSpace(doc, blockHeight);
   drawWrappedText(doc, documentTitle, {
@@ -504,7 +504,7 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
     lineGap: PDF_SYSTEM.typography.documentTitle.lineGap,
     color: COLORS.strongText,
   });
-  doc.y += SPACING.sm;
+  doc.y += SPACING.xs;
   drawWrappedText(doc, featureLabel, {
     x,
     width,
@@ -512,7 +512,7 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
     lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
     color: COLORS.text,
   });
-  doc.y += SPACING.md;
+  doc.y += SPACING.xs;
   drawWrappedText(doc, generatedAt, {
     x,
     width,
@@ -520,7 +520,7 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
     lineGap: PDF_SYSTEM.typography.meta.lineGap,
     color: COLORS.subtle,
   });
-  drawDivider(doc, SPACING.md, SPACING.xl);
+  drawDivider(doc, SPACING.sm, SPACING.lg);
 }
 
 function renderSectionTitle(doc, value) {
