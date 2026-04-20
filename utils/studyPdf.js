@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import { normalizeDocumentName, sanitizeDownloadFilename } from "./filenames.js";
 
 const bidi = bidiFactory();
-export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-gap2-tight-v4";
+export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-gap8-tight-v5";
 
 const SPACING = Object.freeze({
   xs: 4,
@@ -33,16 +33,16 @@ const PDF_SYSTEM = Object.freeze({
     documentTitle: { size: 22, weight: 700, lineGap: SPACING.sm },
     sectionTitle: { size: 16, weight: 700, lineGap: SPACING.sm },
     questionText: { size: 13.5, weight: 600, lineGap: SPACING.sm },
-    flashcardQuestion: { size: 11.5, weight: 600, lineGap: SPACING.sm },
-    body: { size: 10.5, weight: 400, lineGap: SPACING.sm },
-    label: { size: 10, weight: 700, lineGap: SPACING.xs },
-    meta: { size: 10, weight: 400, lineGap: SPACING.xs },
+    flashcardQuestion: { size: 10.5, weight: 600, lineGap: SPACING.sm },
+    body: { size: 9.5, weight: 400, lineGap: SPACING.sm },
+    label: { size: 9, weight: 700, lineGap: SPACING.xs },
+    meta: { size: 9, weight: 400, lineGap: SPACING.xs },
   },
   components: {
     radius: 8,
     flashcard: {
       padding: SPACING.md,
-      gapBetweenCards: 2,
+      gapBetweenCards: SPACING.sm,
       sectionGap: SPACING.sm,
     },
     exam: {

@@ -31,9 +31,9 @@ test("pdf system uses the canonical layout and typography spec", () => {
   assert.equal(PDF_SYSTEM.typography.documentTitle.size, 22);
   assert.equal(PDF_SYSTEM.typography.sectionTitle.size, 16);
   assert.equal(PDF_SYSTEM.typography.questionText.size, 13.5);
-  assert.equal(PDF_SYSTEM.typography.flashcardQuestion.size, 11.5);
-  assert.equal(PDF_SYSTEM.typography.body.size, 10.5);
-  assert.equal(PDF_SYSTEM.typography.label.size, 10);
+  assert.equal(PDF_SYSTEM.typography.flashcardQuestion.size, 10.5);
+  assert.equal(PDF_SYSTEM.typography.body.size, 9.5);
+  assert.equal(PDF_SYSTEM.typography.label.size, 9);
 });
 
 test("pdf system spacing uses only approved scale values", () => {
@@ -64,7 +64,7 @@ test("component spacing is identical across similar PDF blocks", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
   assert.equal(PDF_SYSTEM.components.flashcard.padding, 16);
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 2);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
   assert.equal(PDF_SYSTEM.components.flashcard.sectionGap, 8);
   assert.equal(PDF_SYSTEM.components.exam.padding, 24);
   assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 32);
@@ -322,7 +322,7 @@ test("flashcards and exam blocks retain component styling instead of plain text 
   const { PDF_SYSTEM } = __studyPdfTestables;
 
   assert.ok(PDF_SYSTEM.components.flashcard.padding >= 16 && PDF_SYSTEM.components.flashcard.padding <= 20);
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 2);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
   assert.ok(PDF_SYSTEM.components.exam.gapBetweenQuestions >= 24);
   assert.ok(PDF_SYSTEM.components.exam.optionIndent > PDF_SYSTEM.components.summary.listItemGap);
 });
@@ -330,7 +330,7 @@ test("flashcards and exam blocks retain component styling instead of plain text 
 test("flashcard vertical rhythm uses one strict inter-card spacing value", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 2);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
 });
 
 test("first card starts immediately after header and each next card advances by one gap only", () => {
