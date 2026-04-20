@@ -183,6 +183,11 @@ app.get("/api/health", (req, res) => {
     status: "ok",
     message: "AI Study Assistant API is running",
     studyPdfLayoutVersion: STUDY_PDF_LAYOUT_VERSION,
+    deployGitCommit:
+      process.env.RAILWAY_GIT_COMMIT_SHA
+      || process.env.RAILWAY_GIT_COMMIT
+      || process.env.VERCEL_GIT_COMMIT_SHA
+      || "",
     authEmail: getAuthEmailDiagnostics(),
     authCallbacks: getAuthCallbackDiagnostics(),
     authTelemetry: getAuthTelemetrySnapshot(),
