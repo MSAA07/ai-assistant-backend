@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import { normalizeDocumentName, sanitizeDownloadFilename } from "./filenames.js";
 
 const bidi = bidiFactory();
-export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-exam-mock-gap8-v6";
+export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-exam-compact-v7";
 
 const SPACING = Object.freeze({
   xs: 4,
@@ -46,11 +46,11 @@ const PDF_SYSTEM = Object.freeze({
       sectionGap: SPACING.sm,
     },
     exam: {
-      padding: SPACING.lg,
+      padding: SPACING.md,
       gapBetweenQuestions: SPACING.sm,
-      optionsGap: SPACING.sm,
+      optionsGap: SPACING.xs,
       optionIndent: SPACING.lg,
-      dividerGap: SPACING.md,
+      dividerGap: SPACING.sm,
     },
     summary: {
       paragraphGap: SPACING.md,
@@ -1129,6 +1129,7 @@ export const __studyPdfTestables = Object.freeze({
   getExamQuestionType,
   getRenderableExamOptions,
   getExamQuestionLabel,
+  getExamOptionLabel,
   orderExamQuestionsForPdf,
   registerPdfFonts,
 });
@@ -1305,6 +1306,13 @@ function getExamQuestionLabel(index, questionType) {
   return `Question ${index + 1} (${typeSuffix})`;
 }
 
+function getExamOptionLabel(questionType, optionIndex) {
+  if (questionType === "true_false") {
+    return "";
+  }
+  return `${String.fromCharCode(65 + optionIndex)}.`;
+}
+
 function orderExamQuestionsForPdf(questions = []) {
   const normalizedQuestions = Array.isArray(questions) ? questions : [];
   const mcq = [];
@@ -1397,22 +1405,26 @@ function renderExam(doc, questions = []) {
     }
 
     options.forEach((option, optionIndex) => {
-      const label = `${String.fromCharCode(65 + optionIndex)}.`;
-      drawWrappedText(doc, label, {
-        x: contentX,
-        y: cursorY,
-        width: PDF_SYSTEM.components.exam.optionIndent - SPACING.sm,
-        fontSize: PDF_SYSTEM.typography.label.size,
-        lineGap: PDF_SYSTEM.typography.label.lineGap,
-        bold: true,
-        color: COLORS.text,
-        advanceCursor: false,
-      });
+      const label = getExamOptionLabel(questionType, optionIndex);
+      const hasLabel = Boolean(label);
+
+      if (hasLabel) {
+        drawWrappedText(doc, label, {
+          x: contentX,
+          y: cursorY,
+          width: PDF_SYSTEM.components.exam.optionIndent - SPACING.sm,
+          fontSize: PDF_SYSTEM.typography.label.size,
+          lineGap: PDF_SYSTEM.typography.label.lineGap,
+          bold: true,
+          color: COLORS.text,
+          advanceCursor: false,
+        });
+      }
 
       const optionHeight = drawWrappedText(doc, normalizeParagraphText(option), {
-        x: contentX + PDF_SYSTEM.components.exam.optionIndent,
+        x: hasLabel ? contentX + PDF_SYSTEM.components.exam.optionIndent : contentX,
         y: cursorY,
-        width: contentWidth - PDF_SYSTEM.components.exam.optionIndent,
+        width: hasLabel ? contentWidth - PDF_SYSTEM.components.exam.optionIndent : contentWidth,
         fontSize: PDF_SYSTEM.typography.body.size,
         lineGap: PDF_SYSTEM.typography.body.lineGap,
         color: COLORS.muted,

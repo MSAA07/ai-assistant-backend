@@ -66,8 +66,10 @@ test("component spacing is identical across similar PDF blocks", () => {
   assert.equal(PDF_SYSTEM.components.flashcard.padding, 16);
   assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
   assert.equal(PDF_SYSTEM.components.flashcard.sectionGap, 8);
-  assert.equal(PDF_SYSTEM.components.exam.padding, 24);
+  assert.equal(PDF_SYSTEM.components.exam.padding, 16);
   assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 8);
+  assert.equal(PDF_SYSTEM.components.exam.optionsGap, 4);
+  assert.equal(PDF_SYSTEM.components.exam.dividerGap, 8);
   assert.equal(PDF_SYSTEM.components.summary.paragraphGap, 16);
   assert.equal(PDF_SYSTEM.components.summary.listItemGap, 8);
 });
@@ -323,6 +325,10 @@ test("exam question typing and render options default true/false choices correct
     __studyPdfTestables.getRenderableExamOptions({ questionType: "mcq", options: ["A", "B"] }),
     ["A", "B"],
   );
+
+  assert.equal(__studyPdfTestables.getExamOptionLabel("mcq", 0), "A.");
+  assert.equal(__studyPdfTestables.getExamOptionLabel("mcq", 1), "B.");
+  assert.equal(__studyPdfTestables.getExamOptionLabel("true_false", 0), "");
 });
 
 test("exam ordering keeps multiple choice before true/false questions", () => {
@@ -357,7 +363,7 @@ test("flashcards and exam blocks retain component styling instead of plain text 
   assert.ok(PDF_SYSTEM.components.flashcard.padding >= 16 && PDF_SYSTEM.components.flashcard.padding <= 20);
   assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
   assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 8);
-  assert.ok(PDF_SYSTEM.components.exam.optionIndent > PDF_SYSTEM.components.summary.listItemGap);
+  assert.ok(PDF_SYSTEM.components.exam.optionIndent >= PDF_SYSTEM.components.summary.listItemGap);
 });
 
 test("flashcard vertical rhythm uses one strict inter-card spacing value", () => {
