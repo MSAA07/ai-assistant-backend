@@ -27,9 +27,12 @@ const PDF_LAYOUT = Object.freeze({
   maxContentWidth: 468,
   radius: 10,
   cardPadding: 16,
+  questionBlockPadding: 18,
+  optionIndent: 26,
   titleFontSize: 24,
   sectionFontSize: 18,
   subsectionFontSize: 14,
+  questionFontSize: 13,
   bodyFontSize: 11,
   labelFontSize: 9,
   metaFontSize: 10,
@@ -84,6 +87,16 @@ const graphemeSegmenter = typeof Intl !== "undefined" && typeof Intl.Segmenter =
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeParagraphText(value) {
+  return normalizeString(value)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{2,}/g, "__PARA_BREAK__")
+    .replace(/(?<!\n)\n(?!\n)/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*__PARA_BREAK__\s*/g, "\n\n")
+    .trim();
 }
 
 function stripTrailingExtension(value) {
@@ -248,7 +261,7 @@ function splitOversizedToken(doc, token, maxWidth, direction) {
 }
 
 function wrapLogicalText(doc, value, width, direction) {
-  const normalized = normalizeString(value).replace(/\s+/g, " ");
+  const normalized = normalizeParagraphText(value).replace(/\s+/g, " ");
   if (!normalized) {
     return [];
   }
@@ -282,7 +295,18 @@ function wrapLogicalText(doc, value, width, direction) {
     lines.push(current);
   }
 
-  return lines;
+  if (lines.length >= 2) {
+    const lastTokens = lines[lines.length - 1].split(" ").filter(Boolean);
+    const previousTokens = lines[lines.length - 2].split(" ").filter(Boolean);
+
+    if (lastTokens.length === 1 && previousTokens.length >= 4) {
+      const movedToken = previousTokens.pop();
+      lines[lines.length - 2] = previousTokens.join(" ");
+      lines[lines.length - 1] = `${movedToken} ${lastTokens[0]}`.trim();
+    }
+  }
+
+  return lines.filter(Boolean);
 }
 
 function drawVisualLine(doc, visualLine, x, y, options = {}) {
@@ -458,7 +482,8 @@ function renderSubsectionTitle(doc, value) {
 
 function renderBodyParagraph(doc, value, options = {}) {
   const { x, width } = getContentMetrics(doc);
-  const height = getLineMetrics(doc, value, {
+  const normalizedValue = normalizeParagraphText(value);
+  const height = getLineMetrics(doc, normalizedValue, {
     width: options.width ?? width,
     bold: options.bold,
     fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
@@ -467,7 +492,7 @@ function renderBodyParagraph(doc, value, options = {}) {
   }).height + (options.spacingAfter ?? PDF_LAYOUT.paragraphGap);
 
   ensureVerticalSpace(doc, height);
-  drawWrappedText(doc, value, {
+  drawWrappedText(doc, normalizedValue, {
     x: options.x ?? x,
     width: options.width ?? width,
     bold: options.bold,
@@ -480,13 +505,13 @@ function renderBodyParagraph(doc, value, options = {}) {
 }
 
 function normalizeBulletText(value) {
-  return normalizeString(value)
+  return normalizeParagraphText(value)
     .replace(/^[-*•]\s+/, "")
     .replace(/^\d+[.)]\s+/, "");
 }
 
 function splitSentenceGroups(text) {
-  return normalizeString(text)
+  return normalizeParagraphText(text)
     .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
     .map((part) => part.trim())
     .filter(Boolean);
@@ -532,7 +557,7 @@ function parseSummaryBlocks(summary) {
       return;
     }
 
-    const normalizedParagraph = proseLines.join(" ").replace(/\s+/g, " ").trim();
+    const normalizedParagraph = normalizeParagraphText(proseLines.join(" "));
     if (!normalizedParagraph) {
       if (bulletItems.length > 0) {
         blocks.push({ type: "list", items: bulletItems });
@@ -655,6 +680,57 @@ function renderBulletList(doc, items, options = {}) {
   });
 }
 
+function measureLabeledTextBlock(doc, label, text, options = {}) {
+  const width = options.width;
+  const labelMetrics = getLineMetrics(doc, label, {
+    width,
+    bold: true,
+    fontSize: PDF_LAYOUT.labelFontSize,
+    lineGap: 2,
+    direction: getTextDirection(label),
+  });
+  const textMetrics = getLineMetrics(doc, normalizeParagraphText(text), {
+    width,
+    bold: options.bold,
+    fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
+    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    direction: options.direction,
+  });
+
+  return labelMetrics.height + SPACING.xs + textMetrics.height;
+}
+
+function drawLabeledTextBlock(doc, label, text, options = {}) {
+  const labelHeight = drawWrappedText(doc, label, {
+    x: options.x,
+    y: options.y,
+    width: options.width,
+    fontSize: PDF_LAYOUT.labelFontSize,
+    lineGap: 2,
+    bold: true,
+    color: COLORS.subtle,
+    advanceCursor: false,
+  });
+
+  const textY = options.y + labelHeight + SPACING.xs;
+  const textHeight = drawWrappedText(doc, normalizeParagraphText(text), {
+    x: options.x,
+    y: textY,
+    width: options.width,
+    fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
+    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    bold: options.bold,
+    color: options.color ?? COLORS.text,
+    direction: options.direction,
+    advanceCursor: false,
+  });
+
+  return {
+    height: labelHeight + SPACING.xs + textHeight,
+    nextY: textY + textHeight,
+  };
+}
+
 function measureCardHeight(doc, segments, width) {
   let total = PDF_LAYOUT.cardPadding * 2;
 
@@ -760,139 +836,155 @@ export const __studyPdfTestables = Object.freeze({
   wrapLogicalText,
   parseSummaryBlocks,
   buildSummarySections,
+  normalizeParagraphText,
+  measureExamQuestionBlock,
+  registerPdfFonts,
 });
 
 function renderFlashcards(doc, flashcards = []) {
   flashcards.forEach((flashcard, index) => {
-    const segments = [
-      {
-        text: "Question",
-        bold: true,
-        fontSize: PDF_LAYOUT.labelFontSize,
-        lineGap: 2,
-        color: COLORS.subtle,
-        spacingAfter: SPACING.xs,
-      },
-      {
-        text: normalizeString(flashcard?.question) || "No question provided.",
-        bold: true,
-        fontSize: PDF_LAYOUT.subsectionFontSize,
-        lineGap: 5,
-        color: COLORS.text,
-        spacingAfter: SPACING.md,
-      },
-      {
-        text: "Answer",
-        bold: true,
-        fontSize: PDF_LAYOUT.labelFontSize,
-        lineGap: 2,
-        color: COLORS.subtle,
-        spacingAfter: SPACING.xs,
-      },
-      {
-        text: normalizeString(flashcard?.answer) || "No answer provided.",
-        fontSize: PDF_LAYOUT.bodyFontSize,
-        lineGap: PDF_LAYOUT.lineGap,
-        color: COLORS.text,
-        spacingAfter: 0,
-      },
-    ];
-
+    const questionText = normalizeParagraphText(flashcard?.question) || "No question provided.";
+    const answerText = normalizeParagraphText(flashcard?.answer) || "No answer provided.";
     const explanation = normalizeString(flashcard?.explanation);
-    if (explanation) {
-      segments.push({
-        text: "Explanation",
-        bold: true,
-        fontSize: PDF_LAYOUT.labelFontSize,
-        lineGap: 2,
-        color: COLORS.subtle,
-        spacingAfter: SPACING.xs,
-        gapAfter: SPACING.md,
-      });
-      segments.push({
-        text: explanation,
-        fontSize: PDF_LAYOUT.bodyFontSize,
-        lineGap: PDF_LAYOUT.lineGap,
-        color: COLORS.muted,
-        spacingAfter: 0,
-      });
-    }
-
-    renderCard(doc, segments, {
-      fillColor: index % 2 === 0 ? COLORS.panel : COLORS.accentPanel,
-      strokeColor: COLORS.softBorder,
-      spacingAfter: SPACING.xl,
-    });
-  });
-}
-
-function renderExam(doc, questions = []) {
-  questions.forEach((question, index) => {
-    const questionSegments = [
-      {
-        text: `Question ${index + 1}`,
-        bold: true,
-        fontSize: PDF_LAYOUT.labelFontSize,
-        lineGap: 2,
-        color: COLORS.subtle,
-        spacingAfter: SPACING.xs,
-      },
-      {
-        text: normalizeString(question?.question) || "No question provided.",
-        bold: true,
-        fontSize: PDF_LAYOUT.subsectionFontSize,
-        lineGap: 5,
-        color: COLORS.text,
-        spacingAfter: SPACING.md,
-      },
-    ];
-
     const { x, width } = getContentMetrics(doc);
-    const cardWidth = width;
     const cardX = x;
+    const cardWidth = width;
     const contentX = cardX + PDF_LAYOUT.cardPadding;
     const contentWidth = cardWidth - (PDF_LAYOUT.cardPadding * 2);
 
-    let cardHeight = measureCardHeight(doc, questionSegments, contentWidth);
-    const options = Array.isArray(question?.options) ? question.options : [];
+    let cardHeight = PDF_LAYOUT.cardPadding * 2;
+    cardHeight += measureLabeledTextBlock(doc, "Question", questionText, {
+      width: contentWidth,
+      bold: true,
+      fontSize: PDF_LAYOUT.questionFontSize,
+      lineGap: 5,
+    });
+    cardHeight += SPACING.md;
+    cardHeight += measureLabeledTextBlock(doc, "Answer", answerText, {
+      width: contentWidth,
+      fontSize: PDF_LAYOUT.bodyFontSize,
+      lineGap: PDF_LAYOUT.lineGap,
+    });
 
-    if (options.length > 0) {
-      cardHeight += SPACING.xs;
-      options.forEach((option) => {
-        const optionMetrics = getLineMetrics(doc, normalizeString(option), {
-          width: contentWidth - 24,
-          fontSize: PDF_LAYOUT.bodyFontSize,
-          lineGap: PDF_LAYOUT.lineGap,
-        });
-        cardHeight += Math.max(optionMetrics.height, 12) + SPACING.sm;
+    if (explanation) {
+      cardHeight += SPACING.md;
+      cardHeight += measureLabeledTextBlock(doc, "Explanation", explanation, {
+        width: contentWidth,
+        fontSize: PDF_LAYOUT.bodyFontSize,
+        lineGap: PDF_LAYOUT.lineGap,
+        color: COLORS.muted,
       });
     }
 
     ensureVerticalSpace(doc, cardHeight + SPACING.xl);
-
     doc
       .save()
       .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_LAYOUT.radius)
-      .fillAndStroke(COLORS.panel, COLORS.border)
+      .fillAndStroke(index % 2 === 0 ? COLORS.panel : COLORS.accentPanel, COLORS.softBorder)
       .restore();
 
     let cursorY = doc.y + PDF_LAYOUT.cardPadding;
-    questionSegments.forEach((segment) => {
-      const drawnHeight = drawWrappedText(doc, segment.text, {
+
+    cursorY = drawLabeledTextBlock(doc, "Question", questionText, {
+      x: contentX,
+      y: cursorY,
+      width: contentWidth,
+      bold: true,
+      fontSize: PDF_LAYOUT.questionFontSize,
+      lineGap: 5,
+    }).nextY;
+
+    cursorY += SPACING.md;
+
+    cursorY = drawLabeledTextBlock(doc, "Answer", answerText, {
+      x: contentX,
+      y: cursorY,
+      width: contentWidth,
+      fontSize: PDF_LAYOUT.bodyFontSize,
+      lineGap: PDF_LAYOUT.lineGap,
+    }).nextY;
+
+    if (explanation) {
+      cursorY += SPACING.md;
+      drawLabeledTextBlock(doc, "Explanation", explanation, {
         x: contentX,
         y: cursorY,
         width: contentWidth,
-        fontSize: segment.fontSize,
-        lineGap: segment.lineGap,
-        bold: segment.bold,
-        color: segment.color,
-        advanceCursor: false,
+        fontSize: PDF_LAYOUT.bodyFontSize,
+        lineGap: PDF_LAYOUT.lineGap,
+        color: COLORS.muted,
       });
-      cursorY += drawnHeight + (segment.spacingAfter ?? 0);
+    }
+
+    doc.y += cardHeight + SPACING.xl;
+  });
+}
+
+function measureExamQuestionBlock(doc, question, index, width) {
+  let height = PDF_LAYOUT.questionBlockPadding * 2;
+  height += measureLabeledTextBlock(doc, `Question ${index + 1}`, normalizeParagraphText(question?.question) || "No question provided.", {
+    width,
+    bold: true,
+    fontSize: PDF_LAYOUT.questionFontSize,
+    lineGap: 5,
+  });
+
+  const options = Array.isArray(question?.options) ? question.options : [];
+  if (options.length > 0) {
+    height += SPACING.md;
+    options.forEach((option) => {
+      const metrics = getLineMetrics(doc, normalizeParagraphText(option), {
+        width: width - PDF_LAYOUT.optionIndent,
+        fontSize: PDF_LAYOUT.bodyFontSize,
+        lineGap: PDF_LAYOUT.lineGap,
+      });
+      height += Math.max(metrics.height, 14) + SPACING.sm;
     });
+  }
+
+  return height;
+}
+
+function renderExam(doc, questions = []) {
+  questions.forEach((question, index) => {
+    const { x, width } = getContentMetrics(doc);
+    const blockX = x;
+    const blockWidth = width;
+    const contentX = blockX + PDF_LAYOUT.questionBlockPadding;
+    const contentWidth = blockWidth - (PDF_LAYOUT.questionBlockPadding * 2);
+    const options = Array.isArray(question?.options) ? question.options : [];
+    const questionText = normalizeParagraphText(question?.question) || "No question provided.";
+    const blockHeight = measureExamQuestionBlock(doc, question, index, contentWidth);
+
+    ensureVerticalSpace(doc, blockHeight + SPACING.xl);
+
+    doc
+      .save()
+      .roundedRect(blockX, doc.y, blockWidth, blockHeight, PDF_LAYOUT.radius)
+      .fillAndStroke(COLORS.panel, COLORS.border)
+      .restore();
+
+    let cursorY = doc.y + PDF_LAYOUT.questionBlockPadding;
+    cursorY = drawLabeledTextBlock(doc, `Question ${index + 1}`, questionText, {
+      x: contentX,
+      y: cursorY,
+      width: contentWidth,
+      bold: true,
+      fontSize: PDF_LAYOUT.questionFontSize,
+      lineGap: 5,
+    }).nextY;
 
     if (options.length > 0) {
-      cursorY += SPACING.xs;
+      cursorY += SPACING.md;
+      doc
+        .save()
+        .lineWidth(1)
+        .strokeColor(COLORS.softBorder)
+        .moveTo(contentX, cursorY)
+        .lineTo(contentX + contentWidth, cursorY)
+        .stroke()
+        .restore();
+      cursorY += SPACING.md;
     }
 
     options.forEach((option, optionIndex) => {
@@ -900,7 +992,7 @@ function renderExam(doc, questions = []) {
       drawWrappedText(doc, label, {
         x: contentX,
         y: cursorY,
-        width: 20,
+        width: PDF_LAYOUT.optionIndent - 6,
         fontSize: PDF_LAYOUT.labelFontSize,
         lineGap: 2,
         bold: true,
@@ -908,10 +1000,10 @@ function renderExam(doc, questions = []) {
         advanceCursor: false,
       });
 
-      const optionHeight = drawWrappedText(doc, normalizeString(option), {
-        x: contentX + 24,
+      const optionHeight = drawWrappedText(doc, normalizeParagraphText(option), {
+        x: contentX + PDF_LAYOUT.optionIndent,
         y: cursorY,
-        width: contentWidth - 24,
+        width: contentWidth - PDF_LAYOUT.optionIndent,
         fontSize: PDF_LAYOUT.bodyFontSize,
         lineGap: PDF_LAYOUT.lineGap,
         color: COLORS.text,
@@ -921,7 +1013,7 @@ function renderExam(doc, questions = []) {
       cursorY += Math.max(optionHeight, 12) + SPACING.sm;
     });
 
-    doc.y += cardHeight + SPACING.xl;
+    doc.y += blockHeight + SPACING.xl;
   });
 }
 

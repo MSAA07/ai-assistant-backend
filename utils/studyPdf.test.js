@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import PDFDocument from "pdfkit";
 
 import { __studyPdfTestables, buildStudyPdfBuffer, buildStudyPdfFileName } from "./studyPdf.js";
 
@@ -88,4 +89,48 @@ Opening discussion. Deep dive on project decisions. Final wrap-up.
   assert.ok(sections[0].blocks.length > 0);
   assert.ok(sections[1].blocks.length > 0);
   assert.ok(sections[2].blocks.length > 0);
+});
+
+test("paragraph normalization removes accidental line breaks inside sentences", () => {
+  assert.equal(
+    __studyPdfTestables.normalizeParagraphText("First line\ncontinues here\n\nNext paragraph"),
+    "First line continues here\n\nNext paragraph",
+  );
+});
+
+test("logical wrapping rebalances a single-word final line", () => {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  __studyPdfTestables.registerPdfFonts(doc);
+  doc.font("Helvetica").fontSize(11);
+
+  const lines = __studyPdfTestables.wrapLogicalText(
+    doc,
+    "This exam block should avoid leaving isolated trailing words",
+    180,
+    "ltr",
+  );
+
+  assert.ok(lines.length >= 2);
+  assert.notEqual(lines.at(-1)?.trim().split(/\s+/).length, 1);
+});
+
+test("exam question block measurement includes question content and options", () => {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  __studyPdfTestables.registerPdfFonts(doc);
+  doc.font("Helvetica").fontSize(11);
+
+  const compact = __studyPdfTestables.measureExamQuestionBlock(doc, {
+    question: "What is the best answer?",
+    options: ["A short option"],
+  }, 0, 320);
+
+  const expanded = __studyPdfTestables.measureExamQuestionBlock(doc, {
+    question: "What is the best answer?",
+    options: [
+      "A much longer option that should take more than one visual line in the PDF block layout",
+      "Another detailed option for sizing coverage",
+    ],
+  }, 0, 320);
+
+  assert.ok(expanded > compact);
 });
