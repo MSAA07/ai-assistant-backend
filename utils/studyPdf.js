@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import { normalizeDocumentName, sanitizeDownloadFilename } from "./filenames.js";
 
 const bidi = bidiFactory();
-export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-gap0-tight-v2";
+export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-gap0-tight-v3";
 
 const SPACING = Object.freeze({
   xs: 4,
@@ -447,6 +447,7 @@ function drawWrappedText(doc, value, options = {}) {
   const lines = wrapLogicalText(doc, text, width, direction);
   const lineAdvance = getLineAdvance(doc, lineGap);
   let cursorY = y;
+  const initialDocY = doc.y;
 
   lines.forEach((line) => {
     const lineWidth = Math.min(measureLogicalTextWidth(doc, line, direction, { bold: options.bold }), width);
@@ -457,6 +458,10 @@ function drawWrappedText(doc, value, options = {}) {
 
   if (options.advanceCursor !== false) {
     doc.y = cursorY;
+  } else {
+    // `doc.text(..., { lineBreak: false })` still mutates doc.y internally.
+    // Restore the incoming cursor to keep measurement/draw helpers side-effect free.
+    doc.y = initialDocY;
   }
 
   return cursorY - y;
@@ -1110,6 +1115,7 @@ export const __studyPdfTestables = Object.freeze({
   getTextDirection,
   toVisualPdfText,
   wrapLogicalText,
+  drawWrappedText,
   fitHeaderTitleLayout,
   computeHeaderLayoutMetrics,
   parseSummaryBlocks,
@@ -1214,7 +1220,6 @@ function renderFlashcards(doc, flashcards = []) {
       gapAfter,
       index,
     } = card;
-
     // Page-fit by card box only; apply inter-card gap after drawing to avoid premature page breaks.
     ensureVerticalSpace(doc, cardHeight);
     doc

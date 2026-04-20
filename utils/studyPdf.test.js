@@ -271,6 +271,24 @@ test("logical wrapping rebalances a single-word final line", () => {
   assert.notEqual(lines.at(-1)?.trim().split(/\s+/).length, 1);
 });
 
+test("drawWrappedText with advanceCursor=false does not mutate doc.y", () => {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  __studyPdfTestables.registerPdfFonts(doc);
+
+  const startY = doc.y;
+  const consumed = __studyPdfTestables.drawWrappedText(doc, "Question 1", {
+    x: 64,
+    y: startY + 20,
+    width: 320,
+    fontSize: 12.5,
+    lineGap: 4,
+    advanceCursor: false,
+  });
+
+  assert.ok(consumed > 0);
+  assert.equal(doc.y, startY);
+});
+
 test("exam question block measurement includes question content and options", () => {
   const doc = new PDFDocument({ size: "A4", margin: 40 });
   __studyPdfTestables.registerPdfFonts(doc);
