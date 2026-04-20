@@ -40,8 +40,8 @@ const PDF_SYSTEM = Object.freeze({
   components: {
     radius: 8,
     flashcard: {
-      padding: SPACING.lg,
-      gapBetweenCards: SPACING.sm,
+      padding: SPACING.md,
+      gapBetweenCards: SPACING.lg,
       sectionGap: SPACING.md,
     },
     exam: {
@@ -455,6 +455,119 @@ function drawWrappedText(doc, value, options = {}) {
   return cursorY - y;
 }
 
+function drawPreparedLines(doc, lines, options = {}) {
+  if (!Array.isArray(lines) || lines.length === 0) {
+    return 0;
+  }
+
+  const direction = options.direction ?? "ltr";
+  const lineGap = options.lineGap ?? PDF_SYSTEM.typography.body.lineGap;
+  const fontSize = options.fontSize ?? PDF_SYSTEM.typography.body.size;
+  const x = options.x ?? 0;
+  const y = options.y ?? doc.y;
+  const width = options.width ?? getContentMetrics(doc).width;
+  const color = options.color ?? COLORS.text;
+
+  applyFont(doc, lines.join(" "), { bold: options.bold });
+  doc.fontSize(fontSize).fillColor(color);
+
+  const lineAdvance = getLineAdvance(doc, lineGap);
+  let cursorY = y;
+
+  lines.forEach((line) => {
+    const lineWidth = Math.min(measureLogicalTextWidth(doc, line, direction, { bold: options.bold }), width);
+    const lineX = direction === "rtl" ? x + width - lineWidth : x;
+    drawVisualLine(doc, toVisualPdfText(line, direction), lineX, cursorY, { bold: options.bold });
+    cursorY += lineAdvance;
+  });
+
+  if (options.advanceCursor !== false) {
+    doc.y = cursorY;
+  }
+
+  return cursorY - y;
+}
+
+function truncateLineToWidth(doc, value, width, direction, options = {}) {
+  const source = normalizeInlineSpacing(value);
+  if (!source) {
+    return "";
+  }
+
+  const ellipsis = "…";
+  const fullWidth = measureLogicalTextWidth(doc, source, direction, { bold: options.bold });
+  if (fullWidth <= width) {
+    return source;
+  }
+
+  const words = source.split(/\s+/).filter(Boolean);
+  let candidate = "";
+  for (const word of words) {
+    const next = candidate ? `${candidate} ${word}` : word;
+    const nextWithEllipsis = `${next}${ellipsis}`;
+    if (measureLogicalTextWidth(doc, nextWithEllipsis, direction, { bold: options.bold }) > width) {
+      break;
+    }
+    candidate = next;
+  }
+
+  if (candidate) {
+    return `${candidate}${ellipsis}`;
+  }
+
+  const chars = Array.from(source);
+  let compact = "";
+  for (const char of chars) {
+    const next = compact + char;
+    const nextWithEllipsis = `${next}${ellipsis}`;
+    if (measureLogicalTextWidth(doc, nextWithEllipsis, direction, { bold: options.bold }) > width) {
+      break;
+    }
+    compact = next;
+  }
+
+  return compact ? `${compact}${ellipsis}` : ellipsis;
+}
+
+function fitHeaderTitleLayout(doc, documentTitle, width) {
+  const titleText = normalizeInlineSpacing(documentTitle) || "Study document";
+  const direction = getTextDirection(titleText);
+  const baseSize = PDF_SYSTEM.typography.documentTitle.size;
+  const lineGap = PDF_SYSTEM.typography.documentTitle.lineGap;
+  const sizeSteps = [baseSize, 21, 20, 19];
+  const minSize = Math.max(baseSize * 0.85, 18.5);
+
+  for (const fontSize of sizeSteps) {
+    applyFont(doc, titleText, { bold: true });
+    doc.fontSize(fontSize);
+    const lines = wrapLogicalText(doc, titleText, width, direction);
+    if (lines.length <= 2) {
+      return { lines, fontSize, lineGap, direction, truncated: false };
+    }
+  }
+
+  const fittedSize = Math.max(sizeSteps[sizeSteps.length - 1], minSize);
+  applyFont(doc, titleText, { bold: true });
+  doc.fontSize(fittedSize);
+  const wrapped = wrapLogicalText(doc, titleText, width, direction);
+
+  if (wrapped.length <= 2) {
+    return { lines: wrapped, fontSize: fittedSize, lineGap, direction, truncated: false };
+  }
+
+  const lineOne = wrapped[0] || "";
+  const overflowTail = normalizeInlineSpacing(wrapped.slice(1).join(" "));
+  const lineTwo = truncateLineToWidth(doc, overflowTail, width, direction, { bold: true });
+
+  return {
+    lines: [lineOne, lineTwo].filter(Boolean),
+    fontSize: fittedSize,
+    lineGap,
+    direction,
+    truncated: true,
+  };
+}
+
 function drawDivider(doc, spacingBefore = SPACING.lg, spacingAfter = SPACING.lg) {
   const { x, width } = getContentMetrics(doc);
   ensureVerticalSpace(doc, spacingBefore + 1 + spacingAfter);
@@ -472,12 +585,10 @@ function drawDivider(doc, spacingBefore = SPACING.lg, spacingAfter = SPACING.lg)
 
 function renderDocumentHeader(doc, documentTitle, featureLabel) {
   const { x, width } = getContentMetrics(doc);
-  const headerTitleHeight = getLineMetrics(doc, documentTitle, {
-    width,
-    bold: true,
-    fontSize: PDF_SYSTEM.typography.documentTitle.size,
-    lineGap: PDF_SYSTEM.typography.documentTitle.lineGap,
-  }).height;
+  const titleLayout = fitHeaderTitleLayout(doc, documentTitle, width);
+  const headerTitleHeight = titleLayout.lines.length * (
+    getLineAdvance(doc, titleLayout.lineGap)
+  );
   const headerFeatureHeight = getLineMetrics(doc, featureLabel, {
     width,
     fontSize: PDF_SYSTEM.typography.sectionTitle.size,
@@ -496,13 +607,14 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
   const blockHeight = headerTitleHeight + SPACING.xs + headerFeatureHeight + SPACING.xs + metaHeight + SPACING.md;
 
   ensureVerticalSpace(doc, blockHeight);
-  drawWrappedText(doc, documentTitle, {
+  drawPreparedLines(doc, titleLayout.lines, {
     x,
     width,
     bold: true,
-    fontSize: PDF_SYSTEM.typography.documentTitle.size,
-    lineGap: PDF_SYSTEM.typography.documentTitle.lineGap,
+    fontSize: titleLayout.fontSize,
+    lineGap: titleLayout.lineGap,
     color: COLORS.strongText,
+    direction: titleLayout.direction,
   });
   doc.y += SPACING.xs;
   drawWrappedText(doc, featureLabel, {
@@ -967,6 +1079,7 @@ export const __studyPdfTestables = Object.freeze({
   getTextDirection,
   toVisualPdfText,
   wrapLogicalText,
+  fitHeaderTitleLayout,
   parseSummaryBlocks,
   buildSummarySections,
   normalizeInlineSpacing,

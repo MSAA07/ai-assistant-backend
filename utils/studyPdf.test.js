@@ -63,12 +63,48 @@ test("pdf system spacing uses only approved scale values", () => {
 test("component spacing is identical across similar PDF blocks", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
-  assert.equal(PDF_SYSTEM.components.flashcard.padding, 24);
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
+  assert.equal(PDF_SYSTEM.components.flashcard.padding, 16);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 24);
   assert.equal(PDF_SYSTEM.components.exam.padding, 24);
   assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 32);
   assert.equal(PDF_SYSTEM.components.summary.paragraphGap, 16);
   assert.equal(PDF_SYSTEM.components.summary.listItemGap, 8);
+});
+
+test("header title layout never exceeds content width and stays within two lines", () => {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  __studyPdfTestables.registerPdfFonts(doc);
+
+  const contentWidth = 468;
+  const longTitle = "This is an intentionally long study document title designed to test wrapping and scaling behavior without horizontal overflow";
+  const layout = __studyPdfTestables.fitHeaderTitleLayout(doc, longTitle, contentWidth);
+
+  assert.ok(layout.lines.length <= 2);
+  assert.ok(layout.fontSize >= __studyPdfTestables.PDF_SYSTEM.typography.documentTitle.size * 0.85);
+
+  layout.lines.forEach((line) => {
+    doc.fontSize(layout.fontSize);
+    const lineWidth = doc.widthOfString(__studyPdfTestables.toVisualPdfText(line, layout.direction));
+    assert.ok(lineWidth <= contentWidth, `line overflowed content width: ${lineWidth} > ${contentWidth}`);
+  });
+});
+
+test("header title fitting uses wrap-first strategy and scales/truncates only when needed", () => {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  __studyPdfTestables.registerPdfFonts(doc);
+
+  const shortLayout = __studyPdfTestables.fitHeaderTitleLayout(doc, "english_heavy_test", 468);
+  assert.equal(shortLayout.lines.length, 1);
+  assert.equal(shortLayout.truncated, false);
+  assert.equal(shortLayout.fontSize, __studyPdfTestables.PDF_SYSTEM.typography.documentTitle.size);
+
+  const veryLongLayout = __studyPdfTestables.fitHeaderTitleLayout(
+    doc,
+    "A very long document title that should still remain in the header safe zone and never overflow the aligned content boundary across export pages and rendering variants",
+    320,
+  );
+  assert.ok(veryLongLayout.lines.length <= 2);
+  assert.ok(veryLongLayout.fontSize >= __studyPdfTestables.PDF_SYSTEM.typography.documentTitle.size * 0.85);
 });
 
 test("buildStudyPdfBuffer emits a PDF buffer for Arabic content", async () => {
@@ -237,8 +273,15 @@ test("canonical hierarchy keeps questions above body text and labels below both"
 test("flashcards and exam blocks retain component styling instead of plain text spacing", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
-  assert.ok(PDF_SYSTEM.components.flashcard.padding >= 16);
-  assert.ok(PDF_SYSTEM.components.flashcard.gapBetweenCards >= 8);
+  assert.ok(PDF_SYSTEM.components.flashcard.padding >= 16 && PDF_SYSTEM.components.flashcard.padding <= 20);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 24);
   assert.ok(PDF_SYSTEM.components.exam.gapBetweenQuestions >= 24);
   assert.ok(PDF_SYSTEM.components.exam.optionIndent > PDF_SYSTEM.components.summary.listItemGap);
+});
+
+test("flashcard vertical rhythm uses one strict inter-card spacing value", () => {
+  const { PDF_SYSTEM } = __studyPdfTestables;
+
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 24);
+  assert.notEqual(PDF_SYSTEM.components.flashcard.sectionGap, PDF_SYSTEM.components.flashcard.gapBetweenCards);
 });
