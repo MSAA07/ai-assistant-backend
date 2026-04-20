@@ -41,7 +41,7 @@ const PDF_SYSTEM = Object.freeze({
     radius: 8,
     flashcard: {
       padding: SPACING.md,
-      gapBetweenCards: SPACING.md,
+      gapBetweenCards: SPACING.sm,
       sectionGap: SPACING.sm,
     },
     exam: {
@@ -1214,7 +1214,8 @@ function renderFlashcards(doc, flashcards = []) {
       index,
     } = card;
 
-    ensureVerticalSpace(doc, cardHeight + gapAfter);
+    // Page-fit by card box only; apply inter-card gap after drawing to avoid premature page breaks.
+    ensureVerticalSpace(doc, cardHeight);
     doc
       .save()
       .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_SYSTEM.components.radius)
