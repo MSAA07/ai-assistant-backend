@@ -41,7 +41,7 @@ const PDF_SYSTEM = Object.freeze({
     radius: 8,
     flashcard: {
       padding: SPACING.md,
-      gapBetweenCards: SPACING.sm,
+      gapBetweenCards: SPACING.xs,
       sectionGap: SPACING.sm,
     },
     exam: {
@@ -1131,13 +1131,13 @@ function measureFlashcardCardHeight(doc, flashcard, index, contentWidth) {
   cardHeight += measureLabeledTextBlock(doc, questionLabel, questionText, {
     width: contentWidth,
     fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
-    lineGap: PDF_SYSTEM.typography.flashcardQuestion.lineGap,
+    lineGap: SPACING.xs,
   });
   cardHeight += PDF_SYSTEM.components.flashcard.sectionGap;
   cardHeight += measureLabeledTextBlock(doc, "Answer", answerText, {
     width: contentWidth,
     fontSize: PDF_SYSTEM.typography.body.size,
-    lineGap: PDF_SYSTEM.typography.body.lineGap,
+    lineGap: SPACING.xs,
   });
 
   if (explanation) {
@@ -1145,7 +1145,7 @@ function measureFlashcardCardHeight(doc, flashcard, index, contentWidth) {
     cardHeight += measureLabeledTextBlock(doc, "Explanation", explanation, {
       width: contentWidth,
       fontSize: PDF_SYSTEM.typography.body.size,
-      lineGap: PDF_SYSTEM.typography.body.lineGap,
+      lineGap: SPACING.xs,
       color: COLORS.muted,
     });
   }
@@ -1230,7 +1230,7 @@ function renderFlashcards(doc, flashcards = []) {
       y: cursorY,
       width: contentWidth,
       fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
-      lineGap: PDF_SYSTEM.typography.flashcardQuestion.lineGap,
+      lineGap: SPACING.xs,
       color: COLORS.strongText,
     }).nextY;
 
@@ -1241,7 +1241,7 @@ function renderFlashcards(doc, flashcards = []) {
       y: cursorY,
       width: contentWidth,
       fontSize: PDF_SYSTEM.typography.body.size,
-      lineGap: PDF_SYSTEM.typography.body.lineGap,
+      lineGap: SPACING.xs,
       color: COLORS.muted,
     }).nextY;
 
@@ -1252,7 +1252,7 @@ function renderFlashcards(doc, flashcards = []) {
         y: cursorY,
         width: contentWidth,
         fontSize: PDF_SYSTEM.typography.body.size,
-        lineGap: PDF_SYSTEM.typography.body.lineGap,
+        lineGap: SPACING.xs,
         color: COLORS.muted,
       });
     }

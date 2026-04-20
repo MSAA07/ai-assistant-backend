@@ -64,7 +64,7 @@ test("component spacing is identical across similar PDF blocks", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
   assert.equal(PDF_SYSTEM.components.flashcard.padding, 16);
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 4);
   assert.equal(PDF_SYSTEM.components.flashcard.sectionGap, 8);
   assert.equal(PDF_SYSTEM.components.exam.padding, 24);
   assert.equal(PDF_SYSTEM.components.exam.gapBetweenQuestions, 32);
@@ -304,7 +304,7 @@ test("flashcards and exam blocks retain component styling instead of plain text 
   const { PDF_SYSTEM } = __studyPdfTestables;
 
   assert.ok(PDF_SYSTEM.components.flashcard.padding >= 16 && PDF_SYSTEM.components.flashcard.padding <= 20);
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 4);
   assert.ok(PDF_SYSTEM.components.exam.gapBetweenQuestions >= 24);
   assert.ok(PDF_SYSTEM.components.exam.optionIndent > PDF_SYSTEM.components.summary.listItemGap);
 });
@@ -312,7 +312,7 @@ test("flashcards and exam blocks retain component styling instead of plain text 
 test("flashcard vertical rhythm uses one strict inter-card spacing value", () => {
   const { PDF_SYSTEM } = __studyPdfTestables;
 
-  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 8);
+  assert.equal(PDF_SYSTEM.components.flashcard.gapBetweenCards, 4);
   assert.ok(PDF_SYSTEM.components.flashcard.gapBetweenCards > 0);
 });
 
