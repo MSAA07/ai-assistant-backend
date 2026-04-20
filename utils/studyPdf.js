@@ -16,41 +16,58 @@ const SPACING = Object.freeze({
   xxl: 40,
 });
 
-const PDF_LAYOUT = Object.freeze({
-  size: "A4",
-  margins: {
-    top: 40,
-    bottom: 40,
-    left: 48,
-    right: 48,
+const PDF_SYSTEM = Object.freeze({
+  page: {
+    size: "A4",
+    margins: {
+      top: 40,
+      bottom: 40,
+      left: 48,
+      right: 48,
+    },
+    maxContentWidth: 468,
   },
-  maxContentWidth: 468,
-  radius: 10,
-  cardPadding: 16,
-  questionBlockPadding: 18,
-  optionIndent: 26,
-  titleFontSize: 24,
-  sectionFontSize: 18,
-  subsectionFontSize: 14,
-  questionFontSize: 13,
-  bodyFontSize: 11,
-  labelFontSize: 9,
-  metaFontSize: 10,
-  lineHeight: 1.6,
-  lineGap: 6,
-  paragraphGap: SPACING.md,
-  sectionGap: SPACING.xl,
-  blockGap: SPACING.lg,
+  spacing: SPACING,
+  typography: {
+    documentTitle: { size: 22, weight: 700, lineGap: SPACING.sm },
+    sectionTitle: { size: 16, weight: 700, lineGap: SPACING.sm },
+    questionText: { size: 13.5, weight: 600, lineGap: SPACING.sm },
+    flashcardQuestion: { size: 12.5, weight: 600, lineGap: SPACING.sm },
+    body: { size: 11.5, weight: 400, lineGap: SPACING.sm },
+    label: { size: 10, weight: 700, lineGap: SPACING.xs },
+    meta: { size: 10, weight: 400, lineGap: SPACING.xs },
+  },
+  components: {
+    radius: 8,
+    flashcard: {
+      padding: SPACING.lg,
+      gapBetweenCards: SPACING.xl,
+      sectionGap: SPACING.md,
+    },
+    exam: {
+      padding: SPACING.lg,
+      gapBetweenQuestions: SPACING.xl,
+      optionsGap: SPACING.sm,
+      optionIndent: SPACING.lg,
+      dividerGap: SPACING.md,
+    },
+    summary: {
+      paragraphGap: SPACING.md,
+      listItemGap: SPACING.sm,
+      sectionGap: SPACING.lg,
+    },
+  },
 });
 
 const COLORS = Object.freeze({
   text: "#111827",
+  strongText: "#0F172A",
   muted: "#4B5563",
-  subtle: "#6B7280",
-  border: "#D7DEEA",
-  softBorder: "#E5EAF3",
+  subtle: "#667085",
+  border: "#CBD5E1",
+  softBorder: "#D9E2EC",
   panel: "#F8FAFC",
-  accentPanel: "#F4F7FB",
+  accentPanel: "#F3F6FB",
 });
 
 const FEATURE_LABELS = Object.freeze({
@@ -89,13 +106,32 @@ function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeInlineSpacing(value) {
+  return normalizeString(value)
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s+([,.;:!?%])/g, "$1")
+    .replace(/([,.;:!?])(?=\S)/g, "$1 ")
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")")
+    .replace(/\[\s+/g, "[")
+    .replace(/\s+\]/g, "]")
+    .replace(/\{\s+/g, "{")
+    .replace(/\s+\}/g, "}")
+    .replace(/\s*([+–—])\s*/g, " $1 ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeParagraphText(value) {
   return normalizeString(value)
     .replace(/\r\n?/g, "\n")
     .replace(/\n{2,}/g, "__PARA_BREAK__")
+    .replace(/\n[ \t]*\n+/g, "__PARA_BREAK__")
     .replace(/(?<!\n)\n(?!\n)/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\s*__PARA_BREAK__\s*/g, "\n\n")
+    .split("__PARA_BREAK__")
+    .map((part) => normalizeInlineSpacing(part))
+    .filter(Boolean)
+    .join("\n\n")
     .trim();
 }
 
@@ -108,13 +144,13 @@ function containsArabic(value) {
 }
 
 function getPageInnerWidth(doc) {
-  return doc.page.width - PDF_LAYOUT.margins.left - PDF_LAYOUT.margins.right;
+  return doc.page.width - PDF_SYSTEM.page.margins.left - PDF_SYSTEM.page.margins.right;
 }
 
 function getContentMetrics(doc) {
   const pageInnerWidth = getPageInnerWidth(doc);
-  const width = Math.min(PDF_LAYOUT.maxContentWidth, pageInnerWidth);
-  const x = PDF_LAYOUT.margins.left + Math.max(0, (pageInnerWidth - width) / 2);
+  const width = Math.min(PDF_SYSTEM.page.maxContentWidth, pageInnerWidth);
+  const x = PDF_SYSTEM.page.margins.left + Math.max(0, (pageInnerWidth - width) / 2);
   return { x, width };
 }
 
@@ -218,9 +254,9 @@ function registerPdfFonts(doc) {
 }
 
 function ensureVerticalSpace(doc, height) {
-  if (doc.y + height > doc.page.height - PDF_LAYOUT.margins.bottom) {
+  if (doc.y + height > doc.page.height - PDF_SYSTEM.page.margins.bottom) {
     doc.addPage();
-    doc.y = PDF_LAYOUT.margins.top;
+    doc.y = PDF_SYSTEM.page.margins.top;
   }
 }
 
@@ -295,15 +331,21 @@ function wrapLogicalText(doc, value, width, direction) {
     lines.push(current);
   }
 
-  if (lines.length >= 2) {
-    const lastTokens = lines[lines.length - 1].split(" ").filter(Boolean);
-    const previousTokens = lines[lines.length - 2].split(" ").filter(Boolean);
+  for (let index = lines.length - 1; index > 0; index -= 1) {
+    const currentTokens = lines[index].split(" ").filter(Boolean);
+    const previousTokens = lines[index - 1].split(" ").filter(Boolean);
 
-    if (lastTokens.length === 1 && previousTokens.length >= 4) {
-      const movedToken = previousTokens.pop();
-      lines[lines.length - 2] = previousTokens.join(" ");
-      lines[lines.length - 1] = `${movedToken} ${lastTokens[0]}`.trim();
+    if (currentTokens.length >= 3 || previousTokens.length <= 3) {
+      continue;
     }
+
+    const movedToken = previousTokens.pop();
+    if (!movedToken) {
+      continue;
+    }
+
+    lines[index - 1] = previousTokens.join(" ");
+    lines[index] = `${movedToken} ${currentTokens.join(" ")}`.trim();
   }
 
   return lines.filter(Boolean);
@@ -322,8 +364,8 @@ function drawVisualLine(doc, visualLine, x, y, options = {}) {
 
 function getLineMetrics(doc, value, options = {}) {
   const direction = options.direction ?? getTextDirection(value);
-  const fontSize = options.fontSize ?? PDF_LAYOUT.bodyFontSize;
-  const lineGap = options.lineGap ?? PDF_LAYOUT.lineGap;
+  const fontSize = options.fontSize ?? PDF_SYSTEM.typography.body.size;
+  const lineGap = options.lineGap ?? PDF_SYSTEM.typography.body.lineGap;
 
   applyFont(doc, value, { bold: options.bold });
   doc.fontSize(fontSize);
@@ -350,8 +392,8 @@ function drawWrappedText(doc, value, options = {}) {
   const x = options.x ?? contentX;
   const y = options.y ?? doc.y;
   const direction = options.direction ?? getTextDirection(text);
-  const fontSize = options.fontSize ?? PDF_LAYOUT.bodyFontSize;
-  const lineGap = options.lineGap ?? PDF_LAYOUT.lineGap;
+  const fontSize = options.fontSize ?? PDF_SYSTEM.typography.body.size;
+  const lineGap = options.lineGap ?? PDF_SYSTEM.typography.body.lineGap;
   const color = options.color ?? COLORS.text;
 
   applyFont(doc, text, { bold: options.bold });
@@ -395,19 +437,19 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
   const headerTitleHeight = getLineMetrics(doc, documentTitle, {
     width,
     bold: true,
-    fontSize: PDF_LAYOUT.titleFontSize,
-    lineGap: 8,
+    fontSize: PDF_SYSTEM.typography.documentTitle.size,
+    lineGap: PDF_SYSTEM.typography.documentTitle.lineGap,
   }).height;
   const headerMeta = `Study Hub export • ${featureLabel}`;
   const generatedAt = `Generated ${new Date().toLocaleString("en-US")}`;
   const metaHeight = getLineMetrics(doc, headerMeta, {
     width,
-    fontSize: PDF_LAYOUT.metaFontSize,
-    lineGap: 3,
+    fontSize: PDF_SYSTEM.typography.meta.size,
+    lineGap: PDF_SYSTEM.typography.meta.lineGap,
   }).height + getLineMetrics(doc, generatedAt, {
     width,
-    fontSize: PDF_LAYOUT.metaFontSize,
-    lineGap: 3,
+    fontSize: PDF_SYSTEM.typography.meta.size,
+    lineGap: PDF_SYSTEM.typography.meta.lineGap,
   }).height;
   const blockHeight = headerTitleHeight + SPACING.md + metaHeight + SPACING.xl;
 
@@ -416,23 +458,23 @@ function renderDocumentHeader(doc, documentTitle, featureLabel) {
     x,
     width,
     bold: true,
-    fontSize: PDF_LAYOUT.titleFontSize,
-    lineGap: 8,
-    color: COLORS.text,
+    fontSize: PDF_SYSTEM.typography.documentTitle.size,
+    lineGap: PDF_SYSTEM.typography.documentTitle.lineGap,
+    color: COLORS.strongText,
   });
   doc.y += SPACING.md;
   drawWrappedText(doc, headerMeta, {
     x,
     width,
-    fontSize: PDF_LAYOUT.metaFontSize,
-    lineGap: 3,
+    fontSize: PDF_SYSTEM.typography.meta.size,
+    lineGap: PDF_SYSTEM.typography.meta.lineGap,
     color: COLORS.subtle,
   });
   drawWrappedText(doc, generatedAt, {
     x,
     width,
-    fontSize: PDF_LAYOUT.metaFontSize,
-    lineGap: 3,
+    fontSize: PDF_SYSTEM.typography.meta.size,
+    lineGap: PDF_SYSTEM.typography.meta.lineGap,
     color: COLORS.subtle,
   });
   drawDivider(doc, SPACING.md, SPACING.xl);
@@ -443,8 +485,8 @@ function renderSectionTitle(doc, value) {
   const height = getLineMetrics(doc, value, {
     width,
     bold: true,
-    fontSize: PDF_LAYOUT.sectionFontSize,
-    lineGap: 6,
+    fontSize: PDF_SYSTEM.typography.sectionTitle.size,
+    lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
   }).height + SPACING.md;
 
   ensureVerticalSpace(doc, height);
@@ -452,9 +494,9 @@ function renderSectionTitle(doc, value) {
     x,
     width,
     bold: true,
-    fontSize: PDF_LAYOUT.sectionFontSize,
-    lineGap: 6,
-    color: COLORS.text,
+    fontSize: PDF_SYSTEM.typography.sectionTitle.size,
+    lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
+    color: COLORS.strongText,
   });
   doc.y += SPACING.md;
 }
@@ -464,8 +506,8 @@ function renderSubsectionTitle(doc, value) {
   const height = getLineMetrics(doc, value, {
     width,
     bold: true,
-    fontSize: PDF_LAYOUT.subsectionFontSize,
-    lineGap: 5,
+    fontSize: PDF_SYSTEM.typography.sectionTitle.size,
+    lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
   }).height + SPACING.sm;
 
   ensureVerticalSpace(doc, height);
@@ -473,9 +515,9 @@ function renderSubsectionTitle(doc, value) {
     x,
     width,
     bold: true,
-    fontSize: PDF_LAYOUT.subsectionFontSize,
-    lineGap: 5,
-    color: COLORS.text,
+    fontSize: PDF_SYSTEM.typography.sectionTitle.size,
+    lineGap: PDF_SYSTEM.typography.sectionTitle.lineGap,
+    color: COLORS.strongText,
   });
   doc.y += SPACING.sm;
 }
@@ -486,22 +528,22 @@ function renderBodyParagraph(doc, value, options = {}) {
   const height = getLineMetrics(doc, normalizedValue, {
     width: options.width ?? width,
     bold: options.bold,
-    fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
-    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    fontSize: options.fontSize ?? PDF_SYSTEM.typography.body.size,
+    lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
     direction: options.direction,
-  }).height + (options.spacingAfter ?? PDF_LAYOUT.paragraphGap);
+  }).height + (options.spacingAfter ?? PDF_SYSTEM.components.summary.paragraphGap);
 
   ensureVerticalSpace(doc, height);
   drawWrappedText(doc, normalizedValue, {
     x: options.x ?? x,
     width: options.width ?? width,
     bold: options.bold,
-    fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
-    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    fontSize: options.fontSize ?? PDF_SYSTEM.typography.body.size,
+    lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
     color: options.color ?? COLORS.text,
     direction: options.direction,
   });
-  doc.y += options.spacingAfter ?? PDF_LAYOUT.paragraphGap;
+  doc.y += options.spacingAfter ?? PDF_SYSTEM.components.summary.paragraphGap;
 }
 
 function normalizeBulletText(value) {
@@ -636,8 +678,8 @@ function buildSummarySections(summary) {
 
 function renderBulletList(doc, items, options = {}) {
   const { x, width } = getContentMetrics(doc);
-  const indent = options.indent ?? 18;
-  const markerGap = options.markerGap ?? 10;
+  const indent = options.indent ?? SPACING.md;
+  const markerGap = options.markerGap ?? SPACING.sm;
   const marker = options.marker ?? "•";
   const contentWidth = width - indent;
 
@@ -649,20 +691,20 @@ function renderBulletList(doc, items, options = {}) {
 
     const lineMetrics = getLineMetrics(doc, bulletText, {
       width: contentWidth - markerGap,
-      fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
-      lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+      fontSize: options.fontSize ?? PDF_SYSTEM.typography.body.size,
+      lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
       direction: options.direction,
     });
-    const blockHeight = Math.max(lineMetrics.height, 12) + (options.itemGap ?? SPACING.sm);
+    const blockHeight = Math.max(lineMetrics.height, PDF_SYSTEM.typography.body.size) + (options.itemGap ?? PDF_SYSTEM.components.summary.listItemGap);
 
     ensureVerticalSpace(doc, blockHeight);
     drawWrappedText(doc, marker, {
       x,
       y: doc.y,
       width: indent,
-      fontSize: PDF_LAYOUT.labelFontSize,
+      fontSize: PDF_SYSTEM.typography.label.size,
       bold: true,
-      lineGap: 2,
+      lineGap: PDF_SYSTEM.typography.label.lineGap,
       color: COLORS.text,
       advanceCursor: false,
     });
@@ -670,8 +712,8 @@ function renderBulletList(doc, items, options = {}) {
       x: x + indent,
       y: doc.y,
       width: contentWidth - markerGap,
-      fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
-      lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+      fontSize: options.fontSize ?? PDF_SYSTEM.typography.body.size,
+      lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
       color: options.color ?? COLORS.text,
       direction: options.direction,
       advanceCursor: false,
@@ -685,15 +727,15 @@ function measureLabeledTextBlock(doc, label, text, options = {}) {
   const labelMetrics = getLineMetrics(doc, label, {
     width,
     bold: true,
-    fontSize: PDF_LAYOUT.labelFontSize,
-    lineGap: 2,
+    fontSize: PDF_SYSTEM.typography.label.size,
+    lineGap: PDF_SYSTEM.typography.label.lineGap,
     direction: getTextDirection(label),
   });
   const textMetrics = getLineMetrics(doc, normalizeParagraphText(text), {
     width,
     bold: options.bold,
-    fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
-    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    fontSize: options.fontSize ?? PDF_SYSTEM.typography.body.size,
+    lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
     direction: options.direction,
   });
 
@@ -705,10 +747,10 @@ function drawLabeledTextBlock(doc, label, text, options = {}) {
     x: options.x,
     y: options.y,
     width: options.width,
-    fontSize: PDF_LAYOUT.labelFontSize,
-    lineGap: 2,
+    fontSize: PDF_SYSTEM.typography.label.size,
+    lineGap: PDF_SYSTEM.typography.label.lineGap,
     bold: true,
-    color: COLORS.subtle,
+    color: options.labelColor ?? COLORS.subtle,
     advanceCursor: false,
   });
 
@@ -717,8 +759,8 @@ function drawLabeledTextBlock(doc, label, text, options = {}) {
     x: options.x,
     y: textY,
     width: options.width,
-    fontSize: options.fontSize ?? PDF_LAYOUT.bodyFontSize,
-    lineGap: options.lineGap ?? PDF_LAYOUT.lineGap,
+    fontSize: options.fontSize ?? PDF_SYSTEM.typography.body.size,
+    lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
     bold: options.bold,
     color: options.color ?? COLORS.text,
     direction: options.direction,
@@ -732,7 +774,7 @@ function drawLabeledTextBlock(doc, label, text, options = {}) {
 }
 
 function measureCardHeight(doc, segments, width) {
-  let total = PDF_LAYOUT.cardPadding * 2;
+  let total = PDF_SYSTEM.components.flashcard.padding * 2;
 
   segments.forEach((segment, index) => {
     const metrics = getLineMetrics(doc, segment.text, {
@@ -760,19 +802,19 @@ function renderCard(doc, segments, options = {}) {
   const { x, width } = getContentMetrics(doc);
   const cardWidth = options.width ?? width;
   const cardX = options.x ?? x;
-  const contentX = cardX + PDF_LAYOUT.cardPadding;
-  const contentWidth = cardWidth - (PDF_LAYOUT.cardPadding * 2);
+  const contentX = cardX + PDF_SYSTEM.components.flashcard.padding;
+  const contentWidth = cardWidth - (PDF_SYSTEM.components.flashcard.padding * 2);
   const cardHeight = measureCardHeight(doc, segments, contentWidth);
 
   ensureVerticalSpace(doc, cardHeight);
 
   doc
     .save()
-    .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_LAYOUT.radius)
+    .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_SYSTEM.components.radius)
     .fillAndStroke(options.fillColor ?? COLORS.panel, options.strokeColor ?? COLORS.border)
     .restore();
 
-  let cursorY = doc.y + PDF_LAYOUT.cardPadding;
+  let cursorY = doc.y + PDF_SYSTEM.components.flashcard.padding;
 
   segments.forEach((segment, index) => {
     const drawnHeight = drawWrappedText(doc, segment.text, {
@@ -797,7 +839,7 @@ function renderCard(doc, segments, options = {}) {
     }
   });
 
-  doc.y += cardHeight + (options.spacingAfter ?? PDF_LAYOUT.blockGap);
+  doc.y += cardHeight + (options.spacingAfter ?? PDF_SYSTEM.components.flashcard.gapBetweenCards);
 }
 
 function renderSummary(doc, summary) {
@@ -813,13 +855,13 @@ function renderSummary(doc, summary) {
     } else {
       section.blocks.forEach((block) => {
         if (block.type === "list") {
-          renderBulletList(doc, block.items, { itemGap: SPACING.sm });
+          renderBulletList(doc, block.items, { itemGap: PDF_SYSTEM.components.summary.listItemGap });
           doc.y += SPACING.sm;
           return;
         }
 
         renderBodyParagraph(doc, block.text, {
-          spacingAfter: PDF_LAYOUT.paragraphGap,
+          spacingAfter: PDF_SYSTEM.components.summary.paragraphGap,
         });
       });
     }
@@ -831,11 +873,13 @@ function renderSummary(doc, summary) {
 }
 
 export const __studyPdfTestables = Object.freeze({
+  PDF_SYSTEM,
   getTextDirection,
   toVisualPdfText,
   wrapLogicalText,
   parseSummaryBlocks,
   buildSummarySections,
+  normalizeInlineSpacing,
   normalizeParagraphText,
   measureExamQuestionBlock,
   registerPdfFonts,
@@ -849,96 +893,99 @@ function renderFlashcards(doc, flashcards = []) {
     const { x, width } = getContentMetrics(doc);
     const cardX = x;
     const cardWidth = width;
-    const contentX = cardX + PDF_LAYOUT.cardPadding;
-    const contentWidth = cardWidth - (PDF_LAYOUT.cardPadding * 2);
+    const contentX = cardX + PDF_SYSTEM.components.flashcard.padding;
+    const contentWidth = cardWidth - (PDF_SYSTEM.components.flashcard.padding * 2);
 
-    let cardHeight = PDF_LAYOUT.cardPadding * 2;
+    let cardHeight = PDF_SYSTEM.components.flashcard.padding * 2;
     cardHeight += measureLabeledTextBlock(doc, "Question", questionText, {
       width: contentWidth,
       bold: true,
-      fontSize: PDF_LAYOUT.questionFontSize,
-      lineGap: 5,
+      fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
+      lineGap: PDF_SYSTEM.typography.flashcardQuestion.lineGap,
     });
-    cardHeight += SPACING.md;
+    cardHeight += PDF_SYSTEM.components.flashcard.sectionGap;
     cardHeight += measureLabeledTextBlock(doc, "Answer", answerText, {
       width: contentWidth,
-      fontSize: PDF_LAYOUT.bodyFontSize,
-      lineGap: PDF_LAYOUT.lineGap,
+      fontSize: PDF_SYSTEM.typography.body.size,
+      lineGap: PDF_SYSTEM.typography.body.lineGap,
     });
 
     if (explanation) {
-      cardHeight += SPACING.md;
+      cardHeight += PDF_SYSTEM.components.flashcard.sectionGap;
       cardHeight += measureLabeledTextBlock(doc, "Explanation", explanation, {
         width: contentWidth,
-        fontSize: PDF_LAYOUT.bodyFontSize,
-        lineGap: PDF_LAYOUT.lineGap,
+        fontSize: PDF_SYSTEM.typography.body.size,
+        lineGap: PDF_SYSTEM.typography.body.lineGap,
         color: COLORS.muted,
       });
     }
 
-    ensureVerticalSpace(doc, cardHeight + SPACING.xl);
+    ensureVerticalSpace(doc, cardHeight + PDF_SYSTEM.components.flashcard.gapBetweenCards);
     doc
       .save()
-      .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_LAYOUT.radius)
-      .fillAndStroke(index % 2 === 0 ? COLORS.panel : COLORS.accentPanel, COLORS.softBorder)
+      .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_SYSTEM.components.radius)
+      .lineWidth(1.15)
+      .fillAndStroke(index % 2 === 0 ? COLORS.panel : COLORS.accentPanel, COLORS.border)
       .restore();
 
-    let cursorY = doc.y + PDF_LAYOUT.cardPadding;
+    let cursorY = doc.y + PDF_SYSTEM.components.flashcard.padding;
 
     cursorY = drawLabeledTextBlock(doc, "Question", questionText, {
       x: contentX,
       y: cursorY,
       width: contentWidth,
       bold: true,
-      fontSize: PDF_LAYOUT.questionFontSize,
-      lineGap: 5,
+      fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
+      lineGap: PDF_SYSTEM.typography.flashcardQuestion.lineGap,
+      color: COLORS.strongText,
     }).nextY;
 
-    cursorY += SPACING.md;
+    cursorY += PDF_SYSTEM.components.flashcard.sectionGap;
 
     cursorY = drawLabeledTextBlock(doc, "Answer", answerText, {
       x: contentX,
       y: cursorY,
       width: contentWidth,
-      fontSize: PDF_LAYOUT.bodyFontSize,
-      lineGap: PDF_LAYOUT.lineGap,
+      fontSize: PDF_SYSTEM.typography.body.size,
+      lineGap: PDF_SYSTEM.typography.body.lineGap,
+      color: COLORS.text,
     }).nextY;
 
     if (explanation) {
-      cursorY += SPACING.md;
+      cursorY += PDF_SYSTEM.components.flashcard.sectionGap;
       drawLabeledTextBlock(doc, "Explanation", explanation, {
         x: contentX,
         y: cursorY,
         width: contentWidth,
-        fontSize: PDF_LAYOUT.bodyFontSize,
-        lineGap: PDF_LAYOUT.lineGap,
+        fontSize: PDF_SYSTEM.typography.body.size,
+        lineGap: PDF_SYSTEM.typography.body.lineGap,
         color: COLORS.muted,
       });
     }
 
-    doc.y += cardHeight + SPACING.xl;
+    doc.y += cardHeight + PDF_SYSTEM.components.flashcard.gapBetweenCards;
   });
 }
 
 function measureExamQuestionBlock(doc, question, index, width) {
-  let height = PDF_LAYOUT.questionBlockPadding * 2;
+  let height = PDF_SYSTEM.components.exam.padding * 2;
   height += measureLabeledTextBlock(doc, `Question ${index + 1}`, normalizeParagraphText(question?.question) || "No question provided.", {
     width,
     bold: true,
-    fontSize: PDF_LAYOUT.questionFontSize,
-    lineGap: 5,
+    fontSize: PDF_SYSTEM.typography.questionText.size,
+    lineGap: PDF_SYSTEM.typography.questionText.lineGap,
   });
 
   const options = Array.isArray(question?.options) ? question.options : [];
   if (options.length > 0) {
-    height += SPACING.md;
+    height += PDF_SYSTEM.components.exam.dividerGap;
     options.forEach((option) => {
       const metrics = getLineMetrics(doc, normalizeParagraphText(option), {
-        width: width - PDF_LAYOUT.optionIndent,
-        fontSize: PDF_LAYOUT.bodyFontSize,
-        lineGap: PDF_LAYOUT.lineGap,
+        width: width - PDF_SYSTEM.components.exam.optionIndent,
+        fontSize: PDF_SYSTEM.typography.body.size,
+        lineGap: PDF_SYSTEM.typography.body.lineGap,
       });
-      height += Math.max(metrics.height, 14) + SPACING.sm;
+      height += Math.max(metrics.height, PDF_SYSTEM.typography.body.size) + PDF_SYSTEM.components.exam.optionsGap;
     });
   }
 
@@ -950,32 +997,34 @@ function renderExam(doc, questions = []) {
     const { x, width } = getContentMetrics(doc);
     const blockX = x;
     const blockWidth = width;
-    const contentX = blockX + PDF_LAYOUT.questionBlockPadding;
-    const contentWidth = blockWidth - (PDF_LAYOUT.questionBlockPadding * 2);
+    const contentX = blockX + PDF_SYSTEM.components.exam.padding;
+    const contentWidth = blockWidth - (PDF_SYSTEM.components.exam.padding * 2);
     const options = Array.isArray(question?.options) ? question.options : [];
     const questionText = normalizeParagraphText(question?.question) || "No question provided.";
     const blockHeight = measureExamQuestionBlock(doc, question, index, contentWidth);
 
-    ensureVerticalSpace(doc, blockHeight + SPACING.xl);
+    ensureVerticalSpace(doc, blockHeight + PDF_SYSTEM.components.exam.gapBetweenQuestions);
 
     doc
       .save()
-      .roundedRect(blockX, doc.y, blockWidth, blockHeight, PDF_LAYOUT.radius)
+      .roundedRect(blockX, doc.y, blockWidth, blockHeight, PDF_SYSTEM.components.radius)
+      .lineWidth(1.1)
       .fillAndStroke(COLORS.panel, COLORS.border)
       .restore();
 
-    let cursorY = doc.y + PDF_LAYOUT.questionBlockPadding;
+    let cursorY = doc.y + PDF_SYSTEM.components.exam.padding;
     cursorY = drawLabeledTextBlock(doc, `Question ${index + 1}`, questionText, {
       x: contentX,
       y: cursorY,
       width: contentWidth,
       bold: true,
-      fontSize: PDF_LAYOUT.questionFontSize,
-      lineGap: 5,
+      fontSize: PDF_SYSTEM.typography.questionText.size,
+      lineGap: PDF_SYSTEM.typography.questionText.lineGap,
+      color: COLORS.strongText,
     }).nextY;
 
     if (options.length > 0) {
-      cursorY += SPACING.md;
+      cursorY += PDF_SYSTEM.components.exam.dividerGap;
       doc
         .save()
         .lineWidth(1)
@@ -984,7 +1033,7 @@ function renderExam(doc, questions = []) {
         .lineTo(contentX + contentWidth, cursorY)
         .stroke()
         .restore();
-      cursorY += SPACING.md;
+      cursorY += PDF_SYSTEM.components.exam.dividerGap;
     }
 
     options.forEach((option, optionIndex) => {
@@ -992,28 +1041,28 @@ function renderExam(doc, questions = []) {
       drawWrappedText(doc, label, {
         x: contentX,
         y: cursorY,
-        width: PDF_LAYOUT.optionIndent - 6,
-        fontSize: PDF_LAYOUT.labelFontSize,
-        lineGap: 2,
+        width: PDF_SYSTEM.components.exam.optionIndent - SPACING.sm,
+        fontSize: PDF_SYSTEM.typography.label.size,
+        lineGap: PDF_SYSTEM.typography.label.lineGap,
         bold: true,
         color: COLORS.text,
         advanceCursor: false,
       });
 
       const optionHeight = drawWrappedText(doc, normalizeParagraphText(option), {
-        x: contentX + PDF_LAYOUT.optionIndent,
+        x: contentX + PDF_SYSTEM.components.exam.optionIndent,
         y: cursorY,
-        width: contentWidth - PDF_LAYOUT.optionIndent,
-        fontSize: PDF_LAYOUT.bodyFontSize,
-        lineGap: PDF_LAYOUT.lineGap,
+        width: contentWidth - PDF_SYSTEM.components.exam.optionIndent,
+        fontSize: PDF_SYSTEM.typography.body.size,
+        lineGap: PDF_SYSTEM.typography.body.lineGap,
         color: COLORS.text,
         advanceCursor: false,
       });
 
-      cursorY += Math.max(optionHeight, 12) + SPACING.sm;
+      cursorY += Math.max(optionHeight, PDF_SYSTEM.typography.body.size) + PDF_SYSTEM.components.exam.optionsGap;
     });
 
-    doc.y += blockHeight + SPACING.xl;
+    doc.y += blockHeight + PDF_SYSTEM.components.exam.gapBetweenQuestions;
   });
 }
 
@@ -1054,8 +1103,8 @@ export async function buildStudyPdfBuffer(document, feature) {
   ) || "Study document";
 
   const pdf = new PDFDocument({
-    size: PDF_LAYOUT.size,
-    margins: PDF_LAYOUT.margins,
+    size: PDF_SYSTEM.page.size,
+    margins: PDF_SYSTEM.page.margins,
     info: {
       Title: `${documentTitle} - ${featureLabel}`,
       Author: "AI Study Assistant",
@@ -1073,7 +1122,7 @@ export async function buildStudyPdfBuffer(document, feature) {
   });
 
   registerPdfFonts(pdf);
-  pdf.y = PDF_LAYOUT.margins.top;
+  pdf.y = PDF_SYSTEM.page.margins.top;
 
   renderDocumentHeader(pdf, documentTitle, featureLabel);
   renderSectionTitle(pdf, featureLabel);
