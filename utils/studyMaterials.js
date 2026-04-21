@@ -232,17 +232,76 @@ function buildSummaryPrompt(text, language, options, sourceTier, sampled) {
   const targetWords = getSummaryWordTarget(options.length, sourceTier);
   const guidancePrompt = buildRegenerationGuidancePrompt(options);
 
-  return `Create a study summary in ${languageName}.
+  return `Create COMPLETE, structured STUDY MATERIAL in ${languageName}.
+Do NOT write a generic summary.
+Transform the source into exam-ready study material a student can study from directly.
 
 Return valid JSON only with this shape:
 {"text":"..."}
 
 Rules:
-- Focus on the most important ideas, definitions, processes, and takeaways.
-- Keep the summary around ${targetWords} words.
-- Use concise prose with short paragraphs or bullet-like sentences inside the text.
+- STRICT FORMAT inside "text":
+  Title: <Document / Chapter Title>
+
+  Core Idea:
+  - 2-3 bullets explaining the purpose of the chapter
+
+  ---
+
+  Main Concepts:
+
+  <Concept Name>
+  - Definition: clear explanation (1-2 lines)
+  - Key Points:
+    - bullet
+    - bullet
+
+  (Repeat for ALL major concepts)
+
+  ---
+
+  Models & Theories:
+
+  <Model Name>
+  - What it is:
+  - Components:
+    - bullet
+  - Why it matters:
+
+  (Include ALL named models/theories found in the source.)
+
+  ---
+
+  Important Insights:
+  - bullet
+  - bullet
+  - bullet
+
+  ---
+
+  Exam-Ready Takeaways:
+  - bullet (clear, direct, testable)
+  - bullet
+  - bullet
+- Coverage guarantee:
+  - Include ALL major topics from the source.
+  - Do NOT skip sections with models, concepts, or definitions.
+- Concept completeness:
+  - Every important concept must be named and clearly explained.
+  - Include key characteristics when applicable.
+- No over-compression:
+  - Organize content instead of aggressively shortening it.
+  - Preserve details needed for exams.
+- Scannability constraints:
+  - No paragraph longer than 2 lines.
+  - Use short bullets and compact sections.
+  - No vague or generic filler phrases.
+- Adaptive depth:
+  - If source is dense, include more concepts/models.
+  - If source is lighter, keep the same structure with fewer items.
+- Target length guideline: around ${targetWords} words, but prioritize completeness and structure over brevity.
+- If evidence is partial, include only what is supported by the provided text.
 - Do not add markdown fences.
-- If the source is partial, say only what is supported by the text.
 ${guidancePrompt}
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
