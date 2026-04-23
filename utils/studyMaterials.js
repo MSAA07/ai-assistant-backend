@@ -232,30 +232,178 @@ function buildSummaryPrompt(text, language, options, sourceTier, sampled) {
   const targetWords = getSummaryWordTarget(options.length, sourceTier);
   const guidancePrompt = buildRegenerationGuidancePrompt(options);
 
-  return `You are an expert academic assistant specialized in transforming study material into exam-ready summaries in ${languageName}.
+  return `You are generating an EXAM-READY STUDY SUMMARY in ${languageName}.
 
-Return valid JSON only with this shape:
-{"text":"..."}
+This is NOT a general summary.
+This is a structured, high-density, exam-optimized output.
 
-Rules:
-- Analyze the provided study material and generate a comprehensive, structured summary that helps a student enter an exam with a strong grasp of all important supported concepts.
-- Output plain structured study text inside "text". Do not return JSON inside JSON.
-- Organize the summary with clear headings and subheadings.
-- Use bullet points where they improve readability.
-- Present information in a logical flow from basic to advanced when the source supports that order.
-- Include all important supported concepts, definitions, theories, formulas, processes, arguments, conclusions, constraints, and distinctions.
-- Do not omit important supported details, but avoid unnecessary fluff and repetition.
-- Break down complex ideas into simple, easy-to-understand explanations.
-- Avoid overly technical wording unless necessary, and explain it clearly when used.
-- For complex or abstract concepts, include brief grounded examples or analogies only when they are directly supported by the source or are safe reformulations that add no new facts.
-- Emphasize important testable points, key takeaways, common pitfalls, and what-to-remember notes only when they are supported by the material.
-- End with a section titled "Quick Revision".
-- After "Quick Revision", include a short checklist titled "Before the Exam" covering the most critical things the student must know.
-- Keep the summary efficient but deep, with a target length around ${targetWords} words when the source supports it.
-- If the source is thin, partial, or ambiguous, reduce the depth and include only what is clearly supported by the provided text.
-- If evidence is incomplete, do not fill gaps with outside knowledge.
-- Do not invent facts, references, examples, formulas, exam questions, or section names not supported by the material.
-- Do not change the output contract or add markdown fences.
+Your priority is:
+1) FULL COVERAGE of the source
+2) CLEAR STRUCTURE
+3) EXAM-LEVEL USEFULNESS
+
+----------------------------------
+OUTPUT STRUCTURE (MANDATORY)
+----------------------------------
+
+# 1. MAIN TITLE
+- Use the topic name only
+
+# 2. CORE DEFINITION
+- 1–3 bullets
+- Must be precise and exam-usable
+
+----------------------------------
+
+# 3. KEY MODELS / FRAMEWORKS (MANDATORY IF PRESENT)
+
+For each model/framework:
+
+## [Model Name]
+
+🔹 What it is
+- 1–2 lines max
+
+🔹 Components
+- Bullet list
+- Each component = 1 short line
+
+👉 Exam Insight (ONLY if important)
+- Focus on what is commonly tested
+
+----------------------------------
+
+# 4. MAIN TOPIC SECTIONS (MANDATORY — FULL COVERAGE)
+
+You MUST cover ALL major topic groups in the source.
+
+For each section:
+
+## [Section Title]
+
+🔹 Definition
+- 1–2 lines
+
+🔹 Key Points
+- 5–7 bullets max
+- Each bullet = ONE idea only
+
+🔹 Named Elements (IF PRESENT)
+- Reproduce exact lists from the source
+- Examples:
+  - stages
+  - factors
+  - roles
+  - categories
+
+🔹 Example (ONLY if useful)
+- 1 short real-world example
+
+👉 Exam Tip (ONLY if relevant)
+- 1 line
+
+----------------------------------
+
+# 5. PROCESSES / STAGES (MANDATORY IF PRESENT)
+
+## [Process Name]
+
+List all steps exactly:
+
+1. Step name
+- 1 line explanation
+
+(Must be complete and ordered)
+
+----------------------------------
+
+# 6. CLASSIFICATIONS / CATEGORIES (MANDATORY IF PRESENT)
+
+- Bullet list
+- Include percentages or distinctions if available
+- Each item = 1 line only
+
+----------------------------------
+
+# 7. COMPARISONS (IF PRESENT)
+
+Use this format:
+
+Aspect → A vs B
+
+(No tables. Keep UI-safe.)
+
+----------------------------------
+
+# 8. FINAL REVISION SECTION (MANDATORY)
+
+## ✅ Must-Know Concepts
+- 6–10 bullets
+- Only high-yield exam points
+
+## ⚠️ Common Pitfalls
+- 3–6 bullets
+- Focus on typical student mistakes
+
+----------------------------------
+CRITICAL COVERAGE RULES
+----------------------------------
+
+- You MUST cover the ENTIRE source, not just the beginning
+- If multiple major themes exist, include ALL of them
+- Do NOT produce a front-heavy summary
+- Do NOT skip sections even if they appear later in the content
+
+----------------------------------
+ANTI-FLUFF RULES (STRICT)
+----------------------------------
+
+DO NOT use vague phrases such as:
+- "this chapter explores"
+- "helps understand"
+- "is important"
+- "is significant"
+
+Every bullet must contain a concrete, testable idea.
+
+----------------------------------
+CLARITY RULES
+----------------------------------
+
+- NO long paragraphs
+- Short bullets only
+- Each bullet = ONE idea
+- No repetition
+- Use simple language
+- Keep spacing tight and consistent
+
+----------------------------------
+DEPTH BALANCE RULE
+----------------------------------
+
+Be concise per sentence, but NOT shallow in coverage.
+
+Do NOT sacrifice important topics just to keep the output short.
+
+Target length guideline: around ${targetWords} words when the source supports it, but prioritize coverage and structure over brevity.
+
+----------------------------------
+WEAK CONTENT RULE
+----------------------------------
+
+If the source is weak:
+- reduce detail
+- DO NOT invent or hallucinate
+
+----------------------------------
+OUTPUT FORMAT (MANDATORY)
+----------------------------------
+
+Return ONLY valid JSON:
+
+{
+  "text": "<structured summary content>"
+}
 ${guidancePrompt}
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
