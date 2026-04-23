@@ -414,6 +414,58 @@ ${text}
 """`;
 }
 
+function buildStrictSummaryPrompt(text, language, options, sourceTier, sampled) {
+  const languageName = language === "arabic" ? "Arabic" : "English";
+  const targetWords = getSummaryWordTarget(options.length, sourceTier);
+  const guidancePrompt = buildRegenerationGuidancePrompt(options);
+
+  return `Create a structured study summary in ${languageName}.
+
+Write for exam preparation, not for general reading.
+The summary must be comprehensive, grounded in the source, and easy to revise quickly.
+
+Coverage requirements:
+- Cover the full source, including later sections. Do not make the summary front-heavy.
+- Include all major topics, key concepts, definitions, models, frameworks, processes, stages, classifications, comparisons, and named lists when they are supported by the source.
+- Preserve important details needed for exams instead of over-compressing the material.
+- Keep every claim grounded in the provided text. If evidence is partial or thin, stay explicit and do not invent missing content.
+
+Structure requirements for the summary content inside "text":
+- Start with a clear title line.
+- Use short section headings for the major topic groups.
+- Under each section, use compact bullets or short numbered steps when order matters.
+- Include definitions, key points, components, distinctions, and examples only when supported.
+- End with a "Quick Revision" section and a short "Common Pitfalls" section.
+
+Quality rules:
+- Use concise, concrete study language.
+- Avoid filler, vague claims, and repetition.
+- Keep paragraphs short and scannable.
+- Prefer one idea per bullet.
+- Target around ${targetWords} words when the source supports it, but prioritize completeness and structure over brevity.
+${guidancePrompt}
+
+OUTPUT FORMAT IS STRICT AND NON-NEGOTIABLE.
+Return ONLY valid JSON.
+Do not use markdown code fences.
+Do not add any text before or after the JSON.
+Do not add explanations.
+
+Required shape:
+{
+  "text": "<structured summary content>"
+}
+
+The "text" value must be a single string containing the full formatted summary.
+
+Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
+
+Study material:
+"""
+${text}
+"""`;
+}
+
 function buildFlashcardsPrompt(text, language, options, sourceTier, sampled) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const cardCount = getFlashcardTargetCount(sourceTier);
@@ -528,7 +580,7 @@ function assertNonEmptyGenerationOutput(generationType, output) {
 function buildPromptForGeneration({ generationType, language, options, sourceText, sourceTier, sampled }) {
   if (generationType === DOCUMENT_GENERATION_TYPES.summary) {
     return {
-      prompt: buildSummaryPrompt(sourceText, language, options, sourceTier, sampled),
+      prompt: buildStrictSummaryPrompt(sourceText, language, options, sourceTier, sampled),
       effectiveOptions: options,
     };
   }
