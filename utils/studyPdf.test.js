@@ -189,29 +189,42 @@ test("summary parsing converts inline hyphen text into structured bullet lists",
   ]);
 });
 
-test("summary section builder produces the required English export sections", () => {
+test("summary section builder preserves actual summary section labels", () => {
   const sections = __studyPdfTestables.buildSummarySections(`
-## Core Themes
-
-The candidate should explain system design tradeoffs clearly.
-
-## Assessment Criteria
-
-- Communication
-- Technical depth
-
-## Interview Flow
-
-Opening discussion. Deep dive on project decisions. Final wrap-up.
+Title: Understanding Consumer and Business Buyer Behavior
+Core Definition: Consumer behavior covers final consumers, while business buyer behavior covers organizational purchasing.
+Main Sections:
+- Consumer Buyer Behavior:
+  - Cultural factors
+  - Social factors
+- Business Buyer Behavior:
+  - Straight rebuy
+  - Modified rebuy
+Quick Revision:
+- Consumer vs. business distinctions
+Common Pitfalls:
+- Mixing consumer decision stages with business buying steps
   `);
 
   assert.deepEqual(
     sections.map((section) => section.title),
-    ["Key Themes", "Assessment Areas", "Interview Structure"],
+    ["Title", "Core Definition", "Main Sections", "Quick Revision", "Common Pitfalls"],
   );
   assert.ok(sections[0].blocks.length > 0);
-  assert.ok(sections[1].blocks.length > 0);
   assert.ok(sections[2].blocks.length > 0);
+});
+
+test("summary section builder does not create empty placeholder sections", () => {
+  const sections = __studyPdfTestables.buildSummarySections(`
+Title: Short Summary
+Quick Revision:
+- Recall point one
+  `);
+
+  assert.deepEqual(
+    sections.map((section) => section.title),
+    ["Title", "Quick Revision"],
+  );
 });
 
 test("paragraph normalization removes accidental line breaks inside sentences", () => {

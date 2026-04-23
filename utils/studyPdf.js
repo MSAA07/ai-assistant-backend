@@ -83,11 +83,6 @@ const HEADER_LAYOUT = Object.freeze({
   dividerAfter: SPACING.sm,
 });
 
-const SUMMARY_SECTION_ORDER = Object.freeze([
-  "Key Themes",
-  "Assessment Areas",
-  "Interview Structure",
-]);
 const PARAGRAPH_BREAK_TOKEN = "__PARA_BREAK__";
 
 const ARABIC_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
@@ -861,55 +856,131 @@ function parseSummaryBlocks(summary) {
   return blocks;
 }
 
-function classifySummarySection(title = "", text = "") {
-  const haystack = `${normalizeString(title)} ${normalizeString(text)}`.toLowerCase();
-
-  if (/(interview|conversation|discussion|format|flow|opening|closing|structure)/.test(haystack)) {
-    return "Interview Structure";
-  }
-  if (/(assessment|evaluation|criteria|competenc|skill|strength|weakness|question area|screening)/.test(haystack)) {
-    return "Assessment Areas";
+function parseSummarySectionLine(line = "") {
+  const normalized = normalizeString(line);
+  if (!normalized || /^[-*â€¢]\s+/.test(normalized) || /^\d+[.)]\s+/.test(normalized)) {
+    return null;
   }
 
-  return "Key Themes";
+  if (/^##\s+/.test(normalized)) {
+    return {
+      title: normalizeString(normalized.replace(/^##\s+/, "")),
+      remainder: "",
+    };
+  }
+
+  const match = normalized.match(/^([^:]{1,80}):\s*(.*)$/);
+  if (!match) {
+    return null;
+  }
+
+  const title = normalizeInlineSpacing(match[1]);
+  if (!title || /[.!?]/.test(title) || title.split(/\s+/).length > 8) {
+    return null;
+  }
+
+  return {
+    title,
+    remainder: normalizeString(match[2]),
+  };
 }
 
 function buildSummarySections(summary) {
-  const parsedBlocks = parseSummaryBlocks(summary);
-  const sections = new Map(SUMMARY_SECTION_ORDER.map((title) => [title, []]));
-  let currentSection = "Key Themes";
+  const source = normalizeString(summary).replace(/\r\n?/g, "\n");
+  if (!source) {
+    return [];
+  }
 
-  parsedBlocks.forEach((block) => {
-    if (block.type === "heading") {
-      currentSection = classifySummarySection(block.text, block.text);
+  const sections = [];
+  let currentSection = null;
+  let paragraphLines = [];
+  let listItems = [];
+
+  const ensureSection = (fallbackTitle = "Summary") => {
+    if (!currentSection) {
+      currentSection = { title: fallbackTitle, blocks: [] };
+      sections.push(currentSection);
+    }
+    return currentSection;
+  };
+
+  const flushParagraph = () => {
+    const paragraph = normalizeParagraphText(paragraphLines.join(" "));
+    paragraphLines = [];
+    if (!paragraph) {
       return;
     }
 
-    const sampleText = block.type === "list" ? block.items.join(" ") : block.text;
-    const targetSection = currentSection || classifySummarySection("", sampleText);
-    sections.get(targetSection).push(block);
+    const target = ensureSection();
+    splitEditorialParagraphs(paragraph).forEach((text) => {
+      target.blocks.push({ type: "paragraph", text });
+    });
+  };
+
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+
+    const target = ensureSection();
+    target.blocks.push({ type: "list", items: listItems });
+    listItems = [];
+  };
+
+  source.split("\n").forEach((rawLine) => {
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+
+    const sectionLine = parseSummarySectionLine(line);
+    if (sectionLine) {
+      flushParagraph();
+      flushList();
+      currentSection = {
+        title: sectionLine.title,
+        blocks: [],
+      };
+      sections.push(currentSection);
+
+      if (sectionLine.remainder) {
+        splitEditorialParagraphs(sectionLine.remainder).forEach((text) => {
+          currentSection.blocks.push({ type: "paragraph", text });
+        });
+      }
+      return;
+    }
+
+    if (/^[-*â€¢]\s+/.test(line) || /^\d+[.)]\s+/.test(line)) {
+      flushParagraph();
+      listItems.push(normalizeBulletText(line));
+      return;
+    }
+
+    flushList();
+    paragraphLines.push(line);
   });
 
-  const assignedCount = SUMMARY_SECTION_ORDER.reduce((total, title) => total + sections.get(title).length, 0);
-  if (assignedCount === 0) {
-    return SUMMARY_SECTION_ORDER.map((title) => ({ title, blocks: [] }));
+  flushParagraph();
+  flushList();
+
+  const nonEmptySections = sections.filter((section) => Array.isArray(section.blocks) && section.blocks.length > 0);
+  if (nonEmptySections.length > 0) {
+    return nonEmptySections;
   }
 
-  const nonEmpty = SUMMARY_SECTION_ORDER.filter((title) => sections.get(title).length > 0);
-  if (nonEmpty.length === 1) {
-    const [sourceTitle] = nonEmpty;
-    const sourceBlocks = sections.get(sourceTitle);
-    const bucketed = SUMMARY_SECTION_ORDER.map((title) => ({ title, blocks: [] }));
-
-    sourceBlocks.forEach((block, index) => {
-      const bucketIndex = Math.min(index, SUMMARY_SECTION_ORDER.length - 1);
-      bucketed[bucketIndex].blocks.push(block);
-    });
-
-    return bucketed;
+  const fallbackBlocks = parseSummaryBlocks(summary);
+  if (fallbackBlocks.length === 0) {
+    return [];
   }
 
-  return SUMMARY_SECTION_ORDER.map((title) => ({ title, blocks: sections.get(title) }));
+  return [{
+    title: "Summary",
+    blocks: fallbackBlocks,
+  }];
 }
 
 function renderBulletList(doc, items, options = {}) {
@@ -1084,25 +1155,23 @@ function renderSummary(doc, summary) {
   const sections = buildSummarySections(summary);
 
   sections.forEach((section, sectionIndex) => {
+    if (!section || !Array.isArray(section.blocks) || section.blocks.length === 0) {
+      return;
+    }
+
     renderSubsectionTitle(doc, section.title);
 
-    if (section.blocks.length === 0) {
-      renderBodyParagraph(doc, "No content was available for this section.", {
-        color: COLORS.muted,
-      });
-    } else {
-      section.blocks.forEach((block) => {
-        if (block.type === "list") {
-          renderBulletList(doc, block.items, { itemGap: PDF_SYSTEM.components.summary.listItemGap });
-          doc.y += PDF_SYSTEM.components.summary.paragraphGap;
-          return;
-        }
+    section.blocks.forEach((block) => {
+      if (block.type === "list") {
+        renderBulletList(doc, block.items, { itemGap: PDF_SYSTEM.components.summary.listItemGap });
+        doc.y += PDF_SYSTEM.components.summary.paragraphGap;
+        return;
+      }
 
-        renderBodyParagraph(doc, block.text, {
-          spacingAfter: PDF_SYSTEM.components.summary.paragraphGap,
-        });
+      renderBodyParagraph(doc, block.text, {
+        spacingAfter: PDF_SYSTEM.components.summary.paragraphGap,
       });
-    }
+    });
 
     if (sectionIndex < sections.length - 1) {
       doc.y += PDF_SYSTEM.components.summary.sectionGap;
