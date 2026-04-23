@@ -422,26 +422,43 @@ function buildStrictSummaryPrompt(text, language, options, sourceTier, sampled) 
   return `Create a structured study summary in ${languageName}.
 
 Write for exam preparation, not for general reading.
-The summary must be comprehensive, grounded in the source, and easy to revise quickly.
+The summary must be comprehensive, balanced across the whole source, grounded in the source, and easy to revise quickly.
 
 Coverage requirements:
-- Cover the full source, including later sections. Do not make the summary front-heavy.
-- Include all major topics, key concepts, definitions, models, frameworks, processes, stages, classifications, comparisons, and named lists when they are supported by the source.
+- Cover the full source from beginning to end, including later sections. Do not make the summary front-heavy.
+- Include every major topic group supported by the source, not just the opening material.
 - Preserve important details needed for exams instead of over-compressing the material.
 - Keep every claim grounded in the provided text. If evidence is partial or thin, stay explicit and do not invent missing content.
+
+Named-source requirements:
+- When the source includes named factors, stages, categories, roles, classifications, frameworks, models, or processes, include those names explicitly.
+- Do not replace named source material with vague paraphrases.
+- When order matters, keep the original sequence.
+- When distinctions or contrasts are stated, make them explicit.
 
 Structure requirements for the summary content inside "text":
 - Start with a clear title line.
 - Use short section headings for the major topic groups.
-- Under each section, use compact bullets or short numbered steps when order matters.
-- Include definitions, key points, components, distinctions, and examples only when supported.
-- End with a "Quick Revision" section and a short "Common Pitfalls" section.
+- Under each section, use concise bullets.
+- Use short numbered steps when the source gives a sequence, process, or stages.
+- Include definitions, components, conditions, distinctions, examples, and named lists only when supported.
+- End with a "Quick Revision" section and a "Common Pitfalls" section.
 
-Quality rules:
+Section quality requirements:
+- Each main section should help a student revise that part of the chapter directly.
+- Prefer recall-friendly lists, distinctions, and concrete points over descriptive prose.
+- If the source contains commonly confused ideas, contrasts, exceptions, conditions, or limitations, include them clearly.
+
+Ending section requirements:
+- "Quick Revision" must contain real high-yield recall points drawn from across the chapter, including later sections when present.
+- "Common Pitfalls" must contain likely confusions or mistakes specific to the topic, based on the source content, not generic study advice.
+
+Style rules:
 - Use concise, concrete study language.
 - Avoid filler, vague claims, and repetition.
 - Keep paragraphs short and scannable.
 - Prefer one idea per bullet.
+- Do not use generic lines such as "this chapter explores", "this is important", or similar filler.
 - Target around ${targetWords} words when the source supports it, but prioritize completeness and structure over brevity.
 ${guidancePrompt}
 
