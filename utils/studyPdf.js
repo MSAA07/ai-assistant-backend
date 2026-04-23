@@ -738,6 +738,37 @@ function normalizeBulletText(value) {
     .replace(/^\d+[.)]\s+/, "");
 }
 
+function parseSummaryListItem(rawLine = "") {
+  const line = typeof rawLine === "string" ? rawLine.replace(/\t/g, "    ") : "";
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const indentMatch = line.match(/^(\s*)/);
+  const indentLength = indentMatch ? indentMatch[1].length : 0;
+  const bulletMatch = trimmed.match(/^([-*â€¢]|\d+[.)])\s+/);
+  if (!bulletMatch) {
+    return null;
+  }
+
+  const marker = bulletMatch[1];
+  const ordered = /^\d/.test(marker);
+  const level = Math.max(0, Math.min(2, Math.floor(indentLength / 2)));
+  const text = normalizeBulletText(trimmed);
+
+  if (!text) {
+    return null;
+  }
+
+  return {
+    text,
+    level,
+    ordered,
+    marker,
+  };
+}
+
 function splitSentenceGroups(text) {
   return normalizeParagraphText(text)
     .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
@@ -983,6 +1014,97 @@ function buildSummarySections(summary) {
   }];
 }
 
+function buildSummarySectionsForPdf(summary) {
+  const source = normalizeString(summary).replace(/\r\n?/g, "\n");
+  if (!source) {
+    return [];
+  }
+
+  const sections = [];
+  let currentSection = null;
+  let paragraphLines = [];
+  let listItems = [];
+
+  const ensureSection = (fallbackTitle = "Summary") => {
+    if (!currentSection) {
+      currentSection = { title: fallbackTitle, blocks: [] };
+      sections.push(currentSection);
+    }
+    return currentSection;
+  };
+
+  const flushParagraph = () => {
+    const paragraph = normalizeParagraphText(paragraphLines.join(" "));
+    paragraphLines = [];
+    if (!paragraph) {
+      return;
+    }
+
+    const target = ensureSection();
+    splitEditorialParagraphs(paragraph).forEach((text) => {
+      target.blocks.push({ type: "paragraph", text });
+    });
+  };
+
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+
+    const target = ensureSection();
+    target.blocks.push({ type: "list", items: listItems });
+    listItems = [];
+  };
+
+  source.split("\n").forEach((rawLine) => {
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+
+    const sectionLine = parseSummarySectionLine(line);
+    if (sectionLine) {
+      flushParagraph();
+      flushList();
+      currentSection = {
+        title: sectionLine.title,
+        blocks: [],
+      };
+      sections.push(currentSection);
+
+      if (sectionLine.remainder) {
+        splitEditorialParagraphs(sectionLine.remainder).forEach((text) => {
+          currentSection.blocks.push({ type: "paragraph", text });
+        });
+      }
+      return;
+    }
+
+    const listItem = parseSummaryListItem(rawLine);
+    if (listItem) {
+      flushParagraph();
+      listItems.push(listItem);
+      return;
+    }
+
+    flushList();
+    paragraphLines.push(line);
+  });
+
+  flushParagraph();
+  flushList();
+
+  const nonEmptySections = sections.filter((section) => Array.isArray(section.blocks) && section.blocks.length > 0);
+  if (nonEmptySections.length > 0) {
+    return nonEmptySections;
+  }
+
+  return buildSummarySections(summary);
+}
+
 function renderBulletList(doc, items, options = {}) {
   const { x, width } = getContentMetrics(doc);
   const indent = options.indent ?? SPACING.md;
@@ -1025,6 +1147,64 @@ function renderBulletList(doc, items, options = {}) {
       lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
       color: options.color ?? COLORS.text,
       direction: options.direction,
+      advanceCursor: false,
+    });
+    doc.y += blockHeight + spacingAfter;
+  });
+}
+
+function renderSummaryBulletList(doc, items, options = {}) {
+  const { x, width } = getContentMetrics(doc);
+  const baseIndent = options.indent ?? SPACING.md;
+  const markerGap = options.markerGap ?? SPACING.sm;
+  const itemGap = options.itemGap ?? PDF_SYSTEM.components.summary.listItemGap;
+  const nestedIndentStep = options.nestedIndentStep ?? 14;
+
+  items.forEach((item, index) => {
+    const bulletText = normalizeString(typeof item === "string" ? item : item?.text);
+    if (!bulletText) {
+      return;
+    }
+
+    const level = Number.isFinite(Number(item?.level)) ? Number(item.level) : 0;
+    const indent = baseIndent + (level * nestedIndentStep);
+    const contentWidth = width - indent;
+    const marker = typeof item === "object" && item?.ordered
+      ? `${index + 1}.`
+      : "•";
+    const isLabelLike = /:\s*$/.test(bulletText);
+    const fontSize = options.fontSize ?? PDF_SYSTEM.typography.body.size;
+    const lineGap = options.lineGap ?? PDF_SYSTEM.typography.body.lineGap;
+    const lineMetrics = getLineMetrics(doc, bulletText, {
+      width: contentWidth - markerGap,
+      fontSize,
+      lineGap,
+      direction: options.direction,
+      bold: isLabelLike,
+    });
+    const blockHeight = Math.max(lineMetrics.height, PDF_SYSTEM.typography.body.size);
+    const spacingAfter = index < items.length - 1 ? itemGap : 0;
+
+    ensureVerticalSpace(doc, blockHeight + spacingAfter);
+    drawWrappedText(doc, marker, {
+      x,
+      y: doc.y,
+      width: indent,
+      fontSize: PDF_SYSTEM.typography.label.size,
+      bold: true,
+      lineGap: PDF_SYSTEM.typography.label.lineGap,
+      color: COLORS.text,
+      advanceCursor: false,
+    });
+    drawWrappedText(doc, bulletText, {
+      x: x + indent,
+      y: doc.y,
+      width: contentWidth - markerGap,
+      fontSize,
+      lineGap,
+      color: options.color ?? COLORS.text,
+      direction: options.direction,
+      bold: isLabelLike,
       advanceCursor: false,
     });
     doc.y += blockHeight + spacingAfter;
@@ -1152,7 +1332,7 @@ function renderCard(doc, segments, options = {}) {
 }
 
 function renderSummary(doc, summary) {
-  const sections = buildSummarySections(summary);
+  const sections = buildSummarySectionsForPdf(summary);
 
   sections.forEach((section, sectionIndex) => {
     if (!section || !Array.isArray(section.blocks) || section.blocks.length === 0) {
@@ -1161,20 +1341,24 @@ function renderSummary(doc, summary) {
 
     renderSubsectionTitle(doc, section.title);
 
-    section.blocks.forEach((block) => {
+    section.blocks.forEach((block, blockIndex) => {
+      const spacingAfter = blockIndex === section.blocks.length - 1 ? 0 : SPACING.sm;
+
       if (block.type === "list") {
-        renderBulletList(doc, block.items, { itemGap: PDF_SYSTEM.components.summary.listItemGap });
-        doc.y += PDF_SYSTEM.components.summary.paragraphGap;
+        renderSummaryBulletList(doc, block.items, {
+          itemGap: PDF_SYSTEM.components.summary.listItemGap,
+        });
+        doc.y += spacingAfter;
         return;
       }
 
       renderBodyParagraph(doc, block.text, {
-        spacingAfter: PDF_SYSTEM.components.summary.paragraphGap,
+        spacingAfter,
       });
     });
 
     if (sectionIndex < sections.length - 1) {
-      doc.y += PDF_SYSTEM.components.summary.sectionGap;
+      doc.y += SPACING.md;
     }
   });
 }
@@ -1190,6 +1374,7 @@ export const __studyPdfTestables = Object.freeze({
   computeHeaderLayoutMetrics,
   parseSummaryBlocks,
   buildSummarySections,
+  buildSummarySectionsForPdf,
   normalizeInlineSpacing,
   normalizeParagraphText,
   measureFlashcardCardHeight,

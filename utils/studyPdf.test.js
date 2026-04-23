@@ -227,6 +227,31 @@ Quick Revision:
   );
 });
 
+test("summary pdf section builder preserves nested list levels for hierarchy", () => {
+  const sections = __studyPdfTestables.buildSummarySectionsForPdf(`
+Main Sections:
+- Consumer Buyer Behavior:
+  - Cultural factors
+  - Social factors
+- Business Buyer Behavior:
+  - Straight rebuy
+  - Modified rebuy
+  `);
+
+  assert.equal(sections[0].title, "Main Sections");
+  assert.deepEqual(
+    sections[0].blocks[0].items,
+    [
+      { text: "Consumer Buyer Behavior:", level: 0, ordered: false, marker: "-" },
+      { text: "Cultural factors", level: 1, ordered: false, marker: "-" },
+      { text: "Social factors", level: 1, ordered: false, marker: "-" },
+      { text: "Business Buyer Behavior:", level: 0, ordered: false, marker: "-" },
+      { text: "Straight rebuy", level: 1, ordered: false, marker: "-" },
+      { text: "Modified rebuy", level: 1, ordered: false, marker: "-" },
+    ],
+  );
+});
+
 test("paragraph normalization removes accidental line breaks inside sentences", () => {
   assert.equal(
     __studyPdfTestables.normalizeParagraphText("First line\ncontinues here\n\nNext paragraph"),
