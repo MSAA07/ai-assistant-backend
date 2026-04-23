@@ -427,6 +427,9 @@ The summary must be comprehensive, balanced across the whole source, grounded in
 Coverage requirements:
 - Cover the full source from beginning to end, including later sections. Do not make the summary front-heavy.
 - Include every major topic group supported by the source, not just the opening material.
+- The summary MUST cover ALL major topic groups from the source.
+- Do NOT stop after early sections.
+- If the source includes both consumer and business buyer behavior, both MUST be included.
 - Preserve important details needed for exams instead of over-compressing the material.
 - Keep every claim grounded in the provided text. If evidence is partial or thin, stay explicit and do not invent missing content.
 
@@ -435,14 +438,29 @@ Named-source requirements:
 - Do not replace named source material with vague paraphrases.
 - When order matters, keep the original sequence.
 - When distinctions or contrasts are stated, make them explicit.
+- When the source includes stages, factors, categories, roles, or processes, you MUST include them explicitly as lists.
 
 Structure requirements for the summary content inside "text":
-- Start with a clear title line.
-- Use short section headings for the major topic groups.
+- Use plain text only.
+- Do NOT use markdown formatting such as **bold**, *italic*, or # headings.
+- Use only this structure:
+  Title
+  Core Definition
+  Main Sections
+  Processes
+  Classifications
+  Quick Revision
+  Common Pitfalls
+- Do NOT use labels such as Key Themes, Assessment Areas, or Interview Structure.
+- Write headings in simple plain text forms such as:
+  Title:
+  Core Definition:
+  Main Section:
+  Subsection:
 - Under each section, use concise bullets.
-- Use short numbered steps when the source gives a sequence, process, or stages.
+- Use short numbered steps only when the source gives a sequence, process, or stages.
 - Include definitions, components, conditions, distinctions, examples, and named lists only when supported.
-- End with a "Quick Revision" section and a "Common Pitfalls" section.
+- End with Quick Revision and Common Pitfalls.
 
 Section quality requirements:
 - Each main section should help a student revise that part of the chapter directly.
@@ -464,16 +482,12 @@ ${guidancePrompt}
 
 OUTPUT FORMAT IS STRICT AND NON-NEGOTIABLE.
 Return ONLY valid JSON.
-Do not use markdown code fences.
-Do not add any text before or after the JSON.
-Do not add explanations.
+Do not include any text before or after JSON.
 
-Required shape:
+Required:
 {
-  "text": "<structured summary content>"
+  "text": "<structured summary>"
 }
-
-The "text" value must be a single string containing the full formatted summary.
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
 
