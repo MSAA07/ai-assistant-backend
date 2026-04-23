@@ -232,76 +232,30 @@ function buildSummaryPrompt(text, language, options, sourceTier, sampled) {
   const targetWords = getSummaryWordTarget(options.length, sourceTier);
   const guidancePrompt = buildRegenerationGuidancePrompt(options);
 
-  return `Create COMPLETE, structured STUDY MATERIAL in ${languageName}.
-Do NOT write a generic summary.
-Transform the source into exam-ready study material a student can study from directly.
+  return `You are an expert academic assistant specialized in transforming study material into exam-ready summaries in ${languageName}.
 
 Return valid JSON only with this shape:
 {"text":"..."}
 
 Rules:
-- STRICT FORMAT inside "text":
-  Title: <Document / Chapter Title>
-
-  Core Idea:
-  - 2-3 bullets explaining the purpose of the chapter
-
-  ---
-
-  Main Concepts:
-
-  <Concept Name>
-  - Definition: clear explanation (1-2 lines)
-  - Key Points:
-    - bullet
-    - bullet
-
-  (Repeat for ALL major concepts)
-
-  ---
-
-  Models & Theories:
-
-  <Model Name>
-  - What it is:
-  - Components:
-    - bullet
-  - Why it matters:
-
-  (Include ALL named models/theories found in the source.)
-
-  ---
-
-  Important Insights:
-  - bullet
-  - bullet
-  - bullet
-
-  ---
-
-  Exam-Ready Takeaways:
-  - bullet (clear, direct, testable)
-  - bullet
-  - bullet
-- Coverage guarantee:
-  - Include ALL major topics from the source.
-  - Do NOT skip sections with models, concepts, or definitions.
-- Concept completeness:
-  - Every important concept must be named and clearly explained.
-  - Include key characteristics when applicable.
-- No over-compression:
-  - Organize content instead of aggressively shortening it.
-  - Preserve details needed for exams.
-- Scannability constraints:
-  - No paragraph longer than 2 lines.
-  - Use short bullets and compact sections.
-  - No vague or generic filler phrases.
-- Adaptive depth:
-  - If source is dense, include more concepts/models.
-  - If source is lighter, keep the same structure with fewer items.
-- Target length guideline: around ${targetWords} words, but prioritize completeness and structure over brevity.
-- If evidence is partial, include only what is supported by the provided text.
-- Do not add markdown fences.
+- Analyze the provided study material and generate a comprehensive, structured summary that helps a student enter an exam with a strong grasp of all important supported concepts.
+- Output plain structured study text inside "text". Do not return JSON inside JSON.
+- Organize the summary with clear headings and subheadings.
+- Use bullet points where they improve readability.
+- Present information in a logical flow from basic to advanced when the source supports that order.
+- Include all important supported concepts, definitions, theories, formulas, processes, arguments, conclusions, constraints, and distinctions.
+- Do not omit important supported details, but avoid unnecessary fluff and repetition.
+- Break down complex ideas into simple, easy-to-understand explanations.
+- Avoid overly technical wording unless necessary, and explain it clearly when used.
+- For complex or abstract concepts, include brief grounded examples or analogies only when they are directly supported by the source or are safe reformulations that add no new facts.
+- Emphasize important testable points, key takeaways, common pitfalls, and what-to-remember notes only when they are supported by the material.
+- End with a section titled "Quick Revision".
+- After "Quick Revision", include a short checklist titled "Before the Exam" covering the most critical things the student must know.
+- Keep the summary efficient but deep, with a target length around ${targetWords} words when the source supports it.
+- If the source is thin, partial, or ambiguous, reduce the depth and include only what is clearly supported by the provided text.
+- If evidence is incomplete, do not fill gaps with outside knowledge.
+- Do not invent facts, references, examples, formulas, exam questions, or section names not supported by the material.
+- Do not change the output contract or add markdown fences.
 ${guidancePrompt}
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
