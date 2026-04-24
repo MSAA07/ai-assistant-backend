@@ -439,6 +439,12 @@ Named-source requirements:
 - When distinctions or contrasts are stated, make them explicit.
 - When the source includes stages, factors, categories, roles, or processes, include them explicitly as lists.
 
+Internal coverage check before final JSON:
+- Before writing the final JSON, silently verify that every major source topic and every named model, framework, process, category, role, factor group, classification, stage, and comparison found in the source is represented in the summary.
+- If a named high-yield item is present in the source but missing from the draft summary, add it before finalizing.
+- This internal check must especially look for major factor groups, named models and frameworks, ordered processes and stages, classifications and categories, decision roles, comparisons, adoption sections, e-procurement sections, and business-buying sections when present.
+- Do not output this checklist or mention that you performed it.
+
 Structure requirements for the summary content inside "text":
 - Use plain text only.
 - Do not use markdown formatting such as **bold**, *italic*, or # headings.
