@@ -419,18 +419,17 @@ function buildStrictSummaryPrompt(text, language, options, sourceTier, sampled) 
   const targetWords = getSummaryWordTarget(options.length, sourceTier);
   const guidancePrompt = buildRegenerationGuidancePrompt(options);
 
-  return `Create a structured study summary in ${languageName}.
+  return `Create an exam-ready study summary in ${languageName}.
 
-Write for exam preparation, not for general reading.
-The summary must be comprehensive, balanced across the whole source, grounded in the source, and easy to revise quickly.
+This is not a general overview. The output must be useful for revision, dense with source-specific material, and balanced across the full source.
 
 Coverage requirements:
-- Cover the full source from beginning to end, including later sections. Do not make the summary front-heavy.
-- Include every major topic group supported by the source, not just the opening material.
-- The summary MUST cover ALL major topic groups from the source.
-- Do NOT stop after early sections.
-- If the source includes both consumer and business buyer behavior, both MUST be included.
+- Cover all major topic groups from the beginning, middle, and end of the source.
+- Do not focus mostly on the first part of the source.
+- Later sections must receive meaningful treatment, not a token final bullet.
 - Preserve important details needed for exams instead of over-compressing the material.
+- If the source includes both consumer buyer behavior and business buyer behavior, cover both clearly.
+- If the source includes personal factors, psychological factors, Maslow, buyer decision process, adoption process, business buying situations, buying center, or e-procurement, include them explicitly.
 - Keep every claim grounded in the provided text. If evidence is partial or thin, stay explicit and do not invent missing content.
 
 Named-source requirements:
@@ -438,56 +437,67 @@ Named-source requirements:
 - Do not replace named source material with vague paraphrases.
 - When order matters, keep the original sequence.
 - When distinctions or contrasts are stated, make them explicit.
-- When the source includes stages, factors, categories, roles, or processes, you MUST include them explicitly as lists.
+- When the source includes stages, factors, categories, roles, or processes, include them explicitly as lists.
 
 Structure requirements for the summary content inside "text":
 - Use plain text only.
-- Do NOT use markdown formatting such as **bold**, *italic*, or # headings.
-- Use only this structure:
-  Title
-  Core Definition
-  Main Sections
-  Processes
-  Classifications
-  Quick Revision
-  Common Pitfalls
-- Do NOT use labels such as Key Themes, Assessment Areas, or Interview Structure.
-- Write headings in simple plain text forms such as:
+- Do not use markdown formatting such as **bold**, *italic*, or # headings.
+- Use plain text labels only:
   Title:
   Core Definition:
-  Main Section:
-  Subsection:
-- Under each section, use concise bullets.
-- Use short numbered steps only when the source gives a sequence, process, or stages.
-- Include definitions, components, conditions, distinctions, examples, and named lists only when supported.
+  Main Sections:
+  Processes:
+  Classifications:
+  Key Distinctions:
+  Quick Revision:
+  Common Pitfalls:
+- Keep those labels in that order when the source supports them.
+- If a label has no supported content, omit only that label except Title, Core Definition, Main Sections, Quick Revision, and Common Pitfalls.
+- Do not use labels such as Key Themes, Overview, Assessment Areas, Interview Structure, or Conclusion.
+- Use short dash bullets inside sections.
+- Use numbered steps only for ordered processes, stages, or sequences from the source.
 - End with Quick Revision and Common Pitfalls.
 
-Section quality requirements:
-- Each main section should help a student revise that part of the chapter directly.
-- Prefer recall-friendly lists, distinctions, and concrete points over descriptive prose.
-- If the source contains commonly confused ideas, contrasts, exceptions, conditions, or limitations, include them clearly.
+Depth requirements:
+- Each major section must include enough detail for exam revision, not one-line shallow coverage.
+- Include definitions, key components, conditions, examples, roles, stages, factors, categories, and named source items when available.
+- Main Sections must cover every major topic group. For each group, include a clear subsection line ending with ":" followed by concrete bullets.
+- Processes must include complete ordered steps for any decision process, adoption process, workflow, lifecycle, or staged model.
+- Classifications must include source categories, types, situations, roles, or factors with defining features.
+- Key Distinctions must include common comparisons and likely tested contrasts, such as consumer vs business behavior, personal vs psychological factors, need recognition vs information search, evaluation vs purchase decision, straight rebuy vs modified rebuy vs new task, or buying center roles when supported by the source.
+
+Exam-usefulness requirements:
+- Phrase bullets so they are answerable in exam language.
+- Include likely tested distinctions, contrasts, and comparisons when the source supports them.
+- Explain why named steps, roles, categories, or factors differ from each other.
+- Prefer concrete recall points over vague descriptive prose.
+- Avoid filler such as "this chapter explores", "helps understand", "is important", or "plays a role" unless the sentence states the specific tested idea.
 
 Ending section requirements:
-- "Quick Revision" must contain real high-yield recall points drawn from across the chapter, including later sections when present.
-- "Common Pitfalls" must contain likely confusions or mistakes specific to the topic, based on the source content, not generic study advice.
+- Quick Revision must contain 6 to 10 concrete high-yield recall points when the source has enough content.
+- Quick Revision must summarize testable source facts from across the full material, including later sections when present.
+- Common Pitfalls must contain 3 to 6 likely student confusions grounded in the source.
+- Common Pitfalls must focus on similar concepts, stages, roles, categories, or factors, not generic study advice.
 
-Style rules:
-- Use concise, concrete study language.
-- Avoid filler, vague claims, and repetition.
-- Keep paragraphs short and scannable.
-- Prefer one idea per bullet.
-- Do not use generic lines such as "this chapter explores", "this is important", or similar filler.
-- Target around ${targetWords} words when the source supports it, but prioritize completeness and structure over brevity.
+Concision requirements:
+- Target around ${targetWords} words when the source supports it.
+- Short bullets are preferred.
+- The summary should be compact but not shallow.
+- Every bullet must carry a concrete, testable idea.
 ${guidancePrompt}
 
 OUTPUT FORMAT IS STRICT AND NON-NEGOTIABLE.
 Return ONLY valid JSON.
-Do not include any text before or after JSON.
+Do not include text before or after the JSON.
+Do not use markdown code fences.
+Do not add explanations.
 
-Required:
+Required shape:
 {
   "text": "<structured summary>"
 }
+
+The "text" value must be a single string containing the full formatted summary.
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
 
