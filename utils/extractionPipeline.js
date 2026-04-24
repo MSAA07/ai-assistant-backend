@@ -14,6 +14,9 @@ import {
 } from "./limits.js";
 import { downloadFileToTmp, safeUnlink } from "./storage.js";
 
+const EXTRACTED_TEXT_CHUNK_CHAR_LIMIT = 3_000;
+const EXTRACTED_TEXT_CHUNK_MIN_SPLIT = 1_800;
+
 function buildExtractionResult(documentId, excerptCount, excerptSource) {
   return {
     documentId,
@@ -42,6 +45,70 @@ function sanitizeExcerpt(excerpt) {
     ...excerpt,
     content: sanitizeExtractedText(excerpt?.content),
   };
+}
+
+export function chunkExtractedTextForExcerpts(text, {
+  slideOrPage = 1,
+  excerptType = "slide_text",
+  charOffsetBase = 0,
+  maxChars = EXTRACTED_TEXT_CHUNK_CHAR_LIMIT,
+} = {}) {
+  const normalizedText = typeof text === "string" ? text.trim() : "";
+  if (!normalizedText) {
+    return [];
+  }
+
+  if (normalizedText.length <= maxChars) {
+    return [{
+      slideOrPage,
+      excerptType,
+      content: normalizedText,
+      charOffset: charOffsetBase,
+    }];
+  }
+
+  const excerpts = [];
+  let offset = 0;
+
+  while (offset < normalizedText.length) {
+    const remaining = normalizedText.length - offset;
+    if (remaining <= maxChars) {
+      const content = normalizedText.slice(offset).trim();
+      if (content) {
+        excerpts.push({
+          slideOrPage,
+          excerptType,
+          content,
+          charOffset: charOffsetBase + offset,
+        });
+      }
+      break;
+    }
+
+    const hardEnd = offset + maxChars;
+    const candidate = normalizedText.slice(offset, hardEnd);
+    const splitAt = Math.max(
+      candidate.lastIndexOf("\n\n"),
+      candidate.lastIndexOf("\n"),
+      candidate.lastIndexOf(". "),
+      candidate.lastIndexOf(" "),
+    );
+    const relativeEnd = splitAt >= EXTRACTED_TEXT_CHUNK_MIN_SPLIT ? splitAt + 1 : maxChars;
+    const content = normalizedText.slice(offset, offset + relativeEnd).trim();
+
+    if (content) {
+      excerpts.push({
+        slideOrPage,
+        excerptType,
+        content,
+        charOffset: charOffsetBase + offset,
+      });
+    }
+
+    offset += relativeEnd;
+  }
+
+  return excerpts;
 }
 
 const LATIN_LANGUAGE_PROFILES = Object.freeze([
@@ -340,14 +407,10 @@ async function extractPdf(filePath) {
   const data = await pdfParse(buffer);
   const pages = data.text.split("\f");
 
-  return pages
-    .map((pageText, index) => ({
-      slideOrPage: index + 1,
-      excerptType: "slide_text",
-      content: pageText.trim().slice(0, 3000),
-      charOffset: 0,
-    }))
-    .filter((excerpt) => excerpt.content.length > 0);
+  return pages.flatMap((pageText, index) => chunkExtractedTextForExcerpts(pageText, {
+    slideOrPage: index + 1,
+    excerptType: "slide_text",
+  }));
 }
 
 async function extractDocx(filePath) {

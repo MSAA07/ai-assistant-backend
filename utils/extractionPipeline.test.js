@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { detectDocumentLanguage, sanitizeExtractedText } from "./extractionPipeline.js";
+import {
+  chunkExtractedTextForExcerpts,
+  detectDocumentLanguage,
+  sanitizeExtractedText,
+} from "./extractionPipeline.js";
 
 function createExcerpt(content) {
   return {
@@ -16,6 +20,25 @@ test("detectDocumentLanguage recognizes spanish latin-script content", () => {
   ]);
 
   assert.equal(language, "spanish");
+});
+
+test("chunkExtractedTextForExcerpts preserves later PDF text instead of truncating", () => {
+  const start = "Consumer buyer behavior ".repeat(140);
+  const middle = "Maslow hierarchy adoption process ".repeat(120);
+  const end = "buying center e-procurement business buying situations ".repeat(90);
+  const chunks = chunkExtractedTextForExcerpts(`${start}${middle}${end}`, {
+    slideOrPage: 7,
+    excerptType: "slide_text",
+  });
+  const combined = chunks.map((chunk) => chunk.content).join(" ");
+
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.content.length <= 3000));
+  assert.ok(chunks.every((chunk) => chunk.slideOrPage === 7));
+  assert.equal(chunks[0].charOffset, 0);
+  assert.ok(chunks.at(-1).charOffset > 0);
+  assert.match(combined, /Maslow hierarchy adoption process/);
+  assert.match(combined, /buying center e-procurement/);
 });
 
 test("detectDocumentLanguage recognizes japanese content", () => {
