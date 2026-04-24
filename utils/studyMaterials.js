@@ -471,6 +471,7 @@ Depth requirements:
 - Each major section must include enough detail for exam revision, not one-line shallow coverage.
 - Include definitions, key components, conditions, examples, roles, stages, factors, categories, and named source items when available.
 - Main Sections must cover every major topic group. For each group, include a clear subsection line ending with ":" followed by concrete bullets.
+- If the source contains named models or frameworks, include a natural subsection under Main Sections named "Named Models and Frameworks:" with each source-present model named explicitly, such as Maslow when present.
 - Processes must include complete ordered steps for any decision process, adoption process, workflow, lifecycle, or staged model.
 - Classifications must include source categories, types, situations, roles, or factors with defining features.
 - Key Distinctions must include common comparisons and likely tested contrasts, such as consumer vs business behavior, personal vs psychological factors, need recognition vs information search, evaluation vs purchase decision, straight rebuy vs modified rebuy vs new task, or buying center roles when supported by the source.
