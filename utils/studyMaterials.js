@@ -430,6 +430,7 @@ Coverage requirements:
 - Preserve important details needed for exams instead of over-compressing the material.
 - If the source includes both consumer buyer behavior and business buyer behavior, cover both clearly.
 - If the source includes personal factors, psychological factors, Maslow, buyer decision process, adoption process, business buying situations, buying center, or e-procurement, include them explicitly.
+- For buyer-behavior sources, source-present high-yield labels must appear literally in the final summary text, including Maslow, Buyer Decision Process, Adoption Process, Business Buying Situations, Buying Center, E-Procurement, Personal Factors, and Psychological Factors.
 - Keep every claim grounded in the provided text. If evidence is partial or thin, stay explicit and do not invent missing content.
 
 Named-source requirements:
