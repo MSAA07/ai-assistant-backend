@@ -3,6 +3,13 @@ import PDFDocument from "pdfkit";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import {
+  DOCUMENT_GENERATION_STATUS,
+  DOCUMENT_GENERATION_TYPES,
+  normalizeGenerationOutput,
+  normalizeGenerationStatus,
+  normalizeGenerationType,
+} from "./documentGeneration.js";
 import { normalizeDocumentName, sanitizeDownloadFilename } from "./filenames.js";
 
 const bidi = bidiFactory();
@@ -84,6 +91,16 @@ const HEADER_LAYOUT = Object.freeze({
 });
 
 const PARAGRAPH_BREAK_TOKEN = "__PARA_BREAK__";
+const SUMMARY_SECTION_LABELS = new Set([
+  "title",
+  "core definition",
+  "main sections",
+  "processes",
+  "classifications",
+  "key distinctions",
+  "quick revision",
+  "common pitfalls",
+]);
 
 const ARABIC_CHARS = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
 const LATIN_CHARS = /[A-Za-z]/;
@@ -123,6 +140,40 @@ function normalizeInlineSpacing(value) {
     .replace(/\s*([+–—])\s*/g, " $1 ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function parseInlineSegments(value) {
+  const source = typeof value === "string" ? value : "";
+  if (!source) {
+    return [];
+  }
+
+  const segments = [];
+  const pattern = /\*\*(.*?)\*\*/g;
+  let cursor = 0;
+  let match;
+
+  while ((match = pattern.exec(source)) !== null) {
+    if (match.index > cursor) {
+      segments.push({ text: source.slice(cursor, match.index), strong: false });
+    }
+
+    if (match[1]) {
+      segments.push({ text: match[1], strong: true });
+    }
+
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < source.length) {
+    segments.push({ text: source.slice(cursor), strong: false });
+  }
+
+  return segments.filter((segment) => segment.text);
+}
+
+function stripInlineMarkdown(value) {
+  return parseInlineSegments(value).map((segment) => segment.text).join("");
 }
 
 function splitNormalizedParagraphFragments(value) {
@@ -462,6 +513,135 @@ function drawWrappedText(doc, value, options = {}) {
   return cursorY - y;
 }
 
+function tokenizeInlineSegments(segments = []) {
+  const tokens = [];
+
+  segments.forEach((segment) => {
+    const text = typeof segment?.text === "string" ? segment.text : "";
+    const parts = text.match(/\S+/g) ?? [];
+    parts.forEach((part) => {
+      tokens.push({ text: part, strong: Boolean(segment?.strong) });
+    });
+  });
+
+  return tokens;
+}
+
+function measureInlineToken(doc, token, options = {}) {
+  applyFont(doc, token?.text ?? "", { bold: Boolean(token?.strong) });
+  doc.fontSize(options.fontSize ?? PDF_SYSTEM.typography.body.size);
+  return doc.widthOfString(token?.text ?? "");
+}
+
+function wrapInlineSegments(doc, segments, width, options = {}) {
+  const tokens = tokenizeInlineSegments(segments);
+  if (tokens.length === 0) {
+    return [];
+  }
+
+  const lines = [];
+  let current = [];
+  let currentWidth = 0;
+  const spaceWidth = measureInlineToken(doc, { text: " ", strong: false }, options);
+
+  tokens.forEach((token) => {
+    const tokenWidth = measureInlineToken(doc, token, options);
+    const nextWidth = current.length > 0 ? currentWidth + spaceWidth + tokenWidth : tokenWidth;
+
+    if (current.length > 0 && nextWidth > width) {
+      lines.push(current);
+      current = [token];
+      currentWidth = tokenWidth;
+      return;
+    }
+
+    current.push(token);
+    currentWidth = nextWidth;
+  });
+
+  if (current.length > 0) {
+    lines.push(current);
+  }
+
+  return lines;
+}
+
+function getInlineSegmentsMetrics(doc, segments, options = {}) {
+  const direction = options.direction ?? getTextDirection(segments.map((segment) => segment.text).join(""));
+  const fontSize = options.fontSize ?? PDF_SYSTEM.typography.body.size;
+  const lineGap = options.lineGap ?? PDF_SYSTEM.typography.body.lineGap;
+
+  applyFont(doc, "Text", { bold: false });
+  doc.fontSize(fontSize);
+
+  if (direction === "rtl") {
+    return getLineMetrics(doc, stripInlineMarkdown(segments.map((segment) => segment.strong ? `**${segment.text}**` : segment.text).join("")), options);
+  }
+
+  const lines = wrapInlineSegments(doc, segments, options.width, { fontSize });
+  const lineAdvance = getLineAdvance(doc, lineGap);
+
+  return {
+    direction,
+    lines,
+    lineAdvance,
+    height: lines.length * lineAdvance,
+  };
+}
+
+function drawInlineSegments(doc, segments, options = {}) {
+  const text = segments.map((segment) => segment.text).join("");
+  if (!normalizeString(text)) {
+    return 0;
+  }
+
+  const { x: contentX, width: contentWidth } = getContentMetrics(doc);
+  const width = options.width ?? contentWidth;
+  const x = options.x ?? contentX;
+  const y = options.y ?? doc.y;
+  const direction = options.direction ?? getTextDirection(text);
+  const fontSize = options.fontSize ?? PDF_SYSTEM.typography.body.size;
+  const lineGap = options.lineGap ?? PDF_SYSTEM.typography.body.lineGap;
+  const color = options.color ?? COLORS.text;
+
+  if (direction === "rtl") {
+    return drawWrappedText(doc, text, {
+      ...options,
+      x,
+      y,
+      width,
+      fontSize,
+      lineGap,
+      color,
+    });
+  }
+
+  const lines = wrapInlineSegments(doc, segments, width, { fontSize });
+  const lineAdvance = getLineAdvance(doc, lineGap);
+  let cursorY = y;
+  const initialDocY = doc.y;
+
+  lines.forEach((line) => {
+    let cursorX = x;
+    line.forEach((token, tokenIndex) => {
+      const drawableText = tokenIndex > 0 ? ` ${token.text}` : token.text;
+      applyFont(doc, token.text, { bold: token.strong });
+      doc.fontSize(fontSize).fillColor(color);
+      doc.text(drawableText, cursorX, cursorY, { lineBreak: false });
+      cursorX += doc.widthOfString(drawableText);
+    });
+    cursorY += lineAdvance;
+  });
+
+  if (options.advanceCursor !== false) {
+    doc.y = cursorY;
+  } else {
+    doc.y = initialDocY;
+  }
+
+  return cursorY - y;
+}
+
 function drawPreparedLines(doc, lines, options = {}) {
   if (!Array.isArray(lines) || lines.length === 0) {
     return 0;
@@ -711,19 +891,18 @@ function renderSubsectionTitle(doc, value) {
 function renderBodyParagraph(doc, value, options = {}) {
   const { x, width } = getContentMetrics(doc);
   const normalizedValue = normalizeParagraphText(value);
-  const height = getLineMetrics(doc, normalizedValue, {
+  const segments = parseInlineSegments(normalizedValue);
+  const height = getInlineSegmentsMetrics(doc, segments, {
     width: options.width ?? width,
-    bold: options.bold,
     fontSize: options.fontSize ?? PDF_SYSTEM.typography.body.size,
     lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
     direction: options.direction,
   }).height + (options.spacingAfter ?? PDF_SYSTEM.components.summary.paragraphGap);
 
   ensureVerticalSpace(doc, height);
-  drawWrappedText(doc, normalizedValue, {
+  drawInlineSegments(doc, segments, {
     x: options.x ?? x,
     width: options.width ?? width,
-    bold: options.bold,
     fontSize: options.fontSize ?? PDF_SYSTEM.typography.body.size,
     lineGap: options.lineGap ?? PDF_SYSTEM.typography.body.lineGap,
     color: options.color ?? COLORS.text,
@@ -801,88 +980,194 @@ function splitEditorialParagraphs(text) {
   });
 }
 
+function normalizeSummaryLabel(value) {
+  return normalizeInlineSpacing(value);
+}
+
+function isSummarySectionLabel(value) {
+  return SUMMARY_SECTION_LABELS.has(normalizeSummaryLabel(value).replace(/:$/, "").toLowerCase());
+}
+
+function getSummaryIndentLevel(indent = "") {
+  return Math.min(3, Math.floor(indent.replace(/\t/g, "  ").length / 2));
+}
+
+function parseTableRow(value = "") {
+  return normalizeString(value)
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isTableLine(value = "") {
+  return /^\s*\|.+\|\s*$/.test(value);
+}
+
+function isTableDivider(value = "") {
+  const cells = parseTableRow(value);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseTableBlock(lines = []) {
+  if (lines.length < 2 || !isTableDivider(lines[1])) {
+    return null;
+  }
+
+  const headers = parseTableRow(lines[0]).map(stripInlineMarkdown).filter(Boolean);
+  const rows = lines.slice(2)
+    .map(parseTableRow)
+    .filter((row) => row.some(Boolean));
+
+  if (!headers.length || !rows.length) {
+    return null;
+  }
+
+  return { type: "table", headers, rows };
+}
+
 function parseSummaryBlocks(summary) {
-  const source = normalizeString(summary);
+  const source = normalizeString(summary).replace(/\r\n?/g, "\n");
   if (!source) {
     return [];
   }
 
-  const rawBlocks = source
-    .replace(/\r\n?/g, "\n")
-    .split(/\n\s*\n/)
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .reduce((blocks, block) => {
-      const previous = blocks.at(-1);
-      if (
-        previous
-        && !/^##\s+/.test(previous)
-        && !/^[-*•]\s+/.test(previous)
-        && !/^\d+[.)]\s+/.test(previous)
-        && !/^##\s+/.test(block)
-        && !/^[-*•]\s+/.test(block)
-        && !/^\d+[.)]\s+/.test(block)
-        && shouldMergeParagraphFragments(normalizeParagraphText(previous), normalizeParagraphText(block))
-      ) {
-        blocks[blocks.length - 1] = `${previous}\n\n${block}`;
-        return blocks;
-      }
-
-      blocks.push(block);
-      return blocks;
-    }, []);
-
   const blocks = [];
+  let pendingParagraph = [];
+  let pendingList = null;
 
-  rawBlocks.forEach((block) => {
-    const lines = block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length === 1 && /^##\s+/.test(lines[0])) {
-      blocks.push({ type: "heading", text: lines[0].replace(/^##\s+/, "").trim() });
+  const flushParagraph = () => {
+    if (pendingParagraph.length === 0) {
       return;
     }
 
-    const bulletItems = [];
-    const proseLines = [];
-
-    lines.forEach((line) => {
-      if (/^[-*•]\s+/.test(line) || /^\d+[.)]\s+/.test(line)) {
-        bulletItems.push(normalizeBulletText(line));
-      } else {
-        proseLines.push(line);
-      }
-    });
-
-    if (bulletItems.length > 0 && proseLines.length === 0) {
-      blocks.push({ type: "list", items: bulletItems });
+    const paragraph = normalizeParagraphText(pendingParagraph.join(" "));
+    pendingParagraph = [];
+    if (!paragraph) {
       return;
     }
 
-    const normalizedParagraph = normalizeParagraphText(proseLines.join(" "));
-    if (!normalizedParagraph) {
-      if (bulletItems.length > 0) {
-        blocks.push({ type: "list", items: bulletItems });
-      }
-      return;
-    }
-
-    const inlineListParts = normalizedParagraph.split(/\s+-\s+/).map((part) => part.trim()).filter(Boolean);
+    const inlineListParts = paragraph.split(/\s+-\s+/).map((part) => part.trim()).filter(Boolean);
     if (inlineListParts.length >= 3) {
-      blocks.push({ type: "list", items: inlineListParts });
+      blocks.push({
+        type: "list",
+        ordered: false,
+        items: inlineListParts.map((text) => ({ text, level: 0, ordered: false, marker: "-" })),
+      });
       return;
     }
 
-    splitEditorialParagraphs(normalizedParagraph).forEach((paragraph) => {
-      blocks.push({ type: "paragraph", text: paragraph });
+    splitEditorialParagraphs(paragraph).forEach((text) => {
+      blocks.push({ type: "paragraph", text });
     });
+  };
 
-    if (bulletItems.length > 0) {
-      blocks.push({ type: "list", items: bulletItems });
+  const flushList = () => {
+    if (!pendingList?.items?.length) {
+      pendingList = null;
+      return;
     }
-  });
+    blocks.push(pendingList);
+    pendingList = null;
+  };
+
+  const pushListItem = (item) => {
+    flushParagraph();
+    if (!pendingList || pendingList.ordered !== item.ordered) {
+      flushList();
+      pendingList = { type: "list", ordered: item.ordered, items: [] };
+    }
+    pendingList.items.push(item);
+  };
+
+  const lines = source.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
+    if (!rawLine.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const line = rawLine.trim();
+    if (isTableLine(rawLine)) {
+      const tableLines = [];
+      let cursor = index;
+      while (cursor < lines.length && isTableLine(lines[cursor])) {
+        tableLines.push(lines[cursor]);
+        cursor += 1;
+      }
+
+      const tableBlock = parseTableBlock(tableLines);
+      if (tableBlock) {
+        flushParagraph();
+        flushList();
+        blocks.push(tableBlock);
+        index = cursor - 1;
+        continue;
+      }
+    }
+
+    const sectionMatch = line.match(/^(.+?):\s*(.*)$/);
+    if (sectionMatch && isSummarySectionLabel(sectionMatch[1])) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: `${normalizeSummaryLabel(sectionMatch[1])}:`, level: 2 });
+      if (sectionMatch[2]?.trim()) {
+        blocks.push({ type: "paragraph", text: sectionMatch[2].trim() });
+      }
+      continue;
+    }
+
+    const bulletMatch = rawLine.match(/^(\s*)[-*•]\s+(.+)$/);
+    if (bulletMatch) {
+      pushListItem({
+        text: normalizeBulletText(bulletMatch[2]),
+        level: getSummaryIndentLevel(bulletMatch[1]),
+        ordered: false,
+        marker: "-",
+      });
+      continue;
+    }
+
+    const numberedMatch = rawLine.match(/^(\s*)(\d+)[.)]\s+(.+)$/);
+    if (numberedMatch) {
+      pushListItem({
+        text: normalizeBulletText(numberedMatch[3]),
+        level: getSummaryIndentLevel(numberedMatch[1]),
+        ordered: true,
+        marker: numberedMatch[2],
+      });
+      continue;
+    }
+
+    if (/^##\s+/.test(line)) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: line.replace(/^##\s+/, "").trim(), level: 2 });
+      continue;
+    }
+
+    if (/^#{3,}\s+/.test(line)) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "subheading", text: line.replace(/^#{3,}\s+/, "").trim(), level: 3 });
+      continue;
+    }
+
+    if (line.endsWith(":") && line.length <= 80) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "subheading", text: line, level: 3 });
+      continue;
+    }
+
+    flushList();
+    pendingParagraph.push(line);
+  }
+
+  flushParagraph();
+  flushList();
 
   return blocks;
 }
@@ -1175,12 +1460,14 @@ function renderSummaryBulletList(doc, items, options = {}) {
     const isLabelLike = /:\s*$/.test(bulletText);
     const fontSize = options.fontSize ?? PDF_SYSTEM.typography.body.size;
     const lineGap = options.lineGap ?? PDF_SYSTEM.typography.body.lineGap;
-    const lineMetrics = getLineMetrics(doc, bulletText, {
+    const segments = isLabelLike
+      ? [{ text: stripInlineMarkdown(bulletText), strong: true }]
+      : parseInlineSegments(bulletText);
+    const lineMetrics = getInlineSegmentsMetrics(doc, segments, {
       width: contentWidth - markerGap,
       fontSize,
       lineGap,
       direction: options.direction,
-      bold: isLabelLike,
     });
     const blockHeight = Math.max(lineMetrics.height, PDF_SYSTEM.typography.body.size);
     const spacingAfter = index < items.length - 1 ? itemGap : 0;
@@ -1196,7 +1483,7 @@ function renderSummaryBulletList(doc, items, options = {}) {
       color: COLORS.text,
       advanceCursor: false,
     });
-    drawWrappedText(doc, bulletText, {
+    drawInlineSegments(doc, segments, {
       x: x + indent,
       y: doc.y,
       width: contentWidth - markerGap,
@@ -1204,11 +1491,165 @@ function renderSummaryBulletList(doc, items, options = {}) {
       lineGap,
       color: options.color ?? COLORS.text,
       direction: options.direction,
-      bold: isLabelLike,
       advanceCursor: false,
     });
     doc.y += blockHeight + spacingAfter;
   });
+}
+
+function renderSummaryHeading(doc, value, options = {}) {
+  const { x, width } = getContentMetrics(doc);
+  const fontSize = options.subheading ? 10 : 12;
+  const spacingBefore = options.first ? 0 : 12;
+  const spacingAfter = options.subheading ? 3 : 5;
+  const title = stripInlineMarkdown(value);
+  const height = spacingBefore + getLineMetrics(doc, title, {
+    width,
+    bold: true,
+    fontSize,
+    lineGap: SPACING.xs,
+  }).height + spacingAfter + (options.subheading ? 0 : 1);
+
+  ensureVerticalSpace(doc, height);
+  doc.y += spacingBefore;
+  drawWrappedText(doc, title, {
+    x,
+    width,
+    bold: true,
+    fontSize,
+    lineGap: SPACING.xs,
+    color: COLORS.strongText,
+  });
+
+  if (!options.subheading) {
+    doc
+      .save()
+      .lineWidth(0.75)
+      .strokeColor(COLORS.softBorder)
+      .moveTo(x, doc.y)
+      .lineTo(x + width, doc.y)
+      .stroke()
+      .restore();
+    doc.y += spacingAfter;
+    return;
+  }
+
+  doc.y += spacingAfter;
+}
+
+function measureTableCellHeight(doc, value, width, options = {}) {
+  const segments = options.bold
+    ? [{ text: stripInlineMarkdown(value), strong: true }]
+    : parseInlineSegments(normalizeInlineSpacing(value));
+  return getInlineSegmentsMetrics(doc, segments, {
+    width,
+    fontSize: options.fontSize ?? 8,
+    lineGap: 2,
+  }).height;
+}
+
+function drawTableCellText(doc, value, options = {}) {
+  const segments = options.bold
+    ? [{ text: stripInlineMarkdown(value), strong: true }]
+    : parseInlineSegments(normalizeInlineSpacing(value));
+  return drawInlineSegments(doc, segments, {
+    x: options.x,
+    y: options.y,
+    width: options.width,
+    fontSize: options.fontSize ?? 8,
+    lineGap: 2,
+    color: options.color ?? COLORS.text,
+    advanceCursor: false,
+  });
+}
+
+function drawSummaryTableRow(doc, cells, options = {}) {
+  const { x, y, columnWidths, rowHeight, padding, fontSize, header } = options;
+  let cursorX = x;
+
+  cells.forEach((cell, index) => {
+    const columnWidth = columnWidths[index] ?? columnWidths.at(-1) ?? 0;
+    doc
+      .save()
+      .rect(cursorX, y, columnWidth, rowHeight)
+      .fillAndStroke(header ? COLORS.panel : "#FFFFFF", COLORS.softBorder)
+      .restore();
+    drawTableCellText(doc, cell, {
+      x: cursorX + padding,
+      y: y + padding,
+      width: Math.max(12, columnWidth - (padding * 2)),
+      fontSize,
+      bold: header,
+      color: header ? COLORS.strongText : COLORS.muted,
+    });
+    cursorX += columnWidth;
+  });
+}
+
+function renderSummaryTable(doc, table) {
+  if (!Array.isArray(table?.headers) || table.headers.length === 0 || !Array.isArray(table?.rows) || table.rows.length === 0) {
+    return;
+  }
+
+  const { x, width } = getContentMetrics(doc);
+  const columnCount = Math.min(table.headers.length, 6);
+  const columnWidths = Array.from({ length: columnCount }, () => width / columnCount);
+  const padding = 6;
+  const fontSize = columnCount > 4 ? 7.2 : 8;
+  const cellTextWidth = (width / columnCount) - (padding * 2);
+  const measureRowHeight = (cells, header = false) => Math.max(
+    22,
+    ...Array.from({ length: columnCount }, (_, index) => measureTableCellHeight(doc, cells[index] || "", cellTextWidth, {
+      fontSize,
+      bold: header,
+    }) + (padding * 2)),
+  );
+  const headerCells = table.headers.slice(0, columnCount);
+  const headerHeight = measureRowHeight(headerCells, true);
+
+  ensureVerticalSpace(doc, headerHeight + SPACING.xs);
+  drawSummaryTableRow(doc, headerCells, {
+    x,
+    y: doc.y,
+    columnWidths,
+    rowHeight: headerHeight,
+    padding,
+    fontSize,
+    header: true,
+  });
+  doc.y += headerHeight;
+
+  table.rows.forEach((row) => {
+    const cells = Array.from({ length: columnCount }, (_, index) => row[index] || "");
+    const rowHeight = measureRowHeight(cells, false);
+    if (doc.y + rowHeight > doc.page.height - PDF_SYSTEM.page.margins.bottom) {
+      doc.addPage();
+      doc.y = PDF_SYSTEM.page.margins.top;
+      drawSummaryTableRow(doc, headerCells, {
+        x,
+        y: doc.y,
+        columnWidths,
+        rowHeight: headerHeight,
+        padding,
+        fontSize,
+        header: true,
+      });
+      doc.y += headerHeight;
+    }
+
+    drawSummaryTableRow(doc, cells, {
+      x,
+      y: doc.y,
+      columnWidths,
+      rowHeight,
+      padding,
+      fontSize,
+      header: false,
+    });
+    doc.y += rowHeight;
+  });
+
+  doc.y += SPACING.sm;
 }
 
 function measureLabeledTextBlock(doc, label, text, options = {}) {
@@ -1332,34 +1773,46 @@ function renderCard(doc, segments, options = {}) {
 }
 
 function renderSummary(doc, summary) {
-  const sections = buildSummarySectionsForPdf(summary);
+  const blocks = parseSummaryBlocks(summary);
 
-  sections.forEach((section, sectionIndex) => {
-    if (!section || !Array.isArray(section.blocks) || section.blocks.length === 0) {
+  blocks.forEach((block, blockIndex) => {
+    if (!block) {
       return;
     }
 
-    renderSubsectionTitle(doc, section.title);
-
-    section.blocks.forEach((block, blockIndex) => {
-      const spacingAfter = blockIndex === section.blocks.length - 1 ? 0 : SPACING.sm;
-
-      if (block.type === "list") {
-        renderSummaryBulletList(doc, block.items, {
-          itemGap: PDF_SYSTEM.components.summary.listItemGap,
-        });
-        doc.y += spacingAfter;
-        return;
-      }
-
-      renderBodyParagraph(doc, block.text, {
-        spacingAfter,
-      });
-    });
-
-    if (sectionIndex < sections.length - 1) {
-      doc.y += SPACING.md;
+    if (block.type === "heading") {
+      renderSummaryHeading(doc, block.text, { first: blockIndex === 0 });
+      return;
     }
+
+    if (block.type === "subheading") {
+      renderSummaryHeading(doc, block.text, { subheading: true });
+      return;
+    }
+
+    if (block.type === "list") {
+      renderSummaryBulletList(doc, block.items, {
+        itemGap: SPACING.xs,
+        indent: 12,
+        lineGap: 3,
+        markerGap: 6,
+        nestedIndentStep: 12,
+      });
+      doc.y += SPACING.sm;
+      return;
+    }
+
+    if (block.type === "table") {
+      renderSummaryTable(doc, block);
+      return;
+    }
+
+    renderBodyParagraph(doc, block.text, {
+      fontSize: 9.2,
+      lineGap: 3,
+      spacingAfter: 7,
+      color: COLORS.muted,
+    });
   });
 }
 
@@ -1375,6 +1828,7 @@ export const __studyPdfTestables = Object.freeze({
   parseSummaryBlocks,
   buildSummarySections,
   buildSummarySectionsForPdf,
+  getSummaryExportText,
   normalizeInlineSpacing,
   normalizeParagraphText,
   measureFlashcardCardHeight,
@@ -1704,18 +2158,48 @@ export function buildStudyPdfFileName(document, feature) {
   const baseName = sanitizeDownloadFilename(
     stripTrailingExtension(normalizeDocumentName(document?.originalName || document?.title || document?.filename)),
     "study-document",
-  )
-    .replace(/\s+/g, "_")
-    .replace(/_+/g, "_")
-    .trim();
-  const featureLabel = normalizeStudyExportFeature(feature) || "study";
-  return sanitizeDownloadFilename(`${baseName}-${featureLabel}.pdf`, `study-document-${featureLabel}.pdf`)
-    .replace(/\s+/g, "_");
+  ).trim();
+  const featureLabel = FEATURE_LABELS[normalizeStudyExportFeature(feature)] ?? "Study";
+  return sanitizeDownloadFilename(`${baseName} ${featureLabel}.pdf`, `study-document ${featureLabel}.pdf`);
+}
+
+function getLatestGeneration(document, type) {
+  const generationType = normalizeStudyExportFeature(type);
+  if (!generationType || !Array.isArray(document?.generations)) {
+    return null;
+  }
+
+  return document.generations.find((generation) => {
+    try {
+      return generation?.isLatest
+        && normalizeGenerationType(generation.generationType) === generationType
+        && normalizeGenerationStatus(generation.status) === DOCUMENT_GENERATION_STATUS.complete;
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
+
+function getSummaryExportText(document) {
+  const serializedSummaryOutput = document?.generationState?.summary?.output;
+  const serializedOutput = serializedSummaryOutput
+    ? normalizeGenerationOutput(DOCUMENT_GENERATION_TYPES.summary, serializedSummaryOutput)
+    : null;
+  if (normalizeString(serializedOutput?.text)) {
+    return normalizeString(serializedOutput.text);
+  }
+
+  const latestSummary = getLatestGeneration(document, DOCUMENT_GENERATION_TYPES.summary);
+  const output = latestSummary
+    ? normalizeGenerationOutput(DOCUMENT_GENERATION_TYPES.summary, latestSummary.output)
+    : null;
+
+  return normalizeString(output?.text) || normalizeString(document?.summary);
 }
 
 export function hasStudyExportContent(document, feature) {
   if (feature === "summary") {
-    return Boolean(normalizeString(document?.summary));
+    return Boolean(getSummaryExportText(document));
   }
   if (feature === "flashcards") {
     return Array.isArray(document?.flashcards) && document.flashcards.length > 0;
@@ -1757,7 +2241,7 @@ export async function buildStudyPdfBuffer(document, feature) {
   renderDocumentHeader(pdf, documentTitle, featureLabel);
 
   if (feature === "summary") {
-    renderSummary(pdf, document?.summary);
+    renderSummary(pdf, getSummaryExportText(document));
   } else if (feature === "flashcards") {
     renderFlashcards(pdf, document?.flashcards);
   } else {

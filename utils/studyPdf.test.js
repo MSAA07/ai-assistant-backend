@@ -7,12 +7,12 @@ import { __studyPdfTestables, buildStudyPdfBuffer, buildStudyPdfFileName } from 
 test("buildStudyPdfFileName uses the canonical document-feature format", () => {
   assert.equal(
     buildStudyPdfFileName({ originalName: "ملخص المحاضرة.pdf" }, "summary"),
-    "ملخص_المحاضرة-summary.pdf",
+    "ملخص المحاضرة Summary.pdf",
   );
 
   assert.equal(
     buildStudyPdfFileName({ originalName: "Chapter 3 - المراجعة النهائية.docx" }, "flashcards"),
-    "Chapter_3_-_المراجعة_النهائية-flashcards.pdf",
+    "Chapter 3 - المراجعة النهائية Flashcards.pdf",
   );
 });
 
@@ -180,10 +180,11 @@ test("summary parsing converts inline hyphen text into structured bullet lists",
   assert.deepEqual(blocks, [
     {
       type: "list",
+      ordered: false,
       items: [
-        "Leadership expectations",
-        "stakeholder communication",
-        "escalation handling",
+        { text: "Leadership expectations", level: 0, ordered: false, marker: "-" },
+        { text: "stakeholder communication", level: 0, ordered: false, marker: "-" },
+        { text: "escalation handling", level: 0, ordered: false, marker: "-" },
       ],
     },
   ]);
@@ -195,9 +196,63 @@ test("summary parsing recognizes normalized bullet glyph lists", () => {
   assert.deepEqual(blocks, [
     {
       type: "list",
-      items: ["first point", "second point"],
+      ordered: false,
+      items: [
+        { text: "first point", level: 0, ordered: false, marker: "-" },
+        { text: "second point", level: 0, ordered: false, marker: "-" },
+      ],
     },
   ]);
+});
+
+test("summary parsing converts markdown tables into table blocks", () => {
+  const blocks = __studyPdfTestables.parseSummaryBlocks(`
+## Key Comparisons
+
+| Concept | Meaning | Example |
+|--------|--------|--------|
+| **Structure** | Roles and hierarchy | Reporting lines |
+| Process | Work steps | Approval flow |
+  `);
+
+  assert.equal(blocks[0].type, "heading");
+  assert.deepEqual(blocks[1], {
+    type: "table",
+    headers: ["Concept", "Meaning", "Example"],
+    rows: [
+      ["**Structure**", "Roles and hierarchy", "Reporting lines"],
+      ["Process", "Work steps", "Approval flow"],
+    ],
+  });
+});
+
+test("summary export uses latest DocumentGeneration output before the mirror field", () => {
+  const text = __studyPdfTestables.getSummaryExportText({
+    summary: "Old mirror summary",
+    generations: [
+      {
+        generationType: "summary",
+        status: "complete",
+        isLatest: true,
+        output: { text: "Canonical generated summary" },
+      },
+    ],
+  });
+
+  assert.equal(text, "Canonical generated summary");
+});
+
+test("summary export uses serialized generationState output before the mirror field", () => {
+  const text = __studyPdfTestables.getSummaryExportText({
+    summary: "Old mirror summary",
+    generationState: {
+      summary: {
+        output: { text: "Serialized canonical summary" },
+      },
+    },
+  });
+
+  assert.equal(text, "Serialized canonical summary");
 });
 
 test("summary section builder preserves actual summary section labels", () => {
