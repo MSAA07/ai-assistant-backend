@@ -1399,8 +1399,7 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
   const openai = getClient();
   const response = await openai.chat.completions.create({
     model,
-    temperature: 0.25,
-    max_tokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
+    max_completion_tokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
     messages: [
       { role: "user", content: SUMMARY_GENERATION_PROMPT },
       { role: "user", content: sourceMaterial.text },
