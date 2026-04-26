@@ -189,6 +189,17 @@ test("summary parsing converts inline hyphen text into structured bullet lists",
   ]);
 });
 
+test("summary parsing recognizes normalized bullet glyph lists", () => {
+  const blocks = __studyPdfTestables.parseSummaryBlocks("• first point\n• second point");
+
+  assert.deepEqual(blocks, [
+    {
+      type: "list",
+      items: ["first point", "second point"],
+    },
+  ]);
+});
+
 test("summary section builder preserves actual summary section labels", () => {
   const sections = __studyPdfTestables.buildSummarySections(`
 Title: Understanding Consumer and Business Buyer Behavior

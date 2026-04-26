@@ -747,7 +747,7 @@ function parseSummaryListItem(rawLine = "") {
 
   const indentMatch = line.match(/^(\s*)/);
   const indentLength = indentMatch ? indentMatch[1].length : 0;
-  const bulletMatch = trimmed.match(/^([-*â€¢]|\d+[.)])\s+/);
+  const bulletMatch = trimmed.match(/^([-*•]|\d+[.)])\s+/);
   if (!bulletMatch) {
     return null;
   }

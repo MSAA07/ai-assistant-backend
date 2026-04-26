@@ -168,6 +168,20 @@ The summary should feel like a polished study guide made by an excellent tutor:
 * readable in 5-10 minutes
 
 Return only the summary content.`;
+const SUMMARY_SECTION_TITLES = Object.freeze([
+  "Big Picture: What This Material Is Really About",
+  "Learning Outcomes",
+  "Core Concepts",
+  "Main Models / Frameworks",
+  "Key Comparisons",
+  "Examples",
+  "Common Mistakes",
+  "What to Memorize",
+  "Final Quick Review",
+]);
+const SUMMARY_SECTION_TITLE_MAP = new Map(
+  SUMMARY_SECTION_TITLES.map((title) => [title.toLowerCase(), title]),
+);
 
 function getClient() {
   if (!process.env.OPENAI_API_KEY) {
@@ -1168,11 +1182,73 @@ function assertSummaryStudyGuideStructure(text) {
   }
 }
 
+function normalizeSummaryHeading(line) {
+  const trimmed = normalizeString(line);
+  if (!trimmed) {
+    return "";
+  }
+
+  const withoutMarkdown = trimmed.replace(/^#{1,6}\s+/, "");
+  const withoutNumber = withoutMarkdown.replace(/^\d+[\.)]\s+/, "");
+  const withoutTrailingColon = withoutNumber.replace(/:+\s*$/, "");
+  const exactTitle = SUMMARY_SECTION_TITLE_MAP.get(withoutTrailingColon.toLowerCase());
+  if (exactTitle) {
+    return `## ${exactTitle}`;
+  }
+
+  if (/^#{1,6}\s+/.test(trimmed)) {
+    return `## ${withoutMarkdown}`;
+  }
+
+  return line.trimEnd();
+}
+
+function normalizeSummaryBullet(line) {
+  const bulletMatch = line.match(/^(\s*)[-*•]\s+(.*)$/);
+  if (!bulletMatch) {
+    return line;
+  }
+
+  const indent = bulletMatch[1].length > 0 ? "  " : "";
+  return `${indent}• ${bulletMatch[2].trim()}`;
+}
+
+function normalizeSummarySpacing(lines) {
+  const cleaned = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const previous = cleaned[cleaned.length - 1] ?? "";
+    const previousIsHeading = /^##\s+/.test(previous);
+    const nextIsBlank = trimmed === "";
+
+    if (nextIsBlank) {
+      if (cleaned.length === 0 || previous === "" || previousIsHeading) {
+        continue;
+      }
+      cleaned.push("");
+      continue;
+    }
+
+    if (/^##\s+/.test(trimmed) && previous !== "" && cleaned.length > 0) {
+      cleaned.push("");
+    }
+
+    cleaned.push(line.trimEnd());
+  }
+
+  return cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function cleanSummaryText(value) {
-  return normalizeString(value)
-    .replace(/^\s*[-*_]{3,}\s*$/gm, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  const lines = normalizeString(value)
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => normalizeSummaryHeading(line))
+    .filter((line) => !/^\s*[-*_]{3,}\s*$/.test(line))
+    .map((line) => normalizeSummaryBullet(line));
+
+  return normalizeSummarySpacing(lines);
 }
 
 function normalizeSummaryOutput(parsed) {
@@ -1552,3 +1628,7 @@ export async function generateStudyMaterialFromExcerpts({
     throw error;
   }
 }
+
+export const __studyMaterialsTestables = {
+  cleanSummaryText,
+};
