@@ -9,17 +9,22 @@ import {
   sortGenerationExcerpts,
   isUsableGenerationExcerpt,
 } from "./documentGeneration.js";
+import {
+  DEFAULT_GENERATION_MODEL,
+  resolveModelForGeneration,
+} from "./modelRoutingPolicy.js";
 import { captureSentryException } from "./sentry.js";
 
 let client;
 const summaryStudyGuideAnalysisCache = new Map();
 
-export const MODEL_NAME = "gpt-4o-mini";
+export const MODEL_NAME = DEFAULT_GENERATION_MODEL;
 
 const ESTIMATED_CHARS_PER_TOKEN = 4;
 const SUMMARY_SIGNAL_CHUNK_TOKEN_LIMIT = 2_500;
 const SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT = 2_200;
 const SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT = 3_600;
+const GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT = 16_000;
 const SUMMARY_ANALYSIS_CACHE_TTL_MS = 30 * 60 * 1000;
 const SUMMARY_ANALYSIS_CACHE_MAX_ENTRIES = 50;
 const INPUT_TOKEN_LIMITS = {
@@ -76,6 +81,55 @@ const REGENERATION_REASON_LABELS = Object.freeze({
   too_short: "Too short",
   too_generic: "Too generic",
 });
+const SUMMARY_GENERATION_PROMPT = `Create a clear, detailed, student-friendly study summary from the provided source material.
+
+Your goal is to help the user understand the material confidently, not just skim it.
+
+Important:
+
+* Read the full source material carefully.
+* Include all important content, including definitions, examples, formulas, models, tables, diagrams, figures, comparisons, processes, and key distinctions when present.
+* Rewrite ideas in your own words while preserving the original meaning.
+* Explain concepts clearly and logically.
+* Make the summary useful inside the application first.
+* Do not make the output PDF-specific.
+* Do not include practice questions, mock questions, or question-and-answer sections.
+
+Use this structure when applicable:
+
+1. Title
+2. Big Picture Overview
+3. Learning Goals
+4. Detailed Study Notes
+5. Key Concepts, Terms, and Definitions
+6. Models, Frameworks, Formulas, or Methods
+7. Comparisons and Key Distinctions
+8. Examples and Applications
+9. Common Mistakes or Misunderstandings
+10. Key Takeaways
+11. Final Quick Review Checklist
+
+Adapt the structure to the material:
+
+* For math: emphasize formulas, steps, methods, worked-style explanations, common errors, and when to use each formula.
+* For science: emphasize concepts, mechanisms, definitions, diagrams, processes, causes/effects, and applications.
+* For business: emphasize frameworks, models, stakeholders, processes, comparisons, decisions, and practical implications.
+* For technical material: emphasize architecture, components, workflows, APIs, constraints, dependencies, and examples.
+* For humanities/social science: emphasize arguments, themes, definitions, theories, comparisons, evidence, and implications.
+
+Formatting requirements:
+
+* Use clear headings.
+* Use bullets where helpful.
+* Use tables when they improve understanding.
+* Keep it detailed but not bloated.
+* Avoid irrelevant motivational text.
+* Avoid generic filler.
+* Do not include a “Practice Questions” section.
+* Do not include exam questions.
+
+Final output:
+Return only the in-app summary content.`;
 
 function getClient() {
   if (!process.env.OPENAI_API_KEY) {
@@ -277,6 +331,25 @@ export function prepareSummaryStudyGuideSourceMaterial(excerpts) {
     totalExcerptCount: sourceMaterial.totalExcerptCount,
     selectedExcerptCount: sourceMaterial.selectedExcerptCount,
     estimatedInputTokens: sourceMaterial.estimatedInputTokens,
+  };
+}
+
+export function prepareGpt55SummarySourceMaterial(excerpts) {
+  const usableExcerpts = sortGenerationExcerpts(excerpts).filter(isUsableGenerationExcerpt);
+
+  if (usableExcerpts.length === 0) {
+    const error = new Error("No usable excerpts available for generation");
+    error.code = "no_usable_excerpts";
+    throw error;
+  }
+
+  const fullText = usableExcerpts.map((excerpt) => buildExcerptBlock(excerpt)).join("\n\n");
+  return {
+    text: fullText,
+    sampled: false,
+    totalExcerptCount: usableExcerpts.length,
+    selectedExcerptCount: usableExcerpts.length,
+    estimatedInputTokens: estimateTokenCountFromText(fullText),
   };
 }
 
@@ -1000,6 +1073,7 @@ function parseJsonResponse(raw) {
 
 async function createJsonCompletion({
   aiPhase,
+  model = MODEL_NAME,
   systemPrompt,
   userPrompt,
   maxTokens,
@@ -1007,7 +1081,7 @@ async function createJsonCompletion({
 }) {
   const openai = getClient();
   const response = await openai.chat.completions.create({
-    model: MODEL_NAME,
+    model,
     temperature,
     max_tokens: maxTokens,
     messages: [
@@ -1023,7 +1097,7 @@ async function createJsonCompletion({
 
   return {
     parsed: parseJsonResponse(raw),
-    modelUsed: response?.model || MODEL_NAME,
+    modelUsed: response?.model || model,
     usage: response?.usage || null,
   };
 }
@@ -1314,28 +1388,61 @@ async function generateSummaryStudyGuideFromExcerptsV2({
   };
 }
 
+async function generateSummaryFromExcerptsWithCleanPrompt({
+  generationType,
+  excerpts,
+  options,
+  useGpt55Summary = true,
+}) {
+  const sourceMaterial = prepareGpt55SummarySourceMaterial(excerpts);
+  const model = resolveModelForGeneration({ generationType, useGpt55Summary });
+  const openai = getClient();
+  const response = await openai.chat.completions.create({
+    model,
+    temperature: 0.25,
+    max_tokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
+    messages: [
+      { role: "user", content: SUMMARY_GENERATION_PROMPT },
+      { role: "user", content: sourceMaterial.text },
+    ],
+  });
+
+  const text = normalizeString(response.choices?.[0]?.message?.content);
+  const output = { text };
+  assertNonEmptyGenerationOutput(generationType, output);
+
+  return {
+    output,
+    modelUsed: response?.model || model,
+    usage: response?.usage || null,
+    estimatedInputTokens: sourceMaterial.estimatedInputTokens,
+    selectedExcerptCount: sourceMaterial.selectedExcerptCount,
+    totalExcerptCount: sourceMaterial.totalExcerptCount,
+    sampled: false,
+    effectiveOptions: options,
+  };
+}
+
 export async function generateStudyMaterialFromExcerpts({
   generationType,
   excerpts,
   language = "english",
   options = {},
+  useGpt55Summary = true,
 }) {
   const normalizedOptions = normalizeGenerationOptions(generationType, options);
-  if (
-    generationType === DOCUMENT_GENERATION_TYPES.summary
-    && isSummaryStudyGuidePipelineEnabled()
-  ) {
+  if (generationType === DOCUMENT_GENERATION_TYPES.summary) {
     try {
-      return await generateSummaryStudyGuideFromExcerptsV2({
+      return await generateSummaryFromExcerptsWithCleanPrompt({
         generationType,
         excerpts,
-        language,
         options: normalizedOptions,
+        useGpt55Summary,
       });
     } catch (error) {
       captureSentryException(error, {
         tags: {
-          ai_phase: "generate_summary_study_guide_v2",
+          ai_phase: "generate_clean_summary",
           generationType,
         },
       });

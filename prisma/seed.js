@@ -47,6 +47,10 @@ const FLAGS = [
     featureKey: "smart_model_routing",
     description: "Automatic gpt-4o-mini vs gpt-4o routing (Phase 2)",
   },
+  {
+    featureKey: "USE_GPT55_SUMMARY",
+    description: "Route summary generation to GPT-5.5 with the detailed in-app study-summary prompt",
+  },
 ];
 
 async function ensureAdminUser() {

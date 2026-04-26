@@ -6,6 +6,7 @@ const prisma = new PrismaClient();
 const PRICING = {
   "gpt-4o-mini": { input: 0.15, output: 0.6 },
   "gpt-4o": { input: 2.5, output: 10.0 },
+  "gpt-5.5": { input: 5.0, output: 30.0 },
 };
 
 export function estimateCost(modelName, inputTokens = 0, outputTokens = 0) {

@@ -417,7 +417,7 @@ model UsageEvent {
   user             User     @relation(fields: [userId], references: [id])
   eventType        String // 'summary_generated' | 'flashcards_generated' | 'exam_generated' | 'pdf_exported' | 'document_extracted'
   featureKey       String?
-  aiModelUsed      String? // 'gpt-4o-mini' | 'gpt-4o'
+  aiModelUsed      String? // 'gpt-4o-mini' | 'gpt-4o' | 'gpt-5.5'
   inputTokens      Int?
   outputTokens     Int?
   estimatedCostUsd Decimal? @db.Decimal(10, 6)
@@ -432,4 +432,3 @@ enum FeatureEntityType {
   user
   tier
 }
-

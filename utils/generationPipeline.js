@@ -15,10 +15,11 @@ import {
 import { recordUsageEvent } from "./costGuard.js";
 import {
   generateStudyMaterialFromExcerpts,
-  isSummaryStudyGuidePipelineEnabled,
+  prepareGpt55SummarySourceMaterial,
   prepareGenerationSourceMaterial,
-  prepareSummaryStudyGuideSourceMaterial,
 } from "./studyMaterials.js";
+import { isFeatureEnabledIfConfigured } from "./featureFlags.js";
+import { isGpt55SummaryEnabledForEnvironment } from "./modelRoutingPolicy.js";
 
 function createNonRetryableError(message, code) {
   const error = new Error(message);
@@ -93,10 +94,11 @@ export async function processGeneration(prisma, job, workerId) {
     throw createNonRetryableError("No usable excerpts available for generation", "no_usable_excerpts");
   }
 
-  const useSummaryStudyGuidePipeline = generationType === DOCUMENT_GENERATION_TYPES.summary
-    && isSummaryStudyGuidePipelineEnabled();
-  const sourceMaterial = useSummaryStudyGuidePipeline
-    ? prepareSummaryStudyGuideSourceMaterial(orderedExcerpts)
+  const useGpt55Summary = generationType === DOCUMENT_GENERATION_TYPES.summary
+    && isGpt55SummaryEnabledForEnvironment()
+    && await isFeatureEnabledIfConfigured("USE_GPT55_SUMMARY", job.userId);
+  const sourceMaterial = generationType === DOCUMENT_GENERATION_TYPES.summary
+    ? prepareGpt55SummarySourceMaterial(orderedExcerpts)
     : prepareGenerationSourceMaterial(orderedExcerpts, generationType);
   if ((job.retryCount || 0) === 0) {
     await checkAndIncrementDailyTokenCap(job.userId, sourceMaterial.estimatedInputTokens);
@@ -110,6 +112,7 @@ export async function processGeneration(prisma, job, workerId) {
     excerpts: orderedExcerpts,
     language: document.language,
     options: normalizedOptions,
+    useGpt55Summary,
   });
 
   await updateJobProgress(prisma, job.id, workerId, 85);
