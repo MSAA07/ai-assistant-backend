@@ -15,7 +15,9 @@ import {
 import { recordUsageEvent } from "./costGuard.js";
 import {
   generateStudyMaterialFromExcerpts,
+  isSummaryStudyGuidePipelineEnabled,
   prepareGenerationSourceMaterial,
+  prepareSummaryStudyGuideSourceMaterial,
 } from "./studyMaterials.js";
 
 function createNonRetryableError(message, code) {
@@ -91,7 +93,11 @@ export async function processGeneration(prisma, job, workerId) {
     throw createNonRetryableError("No usable excerpts available for generation", "no_usable_excerpts");
   }
 
-  const sourceMaterial = prepareGenerationSourceMaterial(orderedExcerpts, generationType);
+  const useSummaryStudyGuidePipeline = generationType === DOCUMENT_GENERATION_TYPES.summary
+    && isSummaryStudyGuidePipelineEnabled();
+  const sourceMaterial = useSummaryStudyGuidePipeline
+    ? prepareSummaryStudyGuideSourceMaterial(orderedExcerpts)
+    : prepareGenerationSourceMaterial(orderedExcerpts, generationType);
   if ((job.retryCount || 0) === 0) {
     await checkAndIncrementDailyTokenCap(job.userId, sourceMaterial.estimatedInputTokens);
   }

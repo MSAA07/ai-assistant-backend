@@ -19,7 +19,8 @@ Backend API and worker stack for the AI Study Assistant.
 - mirror fields remain in document payloads for compatibility
 - the AI prompt-engineering rollout is complete in the current generation path
 - one shared prompt framework now drives summary, flashcards, and mock exam generation
-- large documents use a two-step sampled flow with a grounded learning-content analysis pass
+- default generation keeps the shared prompt path for summary, flashcards, and mock exams
+- `GENERATION_PIPELINE_V2` enables the summary study-guide pipeline: extract signals, analyze a global chapter map, synthesize once, optimize for exams, and enforce format
 - prompt versions, routing metadata, rollout metadata, and benchmark linkage are persisted in existing internal metadata surfaces
 - free, pro, and premium generation behavior is policy-based inside the same backend path
 - server entry is `server.js`

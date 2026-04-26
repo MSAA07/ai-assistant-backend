@@ -69,8 +69,8 @@ Lifecycle and serialization:
 Worker processors:
 
 - `utils/extractionPipeline.js`
-- `utils/generationPipeline.js`: generation worker pipeline, routing resolution, prompt/cost trace persistence, and two-step token reconciliation
-- `utils/studyMaterials.js`: shared prompt framework, feature prompts, large-document analysis prompt, weak-reference resolution, and output normalization
+- `utils/generationPipeline.js`: generation worker pipeline, routing resolution, prompt/cost trace persistence, default-path token reconciliation, and V2 summary source budgeting
+- `utils/studyMaterials.js`: shared prompt framework, feature prompts, flagged V2 summary study-guide pipeline, weak-reference resolution, and output normalization
 - `utils/modelRoutingPolicy.js`: per-tier execution policy, quality-mode access, stronger-model upgrade rules, and fallback policy
 
 Canonical study-record support:

@@ -81,7 +81,9 @@ Generation:
 - `utils/modelRoutingPolicy.js`
 - prompt-engineering rollout is complete in the current backend path
 - shared prompt framework is implemented for summary, flashcards, and mock exam
-- large documents can use a two-step flow: sampled excerpts first, then a grounded learning-content map, then feature generation
+- default summary, flashcard, and mock exam generation keep the existing shared prompt path
+- `GENERATION_PIPELINE_V2` enables the summary study-guide pipeline: full-document signal extraction, global chapter-map analysis, structured synthesis, exam optimization, and format enforcement
+- large default-path documents can use sampled excerpts; V2 summaries analyze all usable excerpts through bounded extraction chunks before one global synthesis
 - weak documents reduce scope or count instead of inventing unsupported detail
 - model is chosen per request from routing policy
 - current policy: lower-cost model by default, stronger-model upgrade first for mock exams on entitled tiers
@@ -119,7 +121,8 @@ Behavior:
 - prompt versions are persisted for released generations in `Job.result` and `UsageEvent.metadata`
 - benchmark metadata and rollout metadata are attached through existing internal JSON metadata, not new schema
 - evaluator outcomes for benchmark runs can be attached later through the admin evaluation flow
-- large sampled generations reserve and reconcile prompt-token usage across both the analysis pass and the final generation pass
+- large sampled/default-path generations reserve and reconcile prompt-token usage against prepared source material
+- V2 summary generations reserve against all usable excerpt chunks and reconcile actual usage across extraction, analysis, synthesis, optimization, and formatting calls
 - weak-certainty references are resolved during source preparation:
   - `Page N` for reliable PDF anchors
   - `Slide N` for reliable PPT/PPTX anchors

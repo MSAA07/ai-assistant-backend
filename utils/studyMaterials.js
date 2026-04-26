@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import crypto from "crypto";
 
 import {
   DOCUMENT_GENERATION_TYPES,
@@ -11,10 +12,16 @@ import {
 import { captureSentryException } from "./sentry.js";
 
 let client;
+const summaryStudyGuideAnalysisCache = new Map();
 
 export const MODEL_NAME = "gpt-4o-mini";
 
 const ESTIMATED_CHARS_PER_TOKEN = 4;
+const SUMMARY_SIGNAL_CHUNK_TOKEN_LIMIT = 2_500;
+const SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT = 2_200;
+const SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT = 3_600;
+const SUMMARY_ANALYSIS_CACHE_TTL_MS = 30 * 60 * 1000;
+const SUMMARY_ANALYSIS_CACHE_MAX_ENTRIES = 50;
 const INPUT_TOKEN_LIMITS = {
   [DOCUMENT_GENERATION_TYPES.summary]: 12_000,
   [DOCUMENT_GENERATION_TYPES.flashcards]: 10_000,
@@ -25,6 +32,44 @@ const OUTPUT_TOKEN_LIMITS = {
   [DOCUMENT_GENERATION_TYPES.flashcards]: 1_600,
   [DOCUMENT_GENERATION_TYPES.exam]: 2_200,
 };
+const SUMMARY_STUDY_GUIDE_SECTIONS = Object.freeze([
+  "Title",
+  "Big Picture",
+  "Learning Outcomes",
+  "Core Concepts",
+  "Main Models / Frameworks",
+  "Comparisons",
+  "Processes / Mechanisms",
+  "Key Distinctions",
+  "Exam-Level Takeaways",
+  "Common Pitfalls",
+  "What to Memorize",
+  "One-Page Summary",
+]);
+const CHAPTER_MAP_ARRAY_KEYS = Object.freeze([
+  "topics",
+  "models",
+  "definitions",
+  "relationships",
+  "important_examples",
+  "likely_exam_points",
+  "comparisons",
+  "processes",
+  "pitfalls",
+  "memory_triggers",
+]);
+const CHAPTER_MAP_ITEM_LIMITS = Object.freeze({
+  topics: 40,
+  models: 25,
+  definitions: 45,
+  relationships: 35,
+  important_examples: 25,
+  likely_exam_points: 45,
+  comparisons: 25,
+  processes: 25,
+  pitfalls: 25,
+  memory_triggers: 25,
+});
 const REGENERATION_REASON_LABELS = Object.freeze({
   missing_parts: "Missing parts",
   not_comprehensive_enough: "Not comprehensive enough",
@@ -58,6 +103,104 @@ export function estimateTokenCountFromText(text = "") {
   return estimateTokenCountFromChars(normalizeString(text).length);
 }
 
+export function isSummaryStudyGuidePipelineEnabled() {
+  const value = normalizeString(process.env.GENERATION_PIPELINE_V2).toLowerCase();
+  return value === "1" || value === "true" || value === "enabled" || value === "on";
+}
+
+function coerceTextArray(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      if (typeof item === "string") {
+        return normalizeString(item);
+      }
+
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+
+      return normalizeString(
+        item.name
+        ?? item.term
+        ?? item.title
+        ?? item.concept
+        ?? item.point
+        ?? item.description
+        ?? JSON.stringify(item),
+      );
+    })
+    .filter(Boolean);
+}
+
+function normalizeChapterMap(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const normalized = {};
+
+  for (const key of CHAPTER_MAP_ARRAY_KEYS) {
+    normalized[key] = coerceTextArray(source[key]);
+  }
+
+  return normalized;
+}
+
+function mergeUniqueTextItems(existingItems, nextItems, limit) {
+  const seen = new Set(existingItems.map((item) => item.toLowerCase()));
+  const merged = [...existingItems];
+
+  for (const item of nextItems) {
+    const normalizedItem = normalizeString(item);
+    const dedupeKey = normalizedItem.toLowerCase();
+    if (!normalizedItem || seen.has(dedupeKey)) {
+      continue;
+    }
+
+    merged.push(normalizedItem);
+    seen.add(dedupeKey);
+    if (merged.length >= limit) {
+      break;
+    }
+  }
+
+  return merged;
+}
+
+function compactChapterMap(maps = []) {
+  const compacted = normalizeChapterMap();
+
+  for (const map of maps) {
+    const normalizedMap = normalizeChapterMap(map);
+    for (const key of CHAPTER_MAP_ARRAY_KEYS) {
+      compacted[key] = mergeUniqueTextItems(
+        compacted[key],
+        normalizedMap[key],
+        CHAPTER_MAP_ITEM_LIMITS[key] ?? 30,
+      );
+    }
+  }
+
+  return compacted;
+}
+
+function mergeTokenUsage(left = null, right = null) {
+  if (!right) {
+    return left;
+  }
+
+  const merged = { ...(left || {}) };
+  for (const key of ["prompt_tokens", "completion_tokens", "total_tokens"]) {
+    const nextValue = Number(right?.[key] ?? 0);
+    if (nextValue > 0) {
+      merged[key] = Number(merged[key] ?? 0) + nextValue;
+    }
+  }
+
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
 function getSourceSizeTier(estimatedInputTokens) {
   if (estimatedInputTokens <= 1_000) {
     return "short";
@@ -82,6 +225,110 @@ function getExcerptLabel(excerpt) {
 function buildExcerptBlock(excerpt, maxContentChars = Infinity) {
   const content = normalizeString(excerpt?.content).slice(0, maxContentChars);
   return `${getExcerptLabel(excerpt)}\n${content}`;
+}
+
+function buildStudyGuideAnalysisChunks(excerpts) {
+  const usableExcerpts = sortGenerationExcerpts(excerpts).filter(isUsableGenerationExcerpt);
+  const maxChars = SUMMARY_SIGNAL_CHUNK_TOKEN_LIMIT * ESTIMATED_CHARS_PER_TOKEN;
+  const chunks = [];
+  let currentBlocks = [];
+  let currentLength = 0;
+
+  for (const excerpt of usableExcerpts) {
+    const label = getExcerptLabel(excerpt);
+    const content = normalizeString(excerpt?.content);
+    const maxContentChars = Math.max(500, maxChars - label.length - 12);
+
+    for (let offset = 0; offset < content.length; offset += maxContentChars) {
+      const contentSlice = content.slice(offset, offset + maxContentChars);
+      const block = offset === 0 && content.length <= maxContentChars
+        ? `${label}\n${contentSlice}`
+        : `${label} | part ${Math.floor(offset / maxContentChars) + 1}\n${contentSlice}`;
+      const blockLength = block.length + 2;
+
+      if (currentBlocks.length > 0 && currentLength + blockLength > maxChars) {
+        chunks.push(currentBlocks.join("\n\n"));
+        currentBlocks = [];
+        currentLength = 0;
+      }
+
+      currentBlocks.push(block);
+      currentLength += blockLength;
+    }
+  }
+
+  if (currentBlocks.length > 0) {
+    chunks.push(currentBlocks.join("\n\n"));
+  }
+
+  return {
+    chunks,
+    totalExcerptCount: usableExcerpts.length,
+    selectedExcerptCount: usableExcerpts.length,
+    estimatedInputTokens: estimateTokenCountFromText(chunks.join("\n\n")),
+  };
+}
+
+export function prepareSummaryStudyGuideSourceMaterial(excerpts) {
+  const sourceMaterial = buildStudyGuideAnalysisChunks(excerpts);
+  return {
+    text: sourceMaterial.chunks.join("\n\n"),
+    sampled: false,
+    totalExcerptCount: sourceMaterial.totalExcerptCount,
+    selectedExcerptCount: sourceMaterial.selectedExcerptCount,
+    estimatedInputTokens: sourceMaterial.estimatedInputTokens,
+  };
+}
+
+function getSummaryStudyGuideAnalysisCacheKey(excerpts) {
+  const hash = crypto.createHash("sha256");
+  const usableExcerpts = sortGenerationExcerpts(excerpts).filter(isUsableGenerationExcerpt);
+
+  for (const excerpt of usableExcerpts) {
+    hash.update(getExcerptLabel(excerpt));
+    hash.update("\n");
+    hash.update(normalizeString(excerpt?.content));
+    hash.update("\n---\n");
+  }
+
+  return hash.digest("hex");
+}
+
+function pruneSummaryStudyGuideAnalysisCache() {
+  const now = Date.now();
+  for (const [key, value] of summaryStudyGuideAnalysisCache.entries()) {
+    if (!value || value.expiresAt <= now) {
+      summaryStudyGuideAnalysisCache.delete(key);
+    }
+  }
+
+  while (summaryStudyGuideAnalysisCache.size > SUMMARY_ANALYSIS_CACHE_MAX_ENTRIES) {
+    const oldestKey = summaryStudyGuideAnalysisCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+
+    summaryStudyGuideAnalysisCache.delete(oldestKey);
+  }
+}
+
+function getCachedSummaryStudyGuideAnalysis(cacheKey) {
+  pruneSummaryStudyGuideAnalysisCache();
+  const cached = summaryStudyGuideAnalysisCache.get(cacheKey);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    summaryStudyGuideAnalysisCache.delete(cacheKey);
+    return null;
+  }
+
+  return cached.chapterMap;
+}
+
+function setCachedSummaryStudyGuideAnalysis(cacheKey, chapterMap) {
+  pruneSummaryStudyGuideAnalysisCache();
+  summaryStudyGuideAnalysisCache.set(cacheKey, {
+    chapterMap: normalizeChapterMap(chapterMap),
+    expiresAt: Date.now() + SUMMARY_ANALYSIS_CACHE_TTL_MS,
+  });
 }
 
 function dedupeIndices(indices) {
@@ -517,6 +764,176 @@ ${text}
 """`;
 }
 
+function buildStudyGuideSignalExtractionPrompt(chunkText, language, chunkIndex, chunkCount) {
+  const languageName = language === "arabic" ? "Arabic" : "English";
+
+  return `You are performing Stage 1 signal extraction for an exam study guide in ${languageName}.
+This is NOT summarization. Extract only reusable study signals from this source chunk.
+
+Return valid JSON only with this shape:
+{
+  "topics": ["major topic or subtopic"],
+  "models": ["model/framework name + what it explains"],
+  "definitions": ["term: precise definition"],
+  "relationships": ["concept A relates to concept B because ..."],
+  "important_examples": ["example + what concept it illustrates"],
+  "likely_exam_points": ["testable idea students must know"],
+  "comparisons": ["A vs B: exact distinction"],
+  "processes": ["process name: ordered mechanism"],
+  "pitfalls": ["common confusion + correction"],
+  "memory_triggers": ["short recall phrase -> meaning"]
+}
+
+Extraction rules:
+- Extract signals only; do not write paragraphs or a summary.
+- Preserve technical meaning and named concepts.
+- Explain why relationships matter when the source supports it.
+- Do not repeat input text verbatim unless it is a term or short definition.
+- Keep every item compact but specific.
+- If a category is not supported, return an empty array for that category.
+- Do not add markdown fences.
+
+Chunk ${chunkIndex + 1} of ${chunkCount}:
+"""
+${chunkText}
+"""`;
+}
+
+function buildChapterMapPrompt(compactedSignals, language) {
+  const languageName = language === "arabic" ? "Arabic" : "English";
+
+  return `You are performing Stage 1 global content analysis for an exam study guide in ${languageName}.
+Analyze the extracted signals across the entire document and produce a structured chapter map.
+
+Return valid JSON only with this shape:
+{
+  "topics": ["main topic -> key subtopics"],
+  "models": ["model/framework -> purpose, components, interpretation"],
+  "definitions": ["term -> exam-precise definition"],
+  "relationships": ["relationship -> why it matters"],
+  "important_examples": ["example -> concept illustrated"],
+  "likely_exam_points": ["exam-relevant point"],
+  "comparisons": ["comparison -> difference students must not confuse"],
+  "processes": ["process/mechanism -> ordered logic"],
+  "pitfalls": ["pitfall -> correction"],
+  "memory_triggers": ["trigger phrase -> recall target"]
+}
+
+Analysis rules:
+- Build a global view, not a chunk-by-chunk summary.
+- Merge duplicates and group related ideas.
+- Identify relationships between concepts and why those relationships matter.
+- Include comparisons whenever the document gives multiple models, concepts, stages, roles, causes, or outcomes.
+- Include likely exam points that are specific, testable, and grounded in the signals.
+- Do not invent unsupported facts.
+- Do not add markdown fences.
+
+Extracted signals:
+${JSON.stringify(compactedSignals, null, 2)}`;
+}
+
+function buildStudyGuideSynthesisPrompt(chapterMap, language, options, sourceTier) {
+  const languageName = language === "arabic" ? "Arabic" : "English";
+  const targetWords = getSummaryWordTarget(options.length, sourceTier);
+  const guidancePrompt = buildRegenerationGuidancePrompt(options);
+
+  return `You are generating an exam study guide, not a summary.
+Use the chapter map to synthesize a high-quality exam study document in ${languageName}.
+
+Return valid JSON only with this shape:
+{"text":"..."}
+
+MANDATORY output structure inside "text" exactly in this order:
+1. Title
+2. Big Picture
+3. Learning Outcomes
+4. Core Concepts
+5. Main Models / Frameworks
+6. Comparisons
+7. Processes / Mechanisms
+8. Key Distinctions
+9. Exam-Level Takeaways
+10. Common Pitfalls
+11. What to Memorize
+12. One-Page Summary
+
+Quality rules:
+- Explain why concepts matter, not just what they are.
+- Core Concepts must include clear definitions.
+- Main Models / Frameworks must include explanation, components, and interpretation.
+- Comparisons must include at least one markdown table. If the document has no obvious named models to compare, compare the most confusable concepts, stages, causes, or outcomes.
+- Exam-Level Takeaways must include at least 3 short, sharp, testable statements.
+- What to Memorize must include memory triggers: short phrase -> what it unlocks.
+- Processes / Mechanisms should include ordered steps when applicable; if no process exists, state the closest supported mechanism or reasoning chain.
+- Common Pitfalls must correct likely student misunderstandings.
+- One-Page Summary must be compact and study-ready.
+- No generic phrases, filler, motivational text, or repetition of the input.
+- Ground every claim in the chapter map. Do not invent facts.
+- Use markdown headings, tight spacing, aligned bullets, and compact tables.
+- Do not create large empty gaps or broken hierarchy.
+- Target length guideline: around ${targetWords} words, but prioritize exam usefulness and complete structure over brevity.
+- Do not add markdown fences.
+${guidancePrompt}
+
+Chapter map:
+${JSON.stringify(chapterMap, null, 2)}`;
+}
+
+function buildStudyGuideOptimizationPrompt(draftText, chapterMap, language) {
+  const languageName = language === "arabic" ? "Arabic" : "English";
+
+  return `You are performing Stage 3 exam optimization on an exam study guide in ${languageName}.
+Improve recall, understanding, and exam readiness without adding unsupported facts.
+
+Return valid JSON only with this shape:
+{"text":"..."}
+
+Optimization rules:
+- Keep all 12 mandatory sections present and in the same order.
+- Strengthen exam-level takeaway statements.
+- Add or sharpen memory triggers in "What to Memorize".
+- Simplify complex ideas without making them inaccurate.
+- Clarify distinctions students are likely to confuse.
+- Remove generic phrasing, filler, and repeated ideas.
+- Preserve at least one markdown comparison table.
+- Do not add markdown fences.
+
+Chapter map:
+${JSON.stringify(chapterMap, null, 2)}
+
+Draft study guide:
+"""
+${draftText}
+"""`;
+}
+
+function buildStudyGuideFormatPrompt(optimizedText, language) {
+  const languageName = language === "arabic" ? "Arabic" : "English";
+
+  return `You are performing Stage 4 format enforcement for an exam study guide in ${languageName}.
+Enforce the required structure and clean markdown formatting. Do not change grounded meaning.
+
+Return valid JSON only with this shape:
+{"text":"..."}
+
+Format requirements:
+- All 12 mandatory sections must be present in this exact order:
+${SUMMARY_STUDY_GUIDE_SECTIONS.map((section, index) => `${index + 1}. ${section}`).join("\n")}
+- Use markdown section headings.
+- Use consistent spacing: one blank line between sections, no large empty gaps.
+- Use aligned bullets.
+- Comparisons must contain at least one markdown table.
+- Main Models / Frameworks must show explanation, components, and interpretation.
+- Exam-Level Takeaways must include at least 3 bullets.
+- What to Memorize must contain memory triggers.
+- Do not add markdown fences.
+
+Study guide:
+"""
+${optimizedText}
+"""`;
+}
+
 function buildFlashcardsPrompt(text, language, options, sourceTier, sampled) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const cardCount = getFlashcardTargetCount(sourceTier);
@@ -575,6 +992,68 @@ function cleanJsonResponse(raw) {
     .replace(/```json/gi, "")
     .replace(/```/g, "")
     .trim();
+}
+
+function parseJsonResponse(raw) {
+  return JSON.parse(cleanJsonResponse(raw));
+}
+
+async function createJsonCompletion({
+  aiPhase,
+  systemPrompt,
+  userPrompt,
+  maxTokens,
+  temperature = 0.25,
+}) {
+  const openai = getClient();
+  const response = await openai.chat.completions.create({
+    model: MODEL_NAME,
+    temperature,
+    max_tokens: maxTokens,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+  });
+
+  const raw = response.choices?.[0]?.message?.content;
+  if (!raw) {
+    throw new Error(`OpenAI returned an empty ${aiPhase} response`);
+  }
+
+  return {
+    parsed: parseJsonResponse(raw),
+    modelUsed: response?.model || MODEL_NAME,
+    usage: response?.usage || null,
+  };
+}
+
+function assertSummaryStudyGuideStructure(text) {
+  const normalizedText = normalizeString(text);
+  const lowerText = normalizedText.toLowerCase();
+  const missingSections = SUMMARY_STUDY_GUIDE_SECTIONS.filter(
+    (section) => !lowerText.includes(section.toLowerCase()),
+  );
+
+  if (missingSections.length > 0) {
+    const error = new Error(`Summary study guide is missing required sections: ${missingSections.join(", ")}`);
+    error.code = "invalid_generation_output";
+    throw error;
+  }
+
+  if (!/\|[^\n]+\|[^\n]*\n\|[\s:-]+\|/.test(normalizedText)) {
+    const error = new Error("Summary study guide is missing a markdown comparison table");
+    error.code = "invalid_generation_output";
+    throw error;
+  }
+
+  const takeawaysMatch = normalizedText.match(/exam-level takeaways[\s\S]*?(common pitfalls|what to memorize)/i);
+  const takeawayCount = (takeawaysMatch?.[0]?.match(/^\s*[-*]\s+/gm) || []).length;
+  if (takeawayCount < 3) {
+    const error = new Error("Summary study guide must include at least 3 exam-level takeaways");
+    error.code = "invalid_generation_output";
+    throw error;
+  }
 }
 
 function normalizeSummaryOutput(parsed) {
@@ -656,6 +1135,185 @@ function buildPromptForGeneration({ generationType, language, options, sourceTex
   };
 }
 
+async function extractStudyGuideSignals({ chunks, language }) {
+  const signalMaps = [];
+  let usage = null;
+  let modelUsed = MODEL_NAME;
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    const result = await createJsonCompletion({
+      aiPhase: "summary_signal_extraction",
+      systemPrompt: "You extract structured exam-study signals as strict JSON. Return valid JSON only.",
+      userPrompt: buildStudyGuideSignalExtractionPrompt(chunks[index], language, index, chunks.length),
+      maxTokens: 1_400,
+      temperature: 0.1,
+    });
+
+    signalMaps.push(normalizeChapterMap(result.parsed));
+    usage = mergeTokenUsage(usage, result.usage);
+    modelUsed = result.modelUsed || modelUsed;
+  }
+
+  return {
+    signalMap: compactChapterMap(signalMaps),
+    usage,
+    modelUsed,
+  };
+}
+
+async function analyzeStudyGuideChapterMap({ signalMap, language }) {
+  const result = await createJsonCompletion({
+    aiPhase: "summary_chapter_map_analysis",
+    systemPrompt: "You produce global chapter maps for exam study guides as strict JSON. Return valid JSON only.",
+    userPrompt: buildChapterMapPrompt(signalMap, language),
+    maxTokens: SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT,
+    temperature: 0.15,
+  });
+
+  return {
+    chapterMap: normalizeChapterMap(result.parsed),
+    usage: result.usage,
+    modelUsed: result.modelUsed,
+  };
+}
+
+async function synthesizeStudyGuideDraft({ chapterMap, language, options, sourceTier, generationType }) {
+  const result = await createJsonCompletion({
+    aiPhase: "summary_structured_synthesis",
+    systemPrompt: "You generate exam study guides as strict JSON. Return valid JSON only.",
+    userPrompt: buildStudyGuideSynthesisPrompt(chapterMap, language, options, sourceTier),
+    maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
+    temperature: 0.3,
+  });
+
+  const output = normalizeSummaryOutput(result.parsed);
+  assertNonEmptyGenerationOutput(generationType, output);
+
+  return {
+    text: output.text,
+    usage: result.usage,
+    modelUsed: result.modelUsed,
+  };
+}
+
+async function optimizeStudyGuideForExams({ draftText, chapterMap, language, generationType }) {
+  const result = await createJsonCompletion({
+    aiPhase: "summary_exam_optimization",
+    systemPrompt: "You optimize exam study guides as strict JSON. Return valid JSON only.",
+    userPrompt: buildStudyGuideOptimizationPrompt(draftText, chapterMap, language),
+    maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
+    temperature: 0.2,
+  });
+
+  const output = normalizeSummaryOutput(result.parsed);
+  assertNonEmptyGenerationOutput(generationType, output);
+
+  return {
+    text: output.text,
+    usage: result.usage,
+    modelUsed: result.modelUsed,
+  };
+}
+
+async function enforceStudyGuideFormat({ optimizedText, language, generationType }) {
+  const result = await createJsonCompletion({
+    aiPhase: "summary_format_enforcement",
+    systemPrompt: "You enforce markdown format for exam study guides as strict JSON. Return valid JSON only.",
+    userPrompt: buildStudyGuideFormatPrompt(optimizedText, language),
+    maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
+    temperature: 0.1,
+  });
+
+  const output = normalizeSummaryOutput(result.parsed);
+  assertNonEmptyGenerationOutput(generationType, output);
+  assertSummaryStudyGuideStructure(output.text);
+
+  return {
+    text: output.text,
+    usage: result.usage,
+    modelUsed: result.modelUsed,
+  };
+}
+
+async function generateSummaryStudyGuideFromExcerptsV2({
+  generationType,
+  excerpts,
+  language,
+  options,
+}) {
+  const sourceMaterial = buildStudyGuideAnalysisChunks(excerpts);
+  if (sourceMaterial.chunks.length === 0) {
+    const error = new Error("No usable excerpts available for generation");
+    error.code = "no_usable_excerpts";
+    throw error;
+  }
+
+  const sourceTier = getSourceSizeTier(sourceMaterial.estimatedInputTokens);
+  let usage = null;
+  let modelUsed = MODEL_NAME;
+  const analysisCacheKey = getSummaryStudyGuideAnalysisCacheKey(excerpts);
+  const cachedChapterMap = options.regenerationGuidance
+    ? getCachedSummaryStudyGuideAnalysis(analysisCacheKey)
+    : null;
+  let chapterMap = cachedChapterMap;
+
+  if (!chapterMap) {
+    const extractedSignals = await extractStudyGuideSignals({
+      chunks: sourceMaterial.chunks,
+      language,
+    });
+    usage = mergeTokenUsage(usage, extractedSignals.usage);
+    modelUsed = extractedSignals.modelUsed || modelUsed;
+
+    const analysis = await analyzeStudyGuideChapterMap({
+      signalMap: extractedSignals.signalMap,
+      language,
+    });
+    usage = mergeTokenUsage(usage, analysis.usage);
+    modelUsed = analysis.modelUsed || modelUsed;
+    chapterMap = analysis.chapterMap;
+    setCachedSummaryStudyGuideAnalysis(analysisCacheKey, chapterMap);
+  }
+
+  const draft = await synthesizeStudyGuideDraft({
+    chapterMap,
+    language,
+    options,
+    sourceTier,
+    generationType,
+  });
+  usage = mergeTokenUsage(usage, draft.usage);
+  modelUsed = draft.modelUsed || modelUsed;
+
+  const optimized = await optimizeStudyGuideForExams({
+    draftText: draft.text,
+    chapterMap,
+    language,
+    generationType,
+  });
+  usage = mergeTokenUsage(usage, optimized.usage);
+  modelUsed = optimized.modelUsed || modelUsed;
+
+  const formatted = await enforceStudyGuideFormat({
+    optimizedText: optimized.text,
+    language,
+    generationType,
+  });
+  usage = mergeTokenUsage(usage, formatted.usage);
+  modelUsed = formatted.modelUsed || modelUsed;
+
+  return {
+    output: { text: formatted.text },
+    modelUsed,
+    usage,
+    estimatedInputTokens: sourceMaterial.estimatedInputTokens,
+    selectedExcerptCount: sourceMaterial.selectedExcerptCount,
+    totalExcerptCount: sourceMaterial.totalExcerptCount,
+    sampled: false,
+    effectiveOptions: options,
+  };
+}
+
 export async function generateStudyMaterialFromExcerpts({
   generationType,
   excerpts,
@@ -663,6 +1321,28 @@ export async function generateStudyMaterialFromExcerpts({
   options = {},
 }) {
   const normalizedOptions = normalizeGenerationOptions(generationType, options);
+  if (
+    generationType === DOCUMENT_GENERATION_TYPES.summary
+    && isSummaryStudyGuidePipelineEnabled()
+  ) {
+    try {
+      return await generateSummaryStudyGuideFromExcerptsV2({
+        generationType,
+        excerpts,
+        language,
+        options: normalizedOptions,
+      });
+    } catch (error) {
+      captureSentryException(error, {
+        tags: {
+          ai_phase: "generate_summary_study_guide_v2",
+          generationType,
+        },
+      });
+      throw error;
+    }
+  }
+
   const sourceMaterial = prepareGenerationSourceMaterial(excerpts, generationType);
   const sourceTier = getSourceSizeTier(sourceMaterial.estimatedInputTokens);
   const { prompt, effectiveOptions } = buildPromptForGeneration({
@@ -691,7 +1371,7 @@ export async function generateStudyMaterialFromExcerpts({
       throw new Error("OpenAI returned an empty generation response");
     }
 
-    const parsed = JSON.parse(cleanJsonResponse(raw));
+    const parsed = parseJsonResponse(raw);
     const output = normalizeGenerationModelOutput(generationType, parsed);
     assertNonEmptyGenerationOutput(generationType, output);
 
