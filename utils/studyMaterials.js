@@ -24,7 +24,7 @@ const ESTIMATED_CHARS_PER_TOKEN = 4;
 const SUMMARY_SIGNAL_CHUNK_TOKEN_LIMIT = 2_500;
 const SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT = 2_200;
 const SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT = 3_600;
-const GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT = 6_500;
+const GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT = 4_500;
 const SUMMARY_ANALYSIS_CACHE_TTL_MS = 30 * 60 * 1000;
 const SUMMARY_ANALYSIS_CACHE_MAX_ENTRIES = 50;
 const INPUT_TOKEN_LIMITS = {
@@ -111,34 +111,29 @@ Length target:
 * Very large material: summarize proportionally, but avoid excessive detail
 * Never produce a bloated output that reads like a full rewritten textbook
 
-Use this structure:
+Use EXACTLY these section titles as clean markdown headings, in this order:
 
-1. Big Picture: What This Material Is Really About
-    * 1–3 short paragraphs
-    * explain the main idea in simple language
-2. Learning Outcomes You Must Be Able to Explain
-    * 3–6 bullets maximum
-3. Core Concepts and Definitions
-    * define only important terms
-    * use concise explanations
-4. Main Models, Frameworks, Formulas, or Methods
-    * include only if present in the source
-    * explain purpose, components, and why it matters
-    * use tables when useful
-5. Key Comparisons and Distinctions
-    * use compact comparison tables
-    * focus on concepts students may confuse
-6. Important Examples or Applications
-    * include only high-value examples from the source
-    * keep examples short
-7. Common Mistakes or Misunderstandings
-    * short bullets
-    * focus on likely confusion
-8. What to Memorize
-    * concise bullet list
-9. Final Quick Review
-    * short final recap
-    * 3–6 high-value lines only
+Big Picture: What This Material Is Really About
+Learning Outcomes
+Core Concepts
+Main Models / Frameworks
+Key Comparisons
+Examples
+Common Mistakes
+What to Memorize
+Final Quick Review
+
+Section rules:
+
+* Big Picture: What This Material Is Really About: 1-3 short paragraphs explaining the main idea simply.
+* Learning Outcomes: 3-6 bullets maximum.
+* Core Concepts: define only important terms with concise explanations.
+* Main Models / Frameworks: include only source-present models, frameworks, formulas, or methods; explain purpose, components, and why they matter.
+* Key Comparisons: use compact comparison tables for concepts students may confuse.
+* Examples: include only high-value source examples or very helpful clarifying examples; keep them short.
+* Common Mistakes: short bullets focused on likely confusion.
+* What to Memorize: concise bullet list of exam-memory points.
+* Final Quick Review: 3-6 high-value recap lines only.
 
 Subject adaptation:
 
@@ -155,8 +150,10 @@ Formatting rules:
 * Avoid excessive nested bullets.
 * Avoid markdown horizontal rules.
 * Avoid code blocks unless the source is technical/code-based.
-* Avoid numbered sections beyond the required section headings.
+* Do not number the section headings.
+* Use only the exact section headings listed above.
 * Keep paragraphs short.
+* Keep sections visually tight with no large empty gaps.
 * Keep the output visually clean inside the app.
 
 Quality bar:
@@ -168,6 +165,7 @@ The summary should feel like a polished study guide made by an excellent tutor:
 * not generic
 * not bloated
 * not a raw slide-by-slide rewrite
+* readable in 5-10 minutes
 
 Return only the summary content.`;
 
@@ -1170,8 +1168,15 @@ function assertSummaryStudyGuideStructure(text) {
   }
 }
 
+function cleanSummaryText(value) {
+  return normalizeString(value)
+    .replace(/^\s*[-*_]{3,}\s*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function normalizeSummaryOutput(parsed) {
-  const text = normalizeString(parsed?.text ?? parsed?.summary);
+  const text = cleanSummaryText(parsed?.text ?? parsed?.summary);
   return { text };
 }
 
@@ -1452,7 +1457,7 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
     messages,
   });
 
-  const text = normalizeString(response.choices?.[0]?.message?.content);
+  const text = cleanSummaryText(response.choices?.[0]?.message?.content);
   const output = { text };
   assertNonEmptyGenerationOutput(generationType, output);
 
