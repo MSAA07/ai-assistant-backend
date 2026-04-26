@@ -49,7 +49,7 @@ const FLAGS = [
   },
   {
     featureKey: "USE_GPT55_SUMMARY",
-    description: "Route summary generation to GPT-5.5 with the detailed in-app study-summary prompt",
+    description: "Route summary generation to GPT-5.5 with the concise in-app study-summary prompt",
   },
 ];
 

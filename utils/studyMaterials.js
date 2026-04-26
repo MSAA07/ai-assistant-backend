@@ -24,7 +24,7 @@ const ESTIMATED_CHARS_PER_TOKEN = 4;
 const SUMMARY_SIGNAL_CHUNK_TOKEN_LIMIT = 2_500;
 const SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT = 2_200;
 const SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT = 3_600;
-const GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT = 16_000;
+const GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT = 6_500;
 const SUMMARY_ANALYSIS_CACHE_TTL_MS = 30 * 60 * 1000;
 const SUMMARY_ANALYSIS_CACHE_MAX_ENTRIES = 50;
 const INPUT_TOKEN_LIMITS = {
@@ -81,55 +81,95 @@ const REGENERATION_REASON_LABELS = Object.freeze({
   too_short: "Too short",
   too_generic: "Too generic",
 });
-const SUMMARY_GENERATION_PROMPT = `Create a clear, detailed, student-friendly study summary from the provided source material.
+const SUMMARY_GENERATION_PROMPT = `Create a concise, high-quality study summary from the provided source material.
 
-Your goal is to help the user understand the material confidently, not just skim it.
+Your goal is to produce a compact study guide, not a long textbook rewrite.
 
-Important:
+Read the source material carefully and extract only the highest-value learning content:
 
-* Read the full source material carefully.
-* Include all important content, including definitions, examples, formulas, models, tables, diagrams, figures, comparisons, processes, and key distinctions when present.
-* Rewrite ideas in your own words while preserving the original meaning.
-* Explain concepts clearly and logically.
-* Make the summary useful inside the application first.
-* Do not make the output PDF-specific.
-* Do not include practice questions, mock questions, or question-and-answer sections.
+* core ideas
+* definitions
+* models/frameworks
+* formulas/methods if present
+* key comparisons
+* examples that clarify important concepts
+* common mistakes
+* what the user should remember
 
-Use this structure when applicable:
+Do not include practice questions, quizzes, or Q&A sections.
 
-1. Title
-2. Big Picture Overview
-3. Learning Goals
-4. Detailed Study Notes
-5. Key Concepts, Terms, and Definitions
-6. Models, Frameworks, Formulas, or Methods
-7. Comparisons and Key Distinctions
-8. Examples and Applications
-9. Common Mistakes or Misunderstandings
-10. Key Takeaways
-11. Final Quick Review Checklist
+Do not over-explain obvious points.
 
-Adapt the structure to the material:
+Do not repeat the same idea in multiple sections.
 
-* For math: emphasize formulas, steps, methods, worked-style explanations, common errors, and when to use each formula.
-* For science: emphasize concepts, mechanisms, definitions, diagrams, processes, causes/effects, and applications.
-* For business: emphasize frameworks, models, stakeholders, processes, comparisons, decisions, and practical implications.
-* For technical material: emphasize architecture, components, workflows, APIs, constraints, dependencies, and examples.
-* For humanities/social science: emphasize arguments, themes, definitions, theories, comparisons, evidence, and implications.
+Do not add invented examples unless they clearly help explain a difficult concept.
 
-Formatting requirements:
+Length target:
 
-* Use clear headings.
-* Use bullets where helpful.
-* Use tables when they improve understanding.
-* Keep it detailed but not bloated.
-* Avoid irrelevant motivational text.
-* Avoid generic filler.
-* Do not include a “Practice Questions” section.
-* Do not include exam questions.
+* Normal lecture/chapter: 1,800–2,800 words
+* Short material: 800–1,500 words
+* Very large material: summarize proportionally, but avoid excessive detail
+* Never produce a bloated output that reads like a full rewritten textbook
 
-Final output:
-Return only the in-app summary content.`;
+Use this structure:
+
+1. Big Picture: What This Material Is Really About
+    * 1–3 short paragraphs
+    * explain the main idea in simple language
+2. Learning Outcomes You Must Be Able to Explain
+    * 3–6 bullets maximum
+3. Core Concepts and Definitions
+    * define only important terms
+    * use concise explanations
+4. Main Models, Frameworks, Formulas, or Methods
+    * include only if present in the source
+    * explain purpose, components, and why it matters
+    * use tables when useful
+5. Key Comparisons and Distinctions
+    * use compact comparison tables
+    * focus on concepts students may confuse
+6. Important Examples or Applications
+    * include only high-value examples from the source
+    * keep examples short
+7. Common Mistakes or Misunderstandings
+    * short bullets
+    * focus on likely confusion
+8. What to Memorize
+    * concise bullet list
+9. Final Quick Review
+    * short final recap
+    * 3–6 high-value lines only
+
+Subject adaptation:
+
+* Math: focus on formulas, when to use them, steps, common errors, and interpretation.
+* Science: focus on concepts, mechanisms, processes, cause/effect, and definitions.
+* Business: focus on frameworks, stakeholders, decisions, processes, and comparisons.
+* Technical material: focus on architecture, components, flows, constraints, APIs, and dependencies.
+* Humanities/social science: focus on arguments, theories, themes, evidence, and implications.
+
+Formatting rules:
+
+* Use clean markdown headings.
+* Use bullets and tables, but only when they improve readability.
+* Avoid excessive nested bullets.
+* Avoid markdown horizontal rules.
+* Avoid code blocks unless the source is technical/code-based.
+* Avoid numbered sections beyond the required section headings.
+* Keep paragraphs short.
+* Keep the output visually clean inside the app.
+
+Quality bar:
+The summary should feel like a polished study guide made by an excellent tutor:
+
+* clear
+* compact
+* complete enough for revision
+* not generic
+* not bloated
+* not a raw slide-by-slide rewrite
+
+Return only the summary content.`;
 
 function getClient() {
   if (!process.env.OPENAI_API_KEY) {
@@ -1396,14 +1436,20 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
 }) {
   const sourceMaterial = prepareGpt55SummarySourceMaterial(excerpts);
   const model = resolveModelForGeneration({ generationType, useGpt55Summary });
+  const regenerationGuidancePrompt = buildRegenerationGuidancePrompt(options);
+  const messages = [
+    { role: "user", content: SUMMARY_GENERATION_PROMPT },
+  ];
+  if (regenerationGuidancePrompt) {
+    messages.push({ role: "user", content: regenerationGuidancePrompt });
+  }
+  messages.push({ role: "user", content: sourceMaterial.text });
+
   const openai = getClient();
   const response = await openai.chat.completions.create({
     model,
     max_completion_tokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
-    messages: [
-      { role: "user", content: SUMMARY_GENERATION_PROMPT },
-      { role: "user", content: sourceMaterial.text },
-    ],
+    messages,
   });
 
   const text = normalizeString(response.choices?.[0]?.message?.content);
