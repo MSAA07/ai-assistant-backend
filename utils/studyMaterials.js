@@ -1232,6 +1232,84 @@ Each item must be exactly:
 No explanations. No markdown. No extra text.`;
 }
 
+function toExamQaInput(questions = []) {
+  return questions
+    .map((question) => normalizeExamQuestion(question))
+    .filter(Boolean)
+    .map((question) => {
+      const baseQuestion = {
+        type: question.type,
+        question: question.question,
+        correctAnswer: question.correctAnswer,
+        explanation: question.explanation,
+      };
+
+      if (question.type === "true_false") {
+        return {
+          ...baseQuestion,
+          correctAnswer: String(question.correctAnswer).toLowerCase() === "true",
+        };
+      }
+
+      return {
+        ...baseQuestion,
+        options: question.options,
+      };
+    });
+}
+
+function buildExamQaPrompt(questions, language, sourceText, targetCount) {
+  const languageName = language === "arabic" ? "Arabic" : "English";
+  const qaInput = JSON.stringify({ questions: toExamQaInput(questions) }, null, 2);
+  const mcqMin = Math.ceil(targetCount * 0.7);
+  const mcqMax = Math.floor(targetCount * 0.8);
+  const trueFalseMin = targetCount - mcqMax;
+  const trueFalseMax = targetCount - mcqMin;
+
+  return `You are performing strict QA validation for a mock exam in ${languageName}.
+
+Use model: gpt-4o.
+
+MOCK EXAM JSON:
+${qaInput}
+
+SOURCE MATERIAL FOR CORRECTNESS AND COVERAGE:
+"""
+${sourceText}
+"""
+
+OBJECTIVE:
+Fix the exam until it reaches production quality.
+You must detect problems, fix them, and improve quality.
+
+Validation rules:
+- Correctness: ensure every correct answer is actually correct according to the source material. Fix any wrong answers immediately.
+- MCQ quality: ensure every MCQ has exactly 4 options, only one correct answer, and realistic topic-related distractors.
+- Clarity: remove ambiguity and improve wording.
+- Difficulty: avoid questions that are too easy, too obvious, or purely copied definitions. Improve depth slightly where needed.
+- True/False quality: remove trivial statements and ensure each one evaluates meaningful understanding.
+- Redundancy: remove duplicate or overlapping questions.
+- Coverage: ensure the exam includes definitions, models, comparisons, and key concepts from the source material. Add missing questions if needed.
+- Explanation quality: explanations must be short, 1-2 lines, and explain the reasoning.
+- Keep the final exam close to ${targetCount} questions.
+- Distribution target: ${mcqMin}-${mcqMax} MCQs and ${trueFalseMin}-${trueFalseMax} True/False questions.
+
+Process:
+1. Analyze all questions.
+2. Fix issues.
+3. Improve quality.
+4. Re-check.
+5. Repeat until high quality.
+
+Stop only when all questions are correct, distractors are strong, no ambiguity exists, coverage is good, and difficulty is balanced.
+
+Output:
+Return ONLY the improved JSON object.
+Use exactly this shape:
+{"questions":[{"type":"mcq","question":"string","options":["A","B","C","D"],"correctAnswer":"exact correct option text","explanation":"short explanation"},{"type":"true_false","question":"string","correctAnswer":true,"explanation":"short explanation"}]}
+No markdown. No extra text.`;
+}
+
 function cleanJsonResponse(raw) {
   return normalizeString(raw)
     .replace(/```json/gi, "")
@@ -1474,6 +1552,48 @@ async function validateAndImproveFlashcards({
 
   const improvedOutput = normalizeFlashcardsOutput(parseJsonResponse(raw));
   assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, improvedOutput);
+
+  return {
+    output: improvedOutput,
+    modelUsed: response?.model || model,
+    usage: response?.usage || null,
+  };
+}
+
+async function validateAndImproveExam({
+  questions,
+  language,
+  sourceText,
+  targetCount,
+  model,
+}) {
+  const output = { questions };
+  assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.exam, output);
+
+  const openai = getClient();
+  const response = await openai.chat.completions.create({
+    model,
+    temperature: 0.15,
+    max_tokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
+    messages: [
+      {
+        role: "system",
+        content: "You validate and improve mock exams. Return only a valid JSON object with a questions array.",
+      },
+      {
+        role: "user",
+        content: buildExamQaPrompt(questions, language, sourceText, targetCount),
+      },
+    ],
+  });
+
+  const raw = response.choices?.[0]?.message?.content;
+  if (!raw) {
+    throw new Error("OpenAI returned an empty exam QA response");
+  }
+
+  const improvedOutput = normalizeExamOutput(parseJsonResponse(raw));
+  assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.exam, improvedOutput);
 
   return {
     output: improvedOutput,
@@ -1804,6 +1924,19 @@ export async function generateStudyMaterialFromExcerpts({
       usage = combineUsage(usage, qaResult.usage);
     }
 
+    if (generationType === DOCUMENT_GENERATION_TYPES.exam) {
+      const qaResult = await validateAndImproveExam({
+        questions: output.questions,
+        language,
+        sourceText: sourceMaterial.text,
+        targetCount: effectiveOptions.questionCount,
+        model,
+      });
+      output = qaResult.output;
+      modelUsed = qaResult.modelUsed || modelUsed;
+      usage = combineUsage(usage, qaResult.usage);
+    }
+
     return {
       output,
       modelUsed,
@@ -1830,8 +1963,10 @@ export const __studyMaterialsTestables = {
   buildFlashcardsPrompt,
   buildFlashcardQaPrompt,
   buildExamPrompt,
+  buildExamQaPrompt,
   getExamTargetCount,
   getFlashcardTargetCount,
   normalizeFlashcardsOutput,
+  toExamQaInput,
   toFlashcardQaInput,
 };

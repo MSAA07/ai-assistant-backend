@@ -107,3 +107,54 @@ test("exam prompt requests gpt-4o-quality mock exam structure and distribution",
   assert.match(prompt, /correctAnswer must exactly match the full text of the correct option/);
   assert.match(prompt, /correctAnswer must be a JSON boolean true or false/);
 });
+
+test("exam QA prompt requires fixing correctness, distractors, clarity, and coverage", () => {
+  const prompt = __studyMaterialsTestables.buildExamQaPrompt(
+    [
+      {
+        type: "mcq",
+        question: "What is EA?",
+        options: ["Architecture", "A database", "A server", "A diagram"],
+        correctAnswer: "Architecture",
+        explanation: "EA is architecture.",
+      },
+      {
+        type: "true_false",
+        question: "EA is only about software.",
+        correctAnswer: "False",
+        explanation: "EA also includes people and processes.",
+      },
+    ],
+    "english",
+    "Enterprise Architecture aligns strategy, people, processes, and technology.",
+    10,
+  );
+
+  assert.match(prompt, /Fix the exam until it reaches production quality/);
+  assert.match(prompt, /ensure every correct answer is actually correct/);
+  assert.match(prompt, /realistic topic-related distractors/);
+  assert.match(prompt, /remove duplicate or overlapping questions/);
+  assert.match(prompt, /definitions, models, comparisons, and key concepts/);
+  assert.match(prompt, /Return ONLY the improved JSON object/);
+});
+
+test("exam QA input serializes true false answers as JSON booleans", () => {
+  assert.deepEqual(
+    __studyMaterialsTestables.toExamQaInput([
+      {
+        type: "true_false",
+        question: "EA only concerns software systems.",
+        correctAnswer: "False",
+        explanation: "EA also includes people, process, and strategy.",
+      },
+    ]),
+    [
+      {
+        type: "true_false",
+        question: "EA only concerns software systems.",
+        correctAnswer: false,
+        explanation: "EA also includes people, process, and strategy.",
+      },
+    ],
+  );
+});
