@@ -1125,6 +1125,63 @@ ${text}
 """`;
 }
 
+function toFlashcardQaInput(cards = []) {
+  return cards
+    .map((card) => normalizeFlashcard(card))
+    .filter(Boolean)
+    .map((card) => ({
+      front: card.question,
+      back: card.answer,
+    }));
+}
+
+function buildFlashcardQaPrompt(cards, language, sourceText, targetCount) {
+  const languageName = language === "arabic" ? "Arabic" : "English";
+  const qaInput = JSON.stringify(toFlashcardQaInput(cards), null, 2);
+
+  return `You are performing strict QA validation for flashcards in ${languageName}.
+
+Use model behavior optimized for production-quality flashcards.
+
+INPUT FLASHCARDS:
+${qaInput}
+
+SOURCE MATERIAL FOR COVERAGE CHECK:
+"""
+${sourceText}
+"""
+
+OBJECTIVE:
+Validate AND improve flashcards until they meet production quality.
+You must FIX issues, not just report them.
+
+Validation rules:
+- One concept per card: each card tests ONE idea only. If multiple ideas appear, split them into multiple cards.
+- Answer length: max 1-2 lines. No paragraphs. No long explanations.
+- Question clarity: each front must be specific and testable.
+- No redundancy: remove duplicates and merge overlapping concepts.
+- High-value only: remove trivial or obvious cards and keep exam-relevant concepts.
+- Coverage check: ensure cards cover definitions, models/frameworks, key distinctions, cause/effect relationships, and important lists from the source material.
+- If high-value coverage is missing, add cards.
+- Formatting: plain text only, no markdown, no symbols, clean JSON.
+- Keep the final set close to ${targetCount} cards unless the source clearly needs fewer or more.
+
+Process:
+1. Analyze the flashcards.
+2. Identify all issues.
+3. Fix weak cards, split complex cards, remove duplicates, and add missing high-value cards.
+4. Re-check again.
+5. Repeat until high quality.
+
+Stop only when cards are concise, non-redundant, clear, testable, and exam-ready.
+
+Output:
+Return ONLY the improved JSON array.
+Each item must be exactly:
+{"front":"question or prompt","back":"clear, concise answer"}
+No explanations. No markdown. No extra text.`;
+}
+
 function cleanJsonResponse(raw) {
   return normalizeString(raw)
     .replace(/```json/gi, "")
@@ -1270,8 +1327,13 @@ function normalizeSummaryOutput(parsed) {
 }
 
 function normalizeFlashcardsOutput(parsed) {
-  const cards = Array.isArray(parsed?.cards)
-    ? parsed.cards.map(normalizeFlashcard).filter(Boolean)
+  const sourceCards = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.cards)
+      ? parsed.cards
+      : [];
+  const cards = sourceCards.length > 0
+    ? sourceCards.map(normalizeFlashcard).filter(Boolean)
     : [];
 
   return { cards };
@@ -1313,6 +1375,61 @@ function assertNonEmptyGenerationOutput(generationType, output) {
   const error = new Error("Model response did not contain usable generation output");
   error.code = "invalid_generation_output";
   throw error;
+}
+
+function combineUsage(...usageRecords) {
+  const records = usageRecords.filter(Boolean);
+  if (records.length === 0) {
+    return null;
+  }
+
+  return records.reduce((combined, usage) => ({
+    prompt_tokens: (combined.prompt_tokens || 0) + Number(usage.prompt_tokens || usage.input_tokens || 0),
+    completion_tokens: (combined.completion_tokens || 0) + Number(usage.completion_tokens || usage.output_tokens || 0),
+    total_tokens: (combined.total_tokens || 0) + Number(usage.total_tokens || 0),
+  }), {});
+}
+
+async function validateAndImproveFlashcards({
+  cards,
+  language,
+  sourceText,
+  targetCount,
+  model,
+}) {
+  const output = { cards };
+  assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, output);
+
+  const openai = getClient();
+  const response = await openai.chat.completions.create({
+    model,
+    temperature: 0.15,
+    max_tokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
+    messages: [
+      {
+        role: "system",
+        content: "You validate and improve flashcards. Return only a valid JSON array of {front,back} objects.",
+      },
+      {
+        role: "user",
+        content: buildFlashcardQaPrompt(cards, language, sourceText, targetCount),
+      },
+    ],
+  });
+
+  const raw = response.choices?.[0]?.message?.content;
+  if (!raw) {
+    throw new Error("OpenAI returned an empty flashcard QA response");
+  }
+
+  const improvedOutput = normalizeFlashcardsOutput(parseJsonResponse(raw));
+  assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, improvedOutput);
+
+  return {
+    output: improvedOutput,
+    modelUsed: response?.model || model,
+    usage: response?.usage || null,
+  };
 }
 
 function buildPromptForGeneration({ generationType, language, options, sourceText, sourceTier, sampled }) {
@@ -1619,13 +1736,28 @@ export async function generateStudyMaterialFromExcerpts({
     }
 
     const parsed = parseJsonResponse(raw);
-    const output = normalizeGenerationModelOutput(generationType, parsed);
+    let output = normalizeGenerationModelOutput(generationType, parsed);
     assertNonEmptyGenerationOutput(generationType, output);
+    let modelUsed = response?.model || model;
+    let usage = response?.usage || null;
+
+    if (generationType === DOCUMENT_GENERATION_TYPES.flashcards) {
+      const qaResult = await validateAndImproveFlashcards({
+        cards: output.cards,
+        language,
+        sourceText: sourceMaterial.text,
+        targetCount: effectiveOptions.cardCount,
+        model,
+      });
+      output = qaResult.output;
+      modelUsed = qaResult.modelUsed || modelUsed;
+      usage = combineUsage(usage, qaResult.usage);
+    }
 
     return {
       output,
-      modelUsed: response?.model || model,
-      usage: response?.usage || null,
+      modelUsed,
+      usage,
       estimatedInputTokens: sourceMaterial.estimatedInputTokens,
       selectedExcerptCount: sourceMaterial.selectedExcerptCount,
       totalExcerptCount: sourceMaterial.totalExcerptCount,
@@ -1646,5 +1778,8 @@ export async function generateStudyMaterialFromExcerpts({
 export const __studyMaterialsTestables = {
   cleanSummaryText,
   buildFlashcardsPrompt,
+  buildFlashcardQaPrompt,
   getFlashcardTargetCount,
+  normalizeFlashcardsOutput,
+  toFlashcardQaInput,
 };
