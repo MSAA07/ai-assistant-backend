@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import pdfParse from "pdf-parse";
 import PDFDocument from "pdfkit";
 
 import { __studyPdfTestables, buildStudyPdfBuffer, buildStudyPdfFileName } from "./studyPdf.js";
@@ -13,6 +14,11 @@ test("buildStudyPdfFileName uses the canonical document-feature format", () => {
   assert.equal(
     buildStudyPdfFileName({ originalName: "Chapter 3 - المراجعة النهائية.docx" }, "flashcards"),
     "Chapter 3 - المراجعة النهائية Flashcards.pdf",
+  );
+
+  assert.equal(
+    buildStudyPdfFileName({ originalName: "Lecture 3 Chap002-EA.pdf" }, "exam"),
+    "Lecture 3 Chap002-EA Mock Exam.pdf",
   );
 });
 
@@ -447,6 +453,54 @@ test("exam ordering keeps multiple choice before true/false questions", () => {
     ordered.map((entry) => entry.question),
     ["MCQ 1", "MCQ 2", "TF 1", "TF 2"],
   );
+});
+
+test("mock exam answer helpers return option and true false letters", () => {
+  assert.equal(
+    __studyPdfTestables.getExamAnswerLetter({
+      type: "mcq",
+      options: ["Structure", "People", "Technology", "Tasks"],
+      correctAnswer: "Technology",
+    }),
+    "C",
+  );
+  assert.equal(
+    __studyPdfTestables.getTrueFalseAnswerLetter({
+      type: "true_false",
+      correctAnswer: "False",
+    }),
+    "F",
+  );
+});
+
+test("mock exam pdf uses Letter page setup and includes exam sections", async () => {
+  const questions = [
+    {
+      type: "mcq",
+      question: "Which component of the Leavitt Diamond refers to stakeholders and teams?",
+      options: ["Structure", "Task", "Technology", "People"],
+      correctAnswer: "People",
+      explanation: "People covers stakeholders, users, and teams.",
+    },
+    {
+      type: "true_false",
+      question: "Enterprise Architecture only documents software systems.",
+      correctAnswer: "False",
+      explanation: "EA also includes people, processes, strategy, and structure.",
+    },
+  ];
+  const buffer = await buildStudyPdfBuffer({
+    originalName: "Lecture 3 Chap002-EA.pdf",
+    examQuestions: questions,
+  }, "exam");
+  const pdfText = buffer.toString("latin1");
+  const parsed = await pdfParse(buffer);
+
+  assert.match(pdfText, /\/MediaBox \[0 0 612 792\]/);
+  assert.match(parsed.text, /Mock Exam/);
+  assert.match(parsed.text, /Section A/);
+  assert.match(parsed.text, /Section B/);
+  assert.match(parsed.text, /Answer Key/);
 });
 
 test("exam section label is mock exam", () => {

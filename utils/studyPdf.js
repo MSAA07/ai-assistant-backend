@@ -24,6 +24,8 @@ const SPACING = Object.freeze({
   xxl: 40,
 });
 
+const POINTS_PER_INCH = 72;
+
 const PDF_SYSTEM = Object.freeze({
   page: {
     size: "A4",
@@ -76,6 +78,44 @@ const COLORS = Object.freeze({
   softBorder: "#D9E2EC",
   panel: "#F8FAFC",
   accentPanel: "#F3F6FB",
+});
+
+const MOCK_EXAM_PDF = Object.freeze({
+  page: {
+    size: "LETTER",
+    mainMargins: {
+      top: 0.55 * POINTS_PER_INCH,
+      bottom: 0.55 * POINTS_PER_INCH,
+      left: 0.65 * POINTS_PER_INCH,
+      right: 0.65 * POINTS_PER_INCH,
+    },
+    answerMargins: {
+      top: 0.7 * POINTS_PER_INCH,
+      bottom: 0.7 * POINTS_PER_INCH,
+      left: 0.8 * POINTS_PER_INCH,
+      right: 0.8 * POINTS_PER_INCH,
+    },
+    footerReserve: 18,
+  },
+  typography: {
+    title: 16,
+    subtitle: 12,
+    section: 12,
+    body: 10,
+    footer: 8,
+  },
+  colors: {
+    text: "#000000",
+    muted: "#666666",
+    tableFill: "#F2F4F7",
+    border: "#D0D7E2",
+    white: "#FFFFFF",
+  },
+  table: {
+    paddingX: 6,
+    paddingY: 4,
+    minRowHeight: 22,
+  },
 });
 
 const FEATURE_LABELS = Object.freeze({
@@ -1818,6 +1858,7 @@ function renderSummary(doc, summary) {
 
 export const __studyPdfTestables = Object.freeze({
   PDF_SYSTEM,
+  MOCK_EXAM_PDF,
   FEATURE_LABELS,
   getTextDirection,
   toVisualPdfText,
@@ -1838,7 +1879,10 @@ export const __studyPdfTestables = Object.freeze({
   getRenderableExamOptions,
   getExamQuestionLabel,
   getExamOptionLabel,
+  getExamAnswerLetter,
+  getTrueFalseAnswerLetter,
   orderExamQuestionsForPdf,
+  splitExamQuestionsForPdf,
   registerPdfFonts,
 });
 
@@ -2021,6 +2065,33 @@ function getExamOptionLabel(questionType, optionIndex) {
   return `${String.fromCharCode(65 + optionIndex)}.`;
 }
 
+function getExamOptionLetter(optionIndex) {
+  return String.fromCharCode(65 + optionIndex);
+}
+
+function getExamAnswerLetter(question) {
+  const options = getRenderableExamOptions(question, "mcq");
+  const correctAnswer = normalizeParagraphText(question?.correctAnswer);
+  const directLetter = correctAnswer.trim().toUpperCase();
+  if (/^[A-D]$/.test(directLetter)) {
+    return directLetter;
+  }
+
+  const answerIndex = options.findIndex((option) => normalizeParagraphText(option) === correctAnswer);
+  return answerIndex >= 0 ? getExamOptionLetter(answerIndex) : "";
+}
+
+function getTrueFalseAnswerLetter(question) {
+  const answer = normalizeParagraphText(question?.correctAnswer).toLowerCase();
+  if (answer === "true" || answer === "t") {
+    return "T";
+  }
+  if (answer === "false" || answer === "f") {
+    return "F";
+  }
+  return "";
+}
+
 function orderExamQuestionsForPdf(questions = []) {
   const normalizedQuestions = Array.isArray(questions) ? questions : [];
   const mcq = [];
@@ -2035,6 +2106,22 @@ function orderExamQuestionsForPdf(questions = []) {
   });
 
   return [...mcq, ...trueFalse];
+}
+
+function splitExamQuestionsForPdf(questions = []) {
+  const normalizedQuestions = Array.isArray(questions) ? questions : [];
+  const mcq = [];
+  const trueFalse = [];
+
+  normalizedQuestions.forEach((question) => {
+    if (getExamQuestionType(question) === "true_false") {
+      trueFalse.push(question);
+      return;
+    }
+    mcq.push(question);
+  });
+
+  return { mcq, trueFalse };
 }
 
 function measureExamQuestionBlock(doc, question, index, width) {
@@ -2064,86 +2151,445 @@ function measureExamQuestionBlock(doc, question, index, width) {
   return height;
 }
 
-function renderExam(doc, questions = []) {
-  const orderedQuestions = orderExamQuestionsForPdf(questions);
+function getMockExamContentMetrics(doc) {
+  const margins = doc.page.margins ?? MOCK_EXAM_PDF.page.mainMargins;
+  return {
+    x: margins.left,
+    y: margins.top,
+    width: doc.page.width - margins.left - margins.right,
+    bottom: doc.page.height - margins.bottom - MOCK_EXAM_PDF.page.footerReserve,
+  };
+}
 
-  orderedQuestions.forEach((question, index) => {
-    const { x, width } = getContentMetrics(doc);
-    const blockX = x;
-    const blockWidth = width;
-    const contentX = blockX + PDF_SYSTEM.components.exam.padding;
-    const contentWidth = blockWidth - (PDF_SYSTEM.components.exam.padding * 2);
-    const questionType = getExamQuestionType(question);
-    const questionLabel = getExamQuestionLabel(index, questionType);
-    const options = getRenderableExamOptions(question, questionType);
-    const questionText = normalizeParagraphText(question?.question) || "No question provided.";
-    const blockHeight = measureExamQuestionBlock(doc, question, index, contentWidth);
+function applyMockExamFont(doc, value = "", { bold = false } = {}) {
+  if (containsArabic(value)) {
+    doc.font(bold ? PDF_FONT_ALIASES.arabicBold : PDF_FONT_ALIASES.arabic);
+    return;
+  }
+  doc.font(bold ? "Helvetica-Bold" : "Helvetica");
+}
 
-    ensureVerticalSpace(doc, blockHeight + PDF_SYSTEM.components.exam.gapBetweenQuestions);
+function measureMockExamText(doc, value, options = {}) {
+  const text = normalizeParagraphText(value);
+  if (!text) {
+    return 0;
+  }
+  applyMockExamFont(doc, text, { bold: options.bold });
+  doc.fontSize(options.fontSize ?? MOCK_EXAM_PDF.typography.body);
+  return doc.heightOfString(text, {
+    width: options.width,
+    align: options.align ?? "left",
+    lineGap: options.lineGap ?? 0,
+  });
+}
 
+function drawMockExamText(doc, value, options = {}) {
+  const text = normalizeParagraphText(value);
+  if (!text) {
+    return 0;
+  }
+
+  const fontSize = options.fontSize ?? MOCK_EXAM_PDF.typography.body;
+  applyMockExamFont(doc, text, { bold: options.bold });
+  doc.fontSize(fontSize).fillColor(options.color ?? MOCK_EXAM_PDF.colors.text);
+  const y = options.y ?? doc.y;
+  const height = measureMockExamText(doc, text, {
+    width: options.width,
+    align: options.align,
+    lineGap: options.lineGap,
+    fontSize,
+    bold: options.bold,
+  });
+  const originalY = doc.y;
+  doc.text(text, options.x, y, {
+    width: options.width,
+    align: options.align ?? "left",
+    lineGap: options.lineGap ?? 0,
+  });
+  doc.y = options.advanceCursor === false ? originalY : y + height;
+  return height;
+}
+
+function addMockExamPage(doc, { answerKey = false } = {}) {
+  doc.addPage({
+    size: MOCK_EXAM_PDF.page.size,
+    margins: answerKey ? MOCK_EXAM_PDF.page.answerMargins : MOCK_EXAM_PDF.page.mainMargins,
+  });
+  doc.y = getMockExamContentMetrics(doc).y;
+}
+
+function ensureMockExamSpace(doc, height, options = {}) {
+  const { bottom } = getMockExamContentMetrics(doc);
+  if (doc.y + height > bottom) {
+    addMockExamPage(doc, options);
+  }
+}
+
+function drawMockExamSectionHeading(doc, value) {
+  const { x, width } = getMockExamContentMetrics(doc);
+  const height = measureMockExamText(doc, value, {
+    width,
+    fontSize: MOCK_EXAM_PDF.typography.section,
+    bold: true,
+  });
+  ensureMockExamSpace(doc, height + 8);
+  drawMockExamText(doc, value, {
+    x,
+    width,
+    fontSize: MOCK_EXAM_PDF.typography.section,
+    bold: true,
+  });
+  doc.y += 6;
+}
+
+function measureMockExamTableRow(doc, cells = [], columnWidths = [], options = {}) {
+  const paddingX = options.paddingX ?? MOCK_EXAM_PDF.table.paddingX;
+  const paddingY = options.paddingY ?? MOCK_EXAM_PDF.table.paddingY;
+  const fontSize = options.fontSize ?? MOCK_EXAM_PDF.typography.body;
+  const minHeight = options.minHeight ?? MOCK_EXAM_PDF.table.minRowHeight;
+  const heights = cells.map((cell, index) => measureMockExamText(doc, cell, {
+    width: Math.max(8, (columnWidths[index] ?? 0) - (paddingX * 2)),
+    fontSize,
+    bold: options.bold,
+    align: options.alignments?.[index] ?? "left",
+  }));
+  return Math.max(minHeight, ...heights.map((height) => height + (paddingY * 2)));
+}
+
+function drawMockExamTableRow(doc, cells = [], columnWidths = [], options = {}) {
+  const paddingX = options.paddingX ?? MOCK_EXAM_PDF.table.paddingX;
+  const paddingY = options.paddingY ?? MOCK_EXAM_PDF.table.paddingY;
+  const fontSize = options.fontSize ?? MOCK_EXAM_PDF.typography.body;
+  const x = options.x;
+  const y = options.y ?? doc.y;
+  const rowHeight = options.rowHeight ?? measureMockExamTableRow(doc, cells, columnWidths, options);
+  const fillCells = options.fillCells ?? [];
+  const boldCells = options.boldCells ?? [];
+  const alignments = options.alignments ?? [];
+  let cursorX = x;
+
+  cells.forEach((cell, index) => {
+    const width = columnWidths[index] ?? 0;
     doc
       .save()
-      .roundedRect(blockX, doc.y, blockWidth, blockHeight, PDF_SYSTEM.components.radius)
-      .lineWidth(1.1)
-      .fillAndStroke(COLORS.panel, COLORS.border)
+      .lineWidth(0.8)
+      .rect(cursorX, y, width, rowHeight)
+      .fillAndStroke(
+        fillCells[index] ? MOCK_EXAM_PDF.colors.tableFill : MOCK_EXAM_PDF.colors.white,
+        MOCK_EXAM_PDF.colors.border,
+      )
       .restore();
 
-    let cursorY = doc.y + PDF_SYSTEM.components.exam.padding;
-    cursorY = drawLabeledTextBlock(doc, questionLabel, questionText, {
-      x: contentX,
-      y: cursorY,
-      width: contentWidth,
-      bold: true,
-      fontSize: PDF_SYSTEM.typography.questionText.size,
-      lineGap: PDF_SYSTEM.typography.questionText.lineGap,
-      color: COLORS.strongText,
-    }).nextY;
-
-    if (options.length > 0) {
-      cursorY += PDF_SYSTEM.components.exam.dividerGap;
-      doc
-        .save()
-        .lineWidth(1)
-        .strokeColor(COLORS.softBorder)
-        .moveTo(contentX, cursorY)
-        .lineTo(contentX + contentWidth, cursorY)
-        .stroke()
-        .restore();
-      cursorY += PDF_SYSTEM.components.exam.dividerGap;
-    }
-
-    options.forEach((option, optionIndex) => {
-      const label = getExamOptionLabel(questionType, optionIndex);
-      const hasLabel = Boolean(label);
-
-      if (hasLabel) {
-        drawWrappedText(doc, label, {
-          x: contentX,
-          y: cursorY,
-          width: PDF_SYSTEM.components.exam.optionIndent - SPACING.sm,
-          fontSize: PDF_SYSTEM.typography.label.size,
-          lineGap: PDF_SYSTEM.typography.label.lineGap,
-          bold: true,
-          color: COLORS.text,
-          advanceCursor: false,
-        });
-      }
-
-      const optionHeight = drawWrappedText(doc, normalizeParagraphText(option), {
-        x: hasLabel ? contentX + PDF_SYSTEM.components.exam.optionIndent : contentX,
-        y: cursorY,
-        width: hasLabel ? contentWidth - PDF_SYSTEM.components.exam.optionIndent : contentWidth,
-        fontSize: PDF_SYSTEM.typography.body.size,
-        lineGap: PDF_SYSTEM.typography.body.lineGap,
-        color: COLORS.muted,
-        advanceCursor: false,
-      });
-
-      cursorY += Math.max(optionHeight, PDF_SYSTEM.typography.body.size) + PDF_SYSTEM.components.exam.optionsGap;
+    const textWidth = Math.max(8, width - (paddingX * 2));
+    const textHeight = measureMockExamText(doc, cell, {
+      width: textWidth,
+      fontSize,
+      bold: boldCells[index],
+      align: alignments[index] ?? "left",
     });
-
-    doc.y += blockHeight + PDF_SYSTEM.components.exam.gapBetweenQuestions;
+    drawMockExamText(doc, cell, {
+      x: cursorX + paddingX,
+      y: y + Math.max(paddingY, (rowHeight - textHeight) / 2),
+      width: textWidth,
+      fontSize,
+      bold: boldCells[index],
+      align: alignments[index] ?? "left",
+      advanceCursor: false,
+    });
+    cursorX += width;
   });
+
+  doc.y = y + rowHeight;
+  return rowHeight;
+}
+
+function renderMockExamMetadataTable(doc, documentTitle, totalMarks) {
+  const { x, width } = getMockExamContentMetrics(doc);
+  const exportDate = new Date().toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const rows = [
+    ["Date", exportDate, "Total Marks", String(totalMarks)],
+    ["Student Name", "", "Student ID", ""],
+  ];
+  const columnWidths = [width * 0.18, width * 0.32, width * 0.18, width * 0.32];
+
+  rows.forEach((row) => {
+    ensureMockExamSpace(doc, MOCK_EXAM_PDF.table.minRowHeight);
+    drawMockExamTableRow(doc, row, columnWidths, {
+      x,
+      fillCells: [true, false, true, false],
+      boldCells: [true, false, true, false],
+      alignments: ["left", "left", "left", "left"],
+      minHeight: 22,
+    });
+  });
+  doc.y += 12;
+}
+
+function renderMockExamTitleBlock(doc, documentTitle) {
+  const { x, width } = getMockExamContentMetrics(doc);
+  drawMockExamText(doc, "Mock Exam", {
+    x,
+    width,
+    fontSize: MOCK_EXAM_PDF.typography.title,
+    bold: true,
+    align: "center",
+  });
+  doc.y += 2;
+  drawMockExamText(doc, documentTitle, {
+    x,
+    width,
+    fontSize: MOCK_EXAM_PDF.typography.subtitle,
+    color: MOCK_EXAM_PDF.colors.muted,
+    align: "center",
+  });
+  doc.y += 8;
+}
+
+function measureMockExamOptions(doc, options, width) {
+  const optionIndent = 18;
+  const usableWidth = width - optionIndent;
+  const columnGap = 14;
+  const columnWidth = (usableWidth - columnGap) / 2;
+  let totalHeight = 0;
+
+  for (let rowIndex = 0; rowIndex < 2; rowIndex += 1) {
+    const left = options[rowIndex * 2] ?? "";
+    const right = options[(rowIndex * 2) + 1] ?? "";
+    const leftText = left ? `${getExamOptionLetter(rowIndex * 2)}. ${left}` : "";
+    const rightText = right ? `${getExamOptionLetter((rowIndex * 2) + 1)}. ${right}` : "";
+    const rowHeight = Math.max(
+      measureMockExamText(doc, leftText, { width: columnWidth, fontSize: MOCK_EXAM_PDF.typography.body }),
+      measureMockExamText(doc, rightText, { width: columnWidth, fontSize: MOCK_EXAM_PDF.typography.body }),
+      MOCK_EXAM_PDF.typography.body + 3,
+    );
+    totalHeight += rowHeight + (rowIndex === 0 ? 3 : 0);
+  }
+
+  return totalHeight;
+}
+
+function renderMockExamOptions(doc, answerOptions) {
+  const { x, width } = getMockExamContentMetrics(doc);
+  const optionIndent = 18;
+  const usableWidth = width - optionIndent;
+  const columnGap = 14;
+  const columnWidth = (usableWidth - columnGap) / 2;
+  const startX = x + optionIndent;
+  let cursorY = doc.y;
+
+  for (let rowIndex = 0; rowIndex < 2; rowIndex += 1) {
+    const leftIndex = rowIndex * 2;
+    const rightIndex = leftIndex + 1;
+    const leftText = answerOptions[leftIndex] ? `${getExamOptionLetter(leftIndex)}. ${answerOptions[leftIndex]}` : "";
+    const rightText = answerOptions[rightIndex] ? `${getExamOptionLetter(rightIndex)}. ${answerOptions[rightIndex]}` : "";
+    const leftHeight = drawMockExamText(doc, leftText, {
+      x: startX,
+      y: cursorY,
+      width: columnWidth,
+      fontSize: MOCK_EXAM_PDF.typography.body,
+      advanceCursor: false,
+    });
+    const rightHeight = drawMockExamText(doc, rightText, {
+      x: startX + columnWidth + columnGap,
+      y: cursorY,
+      width: columnWidth,
+      fontSize: MOCK_EXAM_PDF.typography.body,
+      advanceCursor: false,
+    });
+    cursorY += Math.max(leftHeight, rightHeight, MOCK_EXAM_PDF.typography.body + 3) + (rowIndex === 0 ? 3 : 0);
+  }
+
+  doc.y = cursorY;
+}
+
+function renderMockExamMcqSection(doc, mcqQuestions = []) {
+  drawMockExamSectionHeading(doc, `Section A: Multiple Choice Questions (${mcqQuestions.length} Marks)`);
+  const { x, width } = getMockExamContentMetrics(doc);
+
+  mcqQuestions.forEach((question, index) => {
+    const questionText = `${index + 1}. ${normalizeParagraphText(question?.question) || "No question provided."}`;
+    const options = getRenderableExamOptions(question, "mcq").slice(0, 4);
+    const questionHeight = measureMockExamText(doc, questionText, {
+      width,
+      fontSize: MOCK_EXAM_PDF.typography.body,
+      bold: true,
+    });
+    const optionsHeight = measureMockExamOptions(doc, options, width);
+    ensureMockExamSpace(doc, questionHeight + optionsHeight + 10);
+    drawMockExamText(doc, questionText, {
+      x,
+      width,
+      fontSize: MOCK_EXAM_PDF.typography.body,
+      bold: true,
+    });
+    doc.y += 3;
+    renderMockExamOptions(doc, options);
+    doc.y += 8;
+  });
+}
+
+function renderMockExamTrueFalseSection(doc, trueFalseQuestions = []) {
+  if (trueFalseQuestions.length === 0) {
+    return;
+  }
+
+  const { x, width } = getMockExamContentMetrics(doc);
+  const columnWidths = [width * 0.1, width * 0.76, width * 0.14];
+  const header = ["Q#", "Statement", "T / F"];
+  const heading = `Section B: True / False (${trueFalseQuestions.length} Marks)`;
+  const headingHeight = measureMockExamText(doc, heading, {
+    width,
+    fontSize: MOCK_EXAM_PDF.typography.section,
+    bold: true,
+  }) + 6;
+  const headerHeight = measureMockExamTableRow(doc, header, columnWidths, {
+    bold: true,
+    alignments: ["center", "left", "center"],
+  });
+  const firstRow = ["1", normalizeParagraphText(trueFalseQuestions[0]?.question), ""];
+  const firstRowHeight = measureMockExamTableRow(doc, firstRow, columnWidths, {
+    alignments: ["center", "left", "center"],
+  });
+
+  ensureMockExamSpace(doc, headingHeight + headerHeight + firstRowHeight);
+  drawMockExamText(doc, heading, {
+    x,
+    width,
+    fontSize: MOCK_EXAM_PDF.typography.section,
+    bold: true,
+  });
+  doc.y += 6;
+  drawMockExamTableRow(doc, header, columnWidths, {
+    x,
+    rowHeight: headerHeight,
+    fillCells: [true, true, true],
+    boldCells: [true, true, true],
+    alignments: ["center", "left", "center"],
+  });
+
+  trueFalseQuestions.forEach((question, index) => {
+    const row = [String(index + 1), normalizeParagraphText(question?.question), ""];
+    const rowHeight = measureMockExamTableRow(doc, row, columnWidths, {
+      alignments: ["center", "left", "center"],
+    });
+    if (doc.y + rowHeight > getMockExamContentMetrics(doc).bottom) {
+      addMockExamPage(doc);
+      drawMockExamTableRow(doc, header, columnWidths, {
+        x,
+        fillCells: [true, true, true],
+        boldCells: [true, true, true],
+        alignments: ["center", "left", "center"],
+      });
+    }
+    drawMockExamTableRow(doc, row, columnWidths, {
+      x,
+      rowHeight,
+      alignments: ["center", "left", "center"],
+    });
+  });
+}
+
+function renderMockExamAnswerKey(doc, mcqQuestions = [], trueFalseQuestions = []) {
+  addMockExamPage(doc, { answerKey: true });
+  const { x, width } = getMockExamContentMetrics(doc);
+  drawMockExamText(doc, "Answer Key", {
+    x,
+    width,
+    fontSize: MOCK_EXAM_PDF.typography.title,
+    bold: true,
+    align: "center",
+  });
+  doc.y += 6;
+  drawMockExamText(doc, "Use this page for instructor reference only.", {
+    x,
+    width,
+    fontSize: MOCK_EXAM_PDF.typography.body,
+    align: "center",
+  });
+  doc.y += 14;
+
+  const header = ["Section A", "Answer", "Section B", "Answer"];
+  const columnWidths = [width * 0.25, width * 0.25, width * 0.25, width * 0.25];
+  drawMockExamTableRow(doc, header, columnWidths, {
+    x,
+    fillCells: [true, true, true, true],
+    boldCells: [true, true, true, true],
+    alignments: ["center", "center", "center", "center"],
+  });
+
+  const rowCount = Math.max(mcqQuestions.length, trueFalseQuestions.length);
+  for (let index = 0; index < rowCount; index += 1) {
+    const row = [
+      mcqQuestions[index] ? String(index + 1) : "",
+      mcqQuestions[index] ? getExamAnswerLetter(mcqQuestions[index]) : "",
+      trueFalseQuestions[index] ? String(index + 1) : "",
+      trueFalseQuestions[index] ? getTrueFalseAnswerLetter(trueFalseQuestions[index]) : "",
+    ];
+    const rowHeight = measureMockExamTableRow(doc, row, columnWidths, {
+      alignments: ["center", "center", "center", "center"],
+    });
+    if (doc.y + rowHeight > getMockExamContentMetrics(doc).bottom) {
+      addMockExamPage(doc, { answerKey: true });
+      drawMockExamTableRow(doc, header, columnWidths, {
+        x,
+        fillCells: [true, true, true, true],
+        boldCells: [true, true, true, true],
+        alignments: ["center", "center", "center", "center"],
+      });
+    }
+    drawMockExamTableRow(doc, row, columnWidths, {
+      x,
+      rowHeight,
+      alignments: ["center", "center", "center", "center"],
+    });
+  }
+}
+
+function addMockExamFooters(doc, documentTitle) {
+  const pageRange = doc.bufferedPageRange();
+  const footerText = `${documentTitle} | Mock Exam`;
+  for (let pageIndex = pageRange.start; pageIndex < pageRange.start + pageRange.count; pageIndex += 1) {
+    doc.switchToPage(pageIndex);
+    const margins = doc.page.margins ?? MOCK_EXAM_PDF.page.mainMargins;
+    const y = doc.page.height - margins.bottom - 12;
+    const width = doc.page.width - margins.left - margins.right;
+    drawMockExamText(doc, footerText, {
+      x: margins.left,
+      y,
+      width: width * 0.75,
+      fontSize: MOCK_EXAM_PDF.typography.footer,
+      color: MOCK_EXAM_PDF.colors.muted,
+      advanceCursor: false,
+    });
+    drawMockExamText(doc, `Page ${pageIndex + 1} of ${pageRange.count}`, {
+      x: margins.left + (width * 0.75),
+      y,
+      width: width * 0.25,
+      fontSize: MOCK_EXAM_PDF.typography.footer,
+      color: MOCK_EXAM_PDF.colors.muted,
+      align: "right",
+      advanceCursor: false,
+    });
+  }
+}
+
+function renderExam(doc, questions = [], options = {}) {
+  const documentTitle = normalizeString(options.documentTitle) || "Study document";
+  const { mcq, trueFalse } = splitExamQuestionsForPdf(questions);
+
+  renderMockExamTitleBlock(doc, documentTitle);
+  renderMockExamMetadataTable(doc, documentTitle, mcq.length + trueFalse.length);
+  renderMockExamMcqSection(doc, mcq);
+  if (trueFalse.length > 0) {
+    doc.y += 2;
+    renderMockExamTrueFalseSection(doc, trueFalse);
+  }
+  renderMockExamAnswerKey(doc, mcq, trueFalse);
+  addMockExamFooters(doc, documentTitle);
 }
 
 export function normalizeStudyExportFeature(value) {
@@ -2217,8 +2663,9 @@ export async function buildStudyPdfBuffer(document, feature) {
   ) || "Study document";
 
   const pdf = new PDFDocument({
-    size: PDF_SYSTEM.page.size,
-    margins: PDF_SYSTEM.page.margins,
+    size: feature === "exam" ? MOCK_EXAM_PDF.page.size : PDF_SYSTEM.page.size,
+    margins: feature === "exam" ? MOCK_EXAM_PDF.page.mainMargins : PDF_SYSTEM.page.margins,
+    bufferPages: feature === "exam",
     info: {
       Title: `${documentTitle} - ${featureLabel}`,
       Author: "AI Study Assistant",
@@ -2236,16 +2683,16 @@ export async function buildStudyPdfBuffer(document, feature) {
   });
 
   registerPdfFonts(pdf);
-  pdf.y = PDF_SYSTEM.page.margins.top;
-
-  renderDocumentHeader(pdf, documentTitle, featureLabel);
+  pdf.y = feature === "exam" ? MOCK_EXAM_PDF.page.mainMargins.top : PDF_SYSTEM.page.margins.top;
 
   if (feature === "summary") {
+    renderDocumentHeader(pdf, documentTitle, featureLabel);
     renderSummary(pdf, getSummaryExportText(document));
   } else if (feature === "flashcards") {
+    renderDocumentHeader(pdf, documentTitle, featureLabel);
     renderFlashcards(pdf, document?.flashcards);
   } else {
-    renderExam(pdf, document?.examQuestions);
+    renderExam(pdf, document?.examQuestions, { documentTitle });
   }
 
   pdf.end();
