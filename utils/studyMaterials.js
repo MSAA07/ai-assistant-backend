@@ -34,7 +34,7 @@ const INPUT_TOKEN_LIMITS = {
 };
 const OUTPUT_TOKEN_LIMITS = {
   [DOCUMENT_GENERATION_TYPES.summary]: 2_000,
-  [DOCUMENT_GENERATION_TYPES.flashcards]: 1_600,
+  [DOCUMENT_GENERATION_TYPES.flashcards]: 3_800,
   [DOCUMENT_GENERATION_TYPES.exam]: 2_200,
 };
 const SUMMARY_STUDY_GUIDE_SECTIONS = Object.freeze([
@@ -539,14 +539,14 @@ function getSummaryWordTarget(length, sizeTier) {
 
 function getFlashcardTargetCount(sizeTier) {
   if (sizeTier === "short") {
-    return 6;
+    return 16;
   }
 
   if (sizeTier === "medium") {
-    return 10;
+    return 30;
   }
 
-  return 15;
+  return 48;
 }
 
 function getExamMaxCount(sizeTier) {
@@ -567,7 +567,7 @@ function buildSystemPrompt(generationType) {
   }
 
   if (generationType === DOCUMENT_GENERATION_TYPES.flashcards) {
-    return "You produce high-quality study flashcards as strict JSON. Return valid JSON only.";
+    return "You generate high-quality exam-ready flashcards. Return only a valid JSON array.";
   }
 
   return "You produce study exams as strict JSON. Return valid JSON only.";
@@ -1064,17 +1064,30 @@ function buildFlashcardsPrompt(text, language, options, sourceTier, sampled) {
   const cardCount = getFlashcardTargetCount(sourceTier);
   const guidancePrompt = buildRegenerationGuidancePrompt(options);
 
-  return `Create study flashcards in ${languageName}.
+  return `Create clear, accurate, exam-ready flashcards in ${languageName} from the provided source material.
 
-Return valid JSON only with this shape:
-{"cards":[{"question":"...","answer":"..."}]}
+Return ONLY valid JSON.
+Return a JSON array of flashcards.
 
-Rules:
+Each flashcard must have exactly this shape:
+{"front":"question or prompt","back":"clear, concise answer"}
+
+Core rules:
 - Generate exactly ${cardCount} flashcards.
-- Each flashcard must have a precise question and a concise answer.
-- ${options.includeExplanations ? 'Also include "explanation" with 1 short sentence per card.' : 'Do not include explanations.'}
-- Cover concepts across the document instead of repeating the same point.
-- Do not add markdown fences.
+- Test one concept per card.
+- Keep each answer short: 1-3 lines maximum.
+- Prefer clear question styles such as "What is...", "Define...", "Explain briefly...", "What is the difference between...", or "What does X model state..."
+- Avoid vague prompts.
+- Do not repeat the same concept.
+- Merge overlapping ideas.
+- Include high-value definitions, models, frameworks, key distinctions, cause/effect relationships, and important lists split across cards.
+- Exclude trivial details, filler content, and obvious statements.
+- Split complex ideas into multiple cards.
+- Use precise academic wording in simple language.
+- Do not include markdown.
+- Do not include bullets unless the answer is an extremely short list.
+- Do not include explanations or any fields other than "front" and "back".
+- Before returning, silently reject and fix output if the JSON is invalid, answers are too long, questions are vague, or cards overlap.
 ${guidancePrompt}
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
@@ -1586,11 +1599,12 @@ export async function generateStudyMaterialFromExcerpts({
     sourceTier,
     sampled: sourceMaterial.sampled,
   });
+  const model = resolveModelForGeneration({ generationType, useGpt55Summary });
 
   try {
     const openai = getClient();
     const response = await openai.chat.completions.create({
-      model: MODEL_NAME,
+      model,
       temperature: 0.3,
       max_tokens: OUTPUT_TOKEN_LIMITS[generationType],
       messages: [
@@ -1610,7 +1624,7 @@ export async function generateStudyMaterialFromExcerpts({
 
     return {
       output,
-      modelUsed: response?.model || MODEL_NAME,
+      modelUsed: response?.model || model,
       usage: response?.usage || null,
       estimatedInputTokens: sourceMaterial.estimatedInputTokens,
       selectedExcerptCount: sourceMaterial.selectedExcerptCount,
@@ -1631,4 +1645,6 @@ export async function generateStudyMaterialFromExcerpts({
 
 export const __studyMaterialsTestables = {
   cleanSummaryText,
+  buildFlashcardsPrompt,
+  getFlashcardTargetCount,
 };
