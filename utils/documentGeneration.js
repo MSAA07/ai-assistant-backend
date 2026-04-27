@@ -180,7 +180,10 @@ export function normalizeExamQuestion(question) {
   const options = normalizeOptions(question.options);
   const type = normalizeQuestionType(question.type ?? question.questionType, options);
   const normalizedQuestion = normalizeString(question.question);
-  const correctAnswer = normalizeString(question.correctAnswer);
+  const rawCorrectAnswer = typeof question.correctAnswer === "boolean"
+    ? (question.correctAnswer ? "True" : "False")
+    : question.correctAnswer;
+  const correctAnswer = normalizeString(rawCorrectAnswer);
   const explanation = normalizeString(question.explanation);
 
   if (!type || !normalizedQuestion || !correctAnswer || !explanation) {

@@ -82,3 +82,28 @@ test("flashcard QA prompt requires fixing issues and returning only a JSON array
   assert.match(prompt, /"front":"question or prompt"/);
   assert.match(prompt, /"back":"clear, concise answer"/);
 });
+
+test("exam target counts follow source-size question bands", () => {
+  assert.equal(__studyMaterialsTestables.getExamTargetCount("short", 5), 10);
+  assert.equal(__studyMaterialsTestables.getExamTargetCount("short", 15), 15);
+  assert.equal(__studyMaterialsTestables.getExamTargetCount("medium", 10), 15);
+  assert.equal(__studyMaterialsTestables.getExamTargetCount("medium", 25), 25);
+  assert.equal(__studyMaterialsTestables.getExamTargetCount("long", 15), 25);
+});
+
+test("exam prompt requests gpt-4o-quality mock exam structure and distribution", () => {
+  const prompt = __studyMaterialsTestables.buildExamPrompt(
+    "Enterprise Architecture aligns strategy, people, processes, and technology.",
+    "english",
+    20,
+    {},
+    false,
+  );
+
+  assert.match(prompt, /Create a high-quality mock exam/);
+  assert.match(prompt, /Return exactly this JSON object shape/);
+  assert.match(prompt, /70-80% MCQ and 20-30% True\/False/);
+  assert.match(prompt, /produce 14-16 MCQs and 4-6 True\/False questions/);
+  assert.match(prompt, /correctAnswer must exactly match the full text of the correct option/);
+  assert.match(prompt, /correctAnswer must be a JSON boolean true or false/);
+});

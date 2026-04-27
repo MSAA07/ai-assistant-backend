@@ -35,7 +35,7 @@ const INPUT_TOKEN_LIMITS = {
 const OUTPUT_TOKEN_LIMITS = {
   [DOCUMENT_GENERATION_TYPES.summary]: 2_000,
   [DOCUMENT_GENERATION_TYPES.flashcards]: 3_800,
-  [DOCUMENT_GENERATION_TYPES.exam]: 2_200,
+  [DOCUMENT_GENERATION_TYPES.exam]: 6_000,
 };
 const SUMMARY_STUDY_GUIDE_SECTIONS = Object.freeze([
   "Title",
@@ -551,14 +551,31 @@ function getFlashcardTargetCount(sizeTier) {
 
 function getExamMaxCount(sizeTier) {
   if (sizeTier === "short") {
-    return 5;
+    return 15;
   }
 
   if (sizeTier === "medium") {
+    return 25;
+  }
+
+  return 40;
+}
+
+function getExamMinCount(sizeTier) {
+  if (sizeTier === "short") {
     return 10;
   }
 
-  return 15;
+  if (sizeTier === "medium") {
+    return 15;
+  }
+
+  return 25;
+}
+
+function getExamTargetCount(sizeTier, requestedCount) {
+  const requested = Number.isFinite(Number(requestedCount)) ? Number(requestedCount) : getExamMinCount(sizeTier);
+  return Math.max(getExamMinCount(sizeTier), Math.min(requested, getExamMaxCount(sizeTier)));
 }
 
 function buildSystemPrompt(generationType) {
@@ -570,7 +587,7 @@ function buildSystemPrompt(generationType) {
     return "You generate high-quality exam-ready flashcards. Return only a valid JSON array.";
   }
 
-  return "You produce study exams as strict JSON. Return valid JSON only.";
+  return "You generate high-quality mock exams. Return only a valid JSON object.";
 }
 
 function buildRegenerationGuidancePrompt(options = {}) {
@@ -1101,20 +1118,53 @@ ${text}
 function buildExamPrompt(text, language, questionCount, options, sampled) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const guidancePrompt = buildRegenerationGuidancePrompt(options);
+  const mcqMin = Math.ceil(questionCount * 0.7);
+  const mcqMax = Math.floor(questionCount * 0.8);
+  const trueFalseMin = questionCount - mcqMax;
+  const trueFalseMax = questionCount - mcqMin;
 
-  return `Create a study exam in ${languageName}.
+  return `Create a high-quality mock exam in ${languageName} from the provided source material.
 
-Return valid JSON only with this shape:
-{"questions":[{"type":"mcq","question":"...","options":["..."],"correctAnswer":"...","explanation":"..."},{"type":"true_false","question":"...","correctAnswer":"True","explanation":"..."}]}
+Return ONLY valid JSON.
+No markdown.
+No extra text.
+
+Return exactly this JSON object shape:
+{"questions":[{"type":"mcq","question":"string","options":["option A text","option B text","option C text","option D text"],"correctAnswer":"exact correct option text","explanation":"short explanation"},{"type":"true_false","question":"string","correctAnswer":true,"explanation":"short explanation"}]}
 
 Rules:
 - Generate exactly ${questionCount} questions.
-- Only use "mcq" and "true_false" question types.
-- Include a balanced mix of "mcq" and "true_false" when the source supports it.
-- MCQ items must have exactly 4 options, and correctAnswer must match one option exactly.
-- True/false items must use "True" or "False" exactly as correctAnswer.
-- Every question must include an explanation.
-- Do not add markdown fences.
+- Question distribution must be 70-80% MCQ and 20-30% True/False.
+- For ${questionCount} questions, produce ${mcqMin}-${mcqMax} MCQs and ${trueFalseMin}-${trueFalseMax} True/False questions.
+- Cover definitions, models/frameworks, key distinctions, cause/effect relationships, and important processes.
+- Test real understanding, not memorization only.
+- Mix basic recall, understanding, and light application.
+- Questions must be clear, fair, unambiguous, specific, and testable.
+- Do not repeat the same concept in multiple questions.
+
+MCQ quality:
+- Each MCQ must have exactly 4 answer options.
+- Each MCQ must have only one correct answer.
+- The correctAnswer must exactly match the full text of the correct option.
+- Include 3 plausible distractors.
+- Distractors must be realistic, related to the topic, and not obviously wrong.
+
+True/False quality:
+- True/False questions must test meaningful understanding.
+- Avoid obvious statements.
+- Avoid trick questions.
+- The correctAnswer must be a JSON boolean true or false.
+
+Avoid weak questions:
+- Do not create trivial questions.
+- Do not copy-paste definitions as questions.
+- Do not create obvious True/False questions.
+- Do not use ambiguous wording.
+
+Explanation rules:
+- Each explanation must be 1-2 lines max.
+- Explain why the answer is correct.
+- Do not repeat the question.
 ${guidancePrompt}
 
 Source note: ${sampled ? "This is a representative coverage sample across the document." : "This is the full usable extracted text."}
@@ -1450,7 +1500,7 @@ function buildPromptForGeneration({ generationType, language, options, sourceTex
     };
   }
 
-  const effectiveQuestionCount = Math.min(options.questionCount, getExamMaxCount(sourceTier));
+  const effectiveQuestionCount = getExamTargetCount(sourceTier, options.questionCount);
   return {
     prompt: buildExamPrompt(sourceText, language, effectiveQuestionCount, options, sampled),
     effectiveOptions: {
@@ -1779,6 +1829,8 @@ export const __studyMaterialsTestables = {
   cleanSummaryText,
   buildFlashcardsPrompt,
   buildFlashcardQaPrompt,
+  buildExamPrompt,
+  getExamTargetCount,
   getFlashcardTargetCount,
   normalizeFlashcardsOutput,
   toFlashcardQaInput,

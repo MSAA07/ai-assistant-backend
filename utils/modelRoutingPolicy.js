@@ -3,6 +3,7 @@ import { DOCUMENT_GENERATION_TYPES } from "./documentGeneration.js";
 export const DEFAULT_GENERATION_MODEL = "gpt-4o-mini";
 export const GPT55_SUMMARY_MODEL = "gpt-5.5";
 export const FLASHCARD_GENERATION_MODEL = "gpt-4o";
+export const EXAM_GENERATION_MODEL = "gpt-4o";
 export const USE_GPT55_SUMMARY_FLAG = "USE_GPT55_SUMMARY";
 
 function normalizeFlagValue(value) {
@@ -27,6 +28,10 @@ export function resolveModelForGeneration({ generationType, useGpt55Summary = tr
 
   if (generationType === DOCUMENT_GENERATION_TYPES.flashcards) {
     return FLASHCARD_GENERATION_MODEL;
+  }
+
+  if (generationType === DOCUMENT_GENERATION_TYPES.exam) {
+    return EXAM_GENERATION_MODEL;
   }
 
   return DEFAULT_GENERATION_MODEL;

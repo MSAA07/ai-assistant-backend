@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { DOCUMENT_GENERATION_TYPES } from "./documentGeneration.js";
 import {
-  DEFAULT_GENERATION_MODEL,
+  EXAM_GENERATION_MODEL,
   FLASHCARD_GENERATION_MODEL,
   GPT55_SUMMARY_MODEL,
   resolveModelForGeneration,
@@ -22,8 +22,12 @@ test("summary and exam routing keep their existing model policy", () => {
     resolveModelForGeneration({ generationType: DOCUMENT_GENERATION_TYPES.summary }),
     GPT55_SUMMARY_MODEL,
   );
+});
+
+test("exam generation routes to gpt-4o", () => {
+  assert.equal(EXAM_GENERATION_MODEL, "gpt-4o");
   assert.equal(
     resolveModelForGeneration({ generationType: DOCUMENT_GENERATION_TYPES.exam }),
-    DEFAULT_GENERATION_MODEL,
+    "gpt-4o",
   );
 });
