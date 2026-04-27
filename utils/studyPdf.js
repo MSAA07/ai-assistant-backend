@@ -2558,11 +2558,12 @@ function addMockExamFooters(doc, documentTitle) {
     const y = doc.page.height - margins.bottom - 12;
     const width = doc.page.width - margins.left - margins.right;
     drawMockExamText(doc, footerText, {
-      x: margins.left,
+      x: 0,
       y,
-      width: width * 0.75,
+      width: doc.page.width,
       fontSize: MOCK_EXAM_PDF.typography.footer,
       color: MOCK_EXAM_PDF.colors.muted,
+      align: "center",
       advanceCursor: false,
     });
     drawMockExamText(doc, `Page ${pageIndex + 1} of ${pageRange.count}`, {
