@@ -7,6 +7,7 @@ import pdfParse from "pdf-parse";
 
 import { countUsableExcerpts } from "./documentStatus.js";
 import { repairPotentialUnicodeCorruption } from "./filenames.js";
+import { withJobStage } from "./jobStageEvents.js";
 import { updateJobProgress } from "./jobQueue.js";
 import {
   ensureUserLimitExists,
@@ -295,36 +296,45 @@ export async function processExtraction(prisma, job, workerId) {
   let workingPath = filePath && path.isAbsolute(filePath) ? filePath : null;
   let downloadedPath = null;
 
-  if (!workingPath) {
-    if (!document.storageKey) {
-      throw new Error("No storage key available for document file");
-    }
+  await withJobStage(prisma, job, "file_read_download", async () => {
+    if (!workingPath) {
+      if (!document.storageKey) {
+        throw new Error("No storage key available for document file");
+      }
 
-    if (path.isAbsolute(document.storageKey)) {
-      workingPath = document.storageKey;
-    } else {
-      downloadedPath = await downloadFileToTmp(document.storageKey);
-      workingPath = downloadedPath;
+      if (path.isAbsolute(document.storageKey)) {
+        workingPath = document.storageKey;
+      } else {
+        downloadedPath = await downloadFileToTmp(document.storageKey);
+        workingPath = downloadedPath;
+      }
     }
-  }
+  }, {
+    metadata: {
+      fileType: document.fileType,
+      storage: workingPath ? "local" : "remote",
+    },
+  });
 
   try {
-    const existingExcerpts = await prisma.documentExcerpt.findMany({
+    const existingExcerpts = await withJobStage(prisma, job, "excerpt_lookup", () => prisma.documentExcerpt.findMany({
       where: { documentId },
       orderBy: [
         { slideOrPage: "asc" },
         { charOffset: "asc" },
         { createdAt: "asc" },
       ],
-    });
+    }));
     const existingUsableExcerptCount = countUsableExcerpts(existingExcerpts);
 
     if (existingUsableExcerptCount > 0) {
-      await prisma.document.update({
-        where: { id: documentId },
-        data: {
-          language: detectDocumentLanguage(existingExcerpts),
-        },
+      await withJobStage(prisma, job, "excerpt_persistence", () => prisma.document.update({
+          where: { id: documentId },
+          data: {
+            language: detectDocumentLanguage(existingExcerpts),
+          },
+        }), {
+        metadata: { excerptSource: "cache", excerptCount: existingUsableExcerptCount },
       });
       await updateJobProgress(prisma, job.id, workerId, 100);
       const result = buildExtractionResult(documentId, existingUsableExcerptCount, "cache");
@@ -341,23 +351,22 @@ export async function processExtraction(prisma, job, workerId) {
     let excerpts = [];
     const excerptSource = "fresh";
 
-    if (existingExcerpts.length > 0) {
-      await prisma.documentExcerpt.deleteMany({
-        where: { documentId },
-      });
-    }
-
     const mimeType = document.fileType;
 
-    if (mimeType.includes("pdf")) {
-      excerpts = await extractPdf(workingPath);
-    } else if (mimeType.includes("wordprocessingml") || mimeType.includes("docx")) {
-      excerpts = await extractDocx(workingPath);
-    } else if (mimeType.includes("presentationml") || mimeType.includes("pptx")) {
-      excerpts = await extractPptx(workingPath);
-    } else {
+    excerpts = await withJobStage(prisma, job, "text_extraction", async () => {
+      if (mimeType.includes("pdf")) {
+        return extractPdf(workingPath);
+      }
+      if (mimeType.includes("wordprocessingml") || mimeType.includes("docx")) {
+        return extractDocx(workingPath);
+      }
+      if (mimeType.includes("presentationml") || mimeType.includes("pptx")) {
+        return extractPptx(workingPath);
+      }
       throw new Error(`Unsupported file type: ${mimeType}`);
-    }
+    }, {
+      metadata: { mimeType },
+    });
 
     excerpts = excerpts
       .map(sanitizeExcerpt)
@@ -370,18 +379,28 @@ export async function processExtraction(prisma, job, workerId) {
       throw noContentError;
     }
 
-    await prisma.document.update({
-      where: { id: documentId },
-      data: {
-        language: detectDocumentLanguage(excerpts),
-      },
-    });
+    await withJobStage(prisma, job, "excerpt_persistence", async () => {
+      if (existingExcerpts.length > 0) {
+        await prisma.documentExcerpt.deleteMany({
+          where: { documentId },
+        });
+      }
 
-    await prisma.documentExcerpt.createMany({
-      data: excerpts.map((excerpt) => ({
-        ...excerpt,
-        documentId,
-      })),
+      await prisma.document.update({
+        where: { id: documentId },
+        data: {
+          language: detectDocumentLanguage(excerpts),
+        },
+      });
+
+      await prisma.documentExcerpt.createMany({
+        data: excerpts.map((excerpt) => ({
+          ...excerpt,
+          documentId,
+        })),
+      });
+    }, {
+      metadata: { excerptSource, excerptCount: usableExcerptCount },
     });
 
     await updateJobProgress(prisma, job.id, workerId, 60);

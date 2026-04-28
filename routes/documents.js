@@ -20,7 +20,10 @@ import {
 } from "../utils/documentGeneration.js";
 import { reconcileDocumentProcessingState, serializeDocument } from "../utils/documentStatus.js";
 import { isFeatureEnabledIfConfigured } from "../utils/featureFlags.js";
-import { getMonthlyLimit } from "../utils/limits.js";
+import {
+  assertCanStartGeneration,
+  assertCanUploadDocument,
+} from "../utils/limits.js";
 import { captureSentryException } from "../utils/sentry.js";
 import {
   buildStudyPdfBuffer,
@@ -35,6 +38,7 @@ import {
   normalizeUploadedFilename,
 } from "../utils/filenames.js";
 import { buildAttachmentContentDisposition } from "../utils/httpHeaders.js";
+import { startJobStage } from "../utils/jobStageEvents.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -150,9 +154,16 @@ async function getAuthorizedDocument(prisma, documentId, user, queryOptions = {}
 
 function jsonError(res, error, fallbackMessage) {
   const statusCode = error?.statusCode || 500;
-  return res.status(statusCode).json({
+  const payload = {
     error: error?.message || fallbackMessage,
-  });
+  };
+  if (error?.code) {
+    payload.code = error.code;
+  }
+  if (error?.allowance) {
+    payload.allowance = error.allowance;
+  }
+  return res.status(statusCode).json(payload);
 }
 
 function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) {
@@ -215,6 +226,8 @@ async function queueGenerationJob(tx, { documentId, userId, generationType, opti
     };
   }
 
+  await assertCanStartGeneration(tx, userId);
+
   if (latestGeneration) {
     await tx.documentGeneration.update({
       where: { id: latestGeneration.id },
@@ -246,6 +259,12 @@ async function queueGenerationJob(tx, { documentId, userId, generationType, opti
         options,
       },
     },
+  });
+  await startJobStage(tx, {
+    jobId: job.id,
+    stageName: "queued",
+    attemptNumber: 1,
+    startedAt: job.queuedAt,
   });
 
   const linkedGeneration = await tx.documentGeneration.update({
@@ -304,15 +323,11 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         dbUser.storageUsed = BigInt(0);
       }
 
-      const monthlyLimit = getMonthlyLimit(dbUser);
-      if (!isAdminUser(dbUser) && dbUser.documentsUsed >= monthlyLimit) {
+      try {
+        await assertCanUploadDocument(prisma, user.id);
+      } catch (limitError) {
         await fs.unlink(file.path).catch(() => {});
-        return res.status(403).json({
-          error: "Monthly upload limit reached",
-          details: dbUser.plan === "premium" || dbUser.role === "admin"
-            ? "Upgrade for more"
-            : "Free limit reached",
-        });
+        throw limitError;
       }
 
       const { key } = await uploadFile(file.path, user.id, originalName, file.mimetype);
@@ -323,6 +338,8 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
       try {
         const persisted = await prisma.$transaction(async (tx) => {
+          await assertCanUploadDocument(tx, user.id);
+
           const createdDocument = await tx.document.create({
             data: {
               userId: user.id,
@@ -361,6 +378,12 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
               payload: jobPayload,
               status: "queued",
             },
+          });
+          await startJobStage(tx, {
+            jobId: createdJob.id,
+            stageName: "queued",
+            attemptNumber: 1,
+            startedAt: createdJob.queuedAt,
           });
 
           const linkedDocument = await tx.document.update({
@@ -411,9 +434,12 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         tags: { route: "documents", action: "upload" },
         user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
       });
-      res.status(500).json({
-        error: "Failed to process document",
+      const statusCode = error?.statusCode || 500;
+      res.status(statusCode).json({
+        error: statusCode === 500 ? "Failed to process document" : error.message,
         details: error.message,
+        code: error?.code,
+        allowance: error?.allowance,
       });
     }
   });

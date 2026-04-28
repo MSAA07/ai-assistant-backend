@@ -8,7 +8,9 @@ import {
   sortGenerationExcerpts,
 } from "./documentGeneration.js";
 import { updateJobProgress } from "./jobQueue.js";
+import { withJobStage } from "./jobStageEvents.js";
 import {
+  assertCanStartGeneration,
   checkAndIncrementDailyTokenCap,
   ensureUserLimitExists,
 } from "./limits.js";
@@ -77,18 +79,30 @@ export async function processGeneration(prisma, job, workerId) {
   }
 
   await ensureUserLimitExists(job.userId);
+  await assertCanStartGeneration(prisma, job.userId);
   await updateJobProgress(prisma, job.id, workerId, 10);
 
-  const orderedExcerpts = sortGenerationExcerpts(
-    await prisma.documentExcerpt.findMany({
-      where: { documentId },
-      orderBy: [
-        { slideOrPage: "asc" },
-        { charOffset: "asc" },
-        { createdAt: "asc" },
-      ],
-    }),
-  ).filter(isUsableGenerationExcerpt);
+  const sourcePreparation = await withJobStage(prisma, job, "source_preparation", async () => {
+    const orderedExcerpts = sortGenerationExcerpts(
+      await prisma.documentExcerpt.findMany({
+        where: { documentId },
+        orderBy: [
+          { slideOrPage: "asc" },
+          { charOffset: "asc" },
+          { createdAt: "asc" },
+        ],
+      }),
+    ).filter(isUsableGenerationExcerpt);
+
+    const sourceMaterial = generationType === DOCUMENT_GENERATION_TYPES.summary
+      ? prepareGpt55SummarySourceMaterial(orderedExcerpts)
+      : prepareGenerationSourceMaterial(orderedExcerpts, generationType);
+
+    return { orderedExcerpts, sourceMaterial };
+  }, {
+    metadata: { generationType },
+  });
+  const { orderedExcerpts, sourceMaterial } = sourcePreparation;
 
   if (orderedExcerpts.length === 0) {
     throw createNonRetryableError("No usable excerpts available for generation", "no_usable_excerpts");
@@ -97,9 +111,6 @@ export async function processGeneration(prisma, job, workerId) {
   const useGpt55Summary = generationType === DOCUMENT_GENERATION_TYPES.summary
     && isGpt55SummaryEnabledForEnvironment()
     && await isFeatureEnabledIfConfigured("USE_GPT55_SUMMARY", job.userId);
-  const sourceMaterial = generationType === DOCUMENT_GENERATION_TYPES.summary
-    ? prepareGpt55SummarySourceMaterial(orderedExcerpts)
-    : prepareGenerationSourceMaterial(orderedExcerpts, generationType);
   if ((job.retryCount || 0) === 0) {
     await checkAndIncrementDailyTokenCap(job.userId, sourceMaterial.estimatedInputTokens);
   }
@@ -107,12 +118,31 @@ export async function processGeneration(prisma, job, workerId) {
   await updateJobProgress(prisma, job.id, workerId, 30);
 
   const normalizedOptions = normalizeGenerationOptions(generationType, generation.options ?? job.payload?.options ?? {});
+  const featureKey = getFeatureKeyForGenerationType(generationType);
+  const usageEventType = getUsageEventTypeForGenerationType(generationType);
+  const usageLedgerContext = {
+    prisma,
+    userId: job.userId,
+    documentId,
+    generationId: generation.id,
+    jobId: job.id,
+    featureKey,
+    eventType: usageEventType,
+    attemptNumber: (job.retryCount || 0) + 1,
+    jobRetryCount: job.retryCount || 0,
+    metadata: {
+      generationType,
+      jobType: job.jobType,
+      workerId,
+    },
+  };
   const generationResult = await generateStudyMaterialFromExcerpts({
     generationType,
     excerpts: orderedExcerpts,
     language: document.language,
     options: normalizedOptions,
     useGpt55Summary,
+    usageLedgerContext,
   });
 
   await updateJobProgress(prisma, job.id, workerId, 85);
@@ -122,14 +152,15 @@ export async function processGeneration(prisma, job, workerId) {
 
   await recordUsageEvent(
     job.userId,
-    getUsageEventTypeForGenerationType(generationType),
-    getFeatureKeyForGenerationType(generationType),
+    usageEventType,
+    featureKey,
     generationResult.modelUsed,
     promptTokens || sourceMaterial.estimatedInputTokens,
     completionTokens,
     {
       documentId,
       generationId: generation.id,
+      jobId: job.id,
       generationType,
       selectedExcerptCount: generationResult.selectedExcerptCount,
       totalExcerptCount: generationResult.totalExcerptCount,

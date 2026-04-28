@@ -7,6 +7,18 @@ import {
   normalizeGenerationOutput,
 } from "./documentGeneration.js";
 import { upsertCanonicalGenerationRecord } from "./phase2Backfill.js";
+import {
+  finishActiveJobStagesByName,
+  finishRunningJobStages,
+  JOB_STAGE_STATUS,
+  recordJobStage,
+  startJobStage,
+  withJobStage,
+} from "./jobStageEvents.js";
+import {
+  alertJobFailure,
+  evaluateJobAlertSweeps,
+} from "./adminAlerts.js";
 
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 export const JOB_LEASE_DURATION_MS = 120_000;
@@ -170,26 +182,28 @@ async function completeGenerationJob(tx, job, result, completedAt) {
   }
 
   if (job.documentId && (generationType === "flashcards" || generationType === "exam")) {
-    const generation = await tx.documentGeneration.findFirst({
-      where: { jobId: job.id },
-      select: {
-        id: true,
-        documentId: true,
-        isLatest: true,
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (generation?.documentId) {
-      await upsertCanonicalGenerationRecord(tx, {
-        generationType,
-        documentId: generation.documentId,
-        generationId: generationId || generation.id,
-        options: result?.effectiveOptions ?? result?.options ?? {},
-        output: normalizedOutput,
-        isLatest: Boolean(generation.isLatest),
+    await withJobStage(tx, job, "canonical_record_persistence", async () => {
+      const generation = await tx.documentGeneration.findFirst({
+        where: { jobId: job.id },
+        select: {
+          id: true,
+          documentId: true,
+          isLatest: true,
+        },
+        orderBy: { createdAt: "desc" },
       });
-    }
+
+      if (generation?.documentId) {
+        await upsertCanonicalGenerationRecord(tx, {
+          generationType,
+          documentId: generation.documentId,
+          generationId: generationId || generation.id,
+          options: result?.effectiveOptions ?? result?.options ?? {},
+          output: normalizedOutput,
+          isLatest: Boolean(generation.isLatest),
+        });
+      }
+    });
   }
 
   if (job.documentId) {
@@ -265,6 +279,28 @@ export async function claimNextQueuedJob(prisma, workerId) {
       },
     });
 
+    const queuedStages = await finishActiveJobStagesByName(tx, claimedJob.id, "queued", {
+      status: JOB_STAGE_STATUS.succeeded,
+      endedAt: now,
+    });
+    if (queuedStages.count === 0) {
+      await recordJobStage(tx, {
+        jobId: claimedJob.id,
+        stageName: "queued",
+        attemptNumber: (claimedJob.retryCount || 0) + 1,
+        startedAt: claimedJob.queuedAt,
+        endedAt: now,
+        status: JOB_STAGE_STATUS.succeeded,
+      });
+    }
+    await startJobStage(tx, {
+      jobId: claimedJob.id,
+      stageName: "claimed_running",
+      attemptNumber: (claimedJob.retryCount || 0) + 1,
+      startedAt: now,
+      metadata: { workerId },
+    });
+
     await markQueuedJobRunning(tx, claimedJob);
 
     return claimedJob;
@@ -296,6 +332,12 @@ export async function requeueJob(prisma, job, error, shouldRetry = true) {
   }
 
   await prisma.$transaction(async (tx) => {
+    await finishRunningJobStages(tx, job.id, {
+      status: JOB_STAGE_STATUS.failed,
+      error,
+      endedAt: now,
+    });
+
     await tx.job.update({
       where: { id: job.id },
       data: {
@@ -310,6 +352,14 @@ export async function requeueJob(prisma, job, error, shouldRetry = true) {
         lastHeartbeatAt: null,
         queuedAt: now,
       },
+    });
+
+    await startJobStage(tx, {
+      jobId: job.id,
+      stageName: "queued",
+      attemptNumber: retryDecision.nextRetryCount + 1,
+      startedAt: now,
+      metadata: { retryFromError: retryDecision.errorMessage },
     });
 
     if (isExtractionJob(job)) {
@@ -330,6 +380,12 @@ export async function failJob(prisma, job, error) {
   const completedAt = new Date();
 
   await prisma.$transaction(async (tx) => {
+    await finishRunningJobStages(tx, job.id, {
+      status: JOB_STAGE_STATUS.failed,
+      error,
+      endedAt: completedAt,
+    });
+
     await tx.job.update({
       where: { id: job.id },
       data: {
@@ -351,6 +407,17 @@ export async function failJob(prisma, job, error) {
     if (isGenerationJobType(job.jobType)) {
       await failGenerationJob(tx, job, retryDecision.errorMessage);
     }
+  });
+
+  await Promise.all([
+    alertJobFailure(prisma, {
+      ...job,
+      retryCount: retryDecision.nextRetryCount,
+      completedAt,
+    }, error),
+    evaluateJobAlertSweeps(prisma),
+  ]).catch((alertError) => {
+    console.error("[jobQueue] failed to process job failure alerts:", alertError);
   });
 
   return retryDecision;
@@ -381,6 +448,11 @@ export async function completeJob(prisma, job, result) {
         leaseExpiresAt: null,
         lastHeartbeatAt: completedAt,
       },
+    });
+
+    await finishRunningJobStages(tx, job.id, {
+      status: JOB_STAGE_STATUS.succeeded,
+      endedAt: completedAt,
     });
   });
 }

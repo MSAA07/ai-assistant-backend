@@ -1,6 +1,6 @@
 import express from "express";
 import { reconcileDocumentProcessingState, serializeDocument } from "../utils/documentStatus.js";
-import { getMonthlyLimit } from "../utils/limits.js";
+import { getUserAllowance } from "../utils/limits.js";
 import { toNumber } from "../utils/serializers.js";
 import { captureSentryException } from "../utils/sentry.js";
 
@@ -65,7 +65,8 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
         user.documents.map((document) => reconcileDocumentProcessingState(prisma, document)),
       );
 
-      const monthlyLimit = getMonthlyLimit(user);
+      const allowance = await getUserAllowance(prisma, userId);
+      const monthlyLimit = allowance.caps.documentCap ?? user.monthlyLimit;
       const documents = reconciledDocuments.map((document) => serializeDocument(document, {
         excerptCount: document._count?.excerpts ?? 0,
       }));
@@ -77,11 +78,12 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
           name: user.name,
           role: user.role,
           plan: user.plan,
-          documentsUsed: user.documentsUsed,
+          documentsUsed: allowance.consumed.documents,
           monthlyLimit,
-          remainingDocuments: Math.max(monthlyLimit - user.documentsUsed, 0),
+          remainingDocuments: allowance.remaining.documents,
           storageUsed: toNumber(user.storageUsed),
           lastActive: user.lastActive,
+          allowance,
         },
         documents,
       });
@@ -89,6 +91,20 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
       console.error("Error fetching user:", error);
       captureSentryException(error);
       res.status(500).json({ error: "Failed to fetch user data" });
+    }
+  });
+
+  router.get("/allowance", requireAuth, async (req, res) => {
+    try {
+      const allowance = await getUserAllowance(prisma, req.session.user.id);
+      res.json({ allowance });
+    } catch (error) {
+      console.error("Error fetching allowance:", error);
+      captureSentryException(error);
+      res.status(error?.statusCode || 500).json({
+        error: error?.message || "Failed to fetch allowance",
+        code: error?.code,
+      });
     }
   });
 

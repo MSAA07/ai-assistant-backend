@@ -38,7 +38,9 @@ model User {
 
   userLimit         UserLimit?
   costAnomalyAlerts CostAnomalyAlert[]
+  adminAlerts       AdminAlert[]
   usageEvents       UsageEvent[]
+  modelUsageEvents  ModelUsageEvent[]
   jobs              Job[]
 
   @@index([lastActive])
@@ -108,12 +110,14 @@ model Document {
   processingError  String?
   processedAt      DateTime?
 
-  excerpts        DocumentExcerpt[]
-  generations     DocumentGeneration[]
-  flashcardSets   FlashcardSet[]
-  examRecords     ExamRecord[]
-  exportArtifacts ExportArtifact[]
-  storageKey      String? // R2 object key - added for P1-S04
+  excerpts         DocumentExcerpt[]
+  generations      DocumentGeneration[]
+  modelUsageEvents ModelUsageEvent[]
+  flashcardSets    FlashcardSet[]
+  examRecords      ExamRecord[]
+  exportArtifacts  ExportArtifact[]
+  storageKey       String? // R2 object key - added for P1-S04
+
   @@index([userId])
   @@index([userId, processingStatus])
   @@index([processingJobId])
@@ -303,47 +307,70 @@ model DocumentExcerpt {
 }
 
 model DocumentGeneration {
-  id             String    @id @default(cuid())
-  documentId     String
-  document       Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  generationType String
-  status         String    @default("queued")
-  jobId          String?
-  options        Json      @default("{}")
-  output         Json?
-  errorMessage   String?
-  generatedAt    DateTime?
-  isLatest       Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id               String            @id @default(cuid())
+  documentId       String
+  document         Document          @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  generationType   String
+  status           String            @default("queued")
+  jobId            String?
+  options          Json              @default("{}")
+  output           Json?
+  errorMessage     String?
+  generatedAt      DateTime?
+  isLatest         Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  modelUsageEvents ModelUsageEvent[]
 
   @@index([documentId, generationType, isLatest])
   @@index([jobId])
 }
 
 model Job {
-  id              String    @id @default(cuid())
-  userId          String
-  user            User      @relation(fields: [userId], references: [id])
-  documentId      String?
-  jobType         String // 'extract_document' | 'generate_summary' | 'generate_exam' | 'generate_flashcards' | 'export_pdf'
-  status          String    @default("queued") // 'queued' | 'running' | 'succeeded' | 'failed'
-  progressPct     Int       @default(0)
-  retryCount      Int       @default(0)
-  maxRetries      Int       @default(3)
-  payload         Json      @default("{}")
-  result          Json?
-  errorMessage    String?
-  queuedAt        DateTime  @default(now())
-  startedAt       DateTime?
-  completedAt     DateTime?
-  workerId        String?
-  leaseExpiresAt  DateTime?
-  lastHeartbeatAt DateTime?
+  id               String            @id @default(cuid())
+  userId           String
+  user             User              @relation(fields: [userId], references: [id])
+  documentId       String?
+  jobType          String // 'extract_document' | 'generate_summary' | 'generate_exam' | 'generate_flashcards' | 'export_pdf'
+  status           String            @default("queued") // 'queued' | 'running' | 'succeeded' | 'failed'
+  progressPct      Int               @default(0)
+  retryCount       Int               @default(0)
+  maxRetries       Int               @default(3)
+  payload          Json              @default("{}")
+  result           Json?
+  errorMessage     String?
+  queuedAt         DateTime          @default(now())
+  startedAt        DateTime?
+  completedAt      DateTime?
+  workerId         String?
+  leaseExpiresAt   DateTime?
+  lastHeartbeatAt  DateTime?
+  modelUsageEvents ModelUsageEvent[]
+  stageEvents      JobStageEvent[]
 
   @@index([status, queuedAt])
   @@index([status, leaseExpiresAt])
   @@index([documentId, jobType, queuedAt])
+}
+
+model JobStageEvent {
+  id            String    @id @default(cuid())
+  jobId         String
+  job           Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  stageName     String
+  status        String    @default("running")
+  attemptNumber Int       @default(1)
+  startedAt     DateTime
+  endedAt       DateTime?
+  durationMs    Int?
+  errorSummary  String?   @db.Text
+  metadata      Json      @default("{}")
+  createdAt     DateTime  @default(now())
+
+  @@index([jobId, startedAt])
+  @@index([jobId, stageName, attemptNumber])
+  @@index([status, startedAt])
+  @@index([stageName, startedAt])
 }
 
 model FeatureFlag {
@@ -389,15 +416,31 @@ model FeatureFlagAuditLog {
 }
 
 model UserLimit {
-  userId          String   @id
-  user            User     @relation(fields: [userId], references: [id])
-  dailyTokenCap   Int      @default(200000)
-  dailyDocCap     Int      @default(10)
-  requestsPerMin  Int      @default(10)
-  tokensUsedToday Int      @default(0)
-  docsUsedToday   Int      @default(0)
-  lastResetDate   DateTime @default(now())
-  overrideBy      String?
+  userId                  String   @id
+  user                    User     @relation(fields: [userId], references: [id])
+  dailyTokenCap           Int      @default(200000)
+  dailyDocCap             Int      @default(10)
+  requestsPerMin          Int      @default(10)
+  tokensUsedToday         Int      @default(0)
+  docsUsedToday           Int      @default(0)
+  lastResetDate           DateTime @default(now())
+  documentCapOverride     Int?
+  costCapUsdOverride      Decimal? @db.Decimal(10, 4)
+  tokenCapOverride        Int?
+  featureCapsOverride     Json     @default("{}")
+  overrideBy              String?
+}
+
+model UsageCapConfig {
+  id          String   @id @default(cuid())
+  plan        String   @unique
+  documentCap Int?
+  costCapUsd  Decimal? @db.Decimal(10, 4)
+  tokenCap    Int?
+  featureCaps Json     @default("{}")
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model CostAnomalyAlert {
@@ -409,6 +452,38 @@ model CostAnomalyAlert {
   actualUsd    Decimal  @db.Decimal(10, 4)
   resolved     Boolean  @default(false)
   createdAt    DateTime @default(now())
+}
+
+model AdminAlert {
+  id                String    @id @default(cuid())
+  alertType         String
+  severity          String    @default("warning")
+  targetType        String?
+  targetId          String?
+  userId            String?
+  user              User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  documentId        String?
+  jobId             String?
+  thresholdUsd      Decimal?  @db.Decimal(12, 8)
+  actualUsd         Decimal?  @db.Decimal(12, 8)
+  thresholdCount    Int?
+  actualCount       Int?
+  dedupKey          String
+  emailTo           String?
+  emailSubject      String?
+  emailStatus       String    @default("pending")
+  providerMessageId String?
+  errorMessage      String?
+  resolved          Boolean   @default(false)
+  metadata          Json      @default("{}")
+  sentAt            DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([alertType, createdAt])
+  @@index([dedupKey, createdAt])
+  @@index([emailStatus, createdAt])
+  @@index([userId, createdAt])
+  @@index([jobId])
 }
 
 model UsageEvent {
@@ -426,6 +501,45 @@ model UsageEvent {
 
   @@index([userId, createdAt])
   @@index([eventType, createdAt])
+}
+
+model ModelUsageEvent {
+  id               String              @id @default(cuid())
+  userId           String
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documentId       String?
+  document         Document?           @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  generationId     String?
+  generation       DocumentGeneration? @relation(fields: [generationId], references: [id], onDelete: SetNull)
+  jobId            String?
+  job              Job?                @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  featureKey       String
+  eventType        String
+  provider         String
+  model            String
+  inputTokens      Int                 @default(0)
+  outputTokens     Int                 @default(0)
+  totalTokens      Int                 @default(0)
+  estimatedCostUsd Decimal             @db.Decimal(12, 8)
+  currency         String              @default("USD")
+  pricingVersion   String
+  status           String
+  billable         Boolean             @default(true)
+  requestId        String?
+  idempotencyKey   String              @unique
+  attemptNumber    Int                 @default(1)
+  jobRetryCount    Int                 @default(0)
+  errorCode        String?
+  metadata         Json                @default("{}")
+  createdAt        DateTime            @default(now())
+
+  @@index([userId, createdAt])
+  @@index([featureKey, createdAt])
+  @@index([model, createdAt])
+  @@index([documentId])
+  @@index([generationId])
+  @@index([jobId])
+  @@index([status])
 }
 
 enum FeatureEntityType {

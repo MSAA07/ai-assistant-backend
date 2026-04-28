@@ -19,6 +19,11 @@ import {
   STALE_JOB_SWEEP_INTERVAL_MS,
 } from "./utils/jobQueue.js";
 import { checkAnomaly } from "./utils/costGuard.js";
+import {
+  evaluateJobAlertSweeps,
+  evaluateSystemUsageAlerts,
+  evaluateUsageAlertsForUser,
+} from "./utils/adminAlerts.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { captureSentryException, flushSentry, initSentry } from "./utils/sentry.js";
 
@@ -64,15 +69,30 @@ async function runWorker() {
 
   setInterval(async () => {
     try {
-      const recentUsers = await prisma.usageEvent.findMany({
+      await Promise.all([
+        evaluateSystemUsageAlerts(prisma),
+        evaluateJobAlertSweeps(prisma),
+      ]);
+
+      const recentUsers = await prisma.modelUsageEvent.findMany({
         where: {
           createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+          billable: true,
         },
         select: { userId: true },
         distinct: ["userId"],
       });
 
       for (const { userId } of recentUsers) {
+        await evaluateUsageAlertsForUser(prisma, userId).catch((error) => {
+          console.error("[admin-alerts] user alert sweep failed:", error);
+          captureSentryException(error, {
+            tags: { worker_phase: "admin_alert_user_sweep" },
+            extra: { userId },
+            user: { id: userId },
+          });
+        });
+
         await checkAnomaly(userId).catch((error) => {
           console.error("[anomaly]", error);
           captureSentryException(error, {
@@ -223,7 +243,7 @@ async function waitForRequiredSchema(prisma) {
 }
 
 async function hasRequiredSchema(prisma) {
-  const [documentColumns, jobColumns, generationColumns] = await Promise.all([
+  const [documentColumns, jobColumns, generationColumns, stageTable] = await Promise.all([
     prisma.$queryRaw`
       SELECT "column_name"
       FROM "information_schema"."columns"
@@ -245,11 +265,18 @@ async function hasRequiredSchema(prisma) {
         AND "table_name" = 'DocumentGeneration'
         AND "column_name" IN ('documentId', 'generationType', 'status', 'jobId', 'isLatest')
     `,
+    prisma.$queryRaw`
+      SELECT "table_name"
+      FROM "information_schema"."tables"
+      WHERE "table_schema" = 'public'
+        AND "table_name" = 'JobStageEvent'
+    `,
   ]);
 
   return documentColumns.length === 4
     && jobColumns.length === 4
-    && generationColumns.length === 5;
+    && generationColumns.length === 5
+    && stageTable.length === 1;
 }
 
 function normalizeFatalWorkerError(error, fallbackMessage) {

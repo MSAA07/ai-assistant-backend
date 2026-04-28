@@ -13,6 +13,8 @@ import {
   DEFAULT_GENERATION_MODEL,
   resolveModelForGeneration,
 } from "./modelRoutingPolicy.js";
+import { createTrackedChatCompletion } from "./modelUsageLedger.js";
+import { withJobStage } from "./jobStageEvents.js";
 import { captureSentryException } from "./sentry.js";
 
 let client;
@@ -195,6 +197,49 @@ function getClient() {
   }
 
   return client;
+}
+
+function withUsageLedgerCallContext(usageLedgerContext, {
+  aiPhase,
+  callKey = aiPhase,
+  metadata = {},
+} = {}) {
+  if (!usageLedgerContext) {
+    return null;
+  }
+
+  return {
+    ...usageLedgerContext,
+    aiPhase,
+    callKey,
+    metadata: {
+      ...(usageLedgerContext.metadata ?? {}),
+      ...metadata,
+    },
+  };
+}
+
+async function createChatCompletion(openai, params, usageLedgerContext) {
+  if (!usageLedgerContext?.prisma) {
+    return openai.chat.completions.create(params);
+  }
+
+  const { prisma, ...ledgerContext } = usageLedgerContext;
+  const aiPhase = ledgerContext.aiPhase || ledgerContext.callKey || "model_call";
+  const isQaCall = /(^|_)qa($|_)|:qa\b/i.test(aiPhase) || /(^|_)qa($|_)|:qa\b/i.test(ledgerContext.callKey || "");
+  const stageName = isQaCall ? `qa_call:${aiPhase}` : `model_call:${aiPhase}`;
+
+  return withJobStage(prisma, ledgerContext, stageName, () => createTrackedChatCompletion({
+    prisma,
+    openai,
+    params,
+    context: ledgerContext,
+  }), {
+    metadata: {
+      provider: "openai",
+      requestedModel: params?.model,
+    },
+  });
 }
 
 function normalizeString(value) {
@@ -1328,9 +1373,10 @@ async function createJsonCompletion({
   userPrompt,
   maxTokens,
   temperature = 0.25,
+  usageLedgerContext = null,
 }) {
   const openai = getClient();
-  const response = await openai.chat.completions.create({
+  const response = await createChatCompletion(openai, {
     model,
     temperature,
     max_tokens: maxTokens,
@@ -1338,7 +1384,14 @@ async function createJsonCompletion({
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-  });
+  }, withUsageLedgerCallContext(usageLedgerContext, {
+    aiPhase,
+    callKey: usageLedgerContext?.callKey ?? aiPhase,
+    metadata: {
+      maxTokens,
+      temperature,
+    },
+  }));
 
   const raw = response.choices?.[0]?.message?.content;
   if (!raw) {
@@ -1524,12 +1577,13 @@ async function validateAndImproveFlashcards({
   sourceText,
   targetCount,
   model,
+  usageLedgerContext = null,
 }) {
   const output = { cards };
   assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, output);
 
   const openai = getClient();
-  const response = await openai.chat.completions.create({
+  const response = await createChatCompletion(openai, {
     model,
     temperature: 0.15,
     max_tokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
@@ -1543,7 +1597,15 @@ async function validateAndImproveFlashcards({
         content: buildFlashcardQaPrompt(cards, language, sourceText, targetCount),
       },
     ],
-  });
+  }, withUsageLedgerCallContext(usageLedgerContext, {
+    aiPhase: "flashcards_qa",
+    callKey: "flashcards:qa",
+    metadata: {
+      targetCount,
+      maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
+      temperature: 0.15,
+    },
+  }));
 
   const raw = response.choices?.[0]?.message?.content;
   if (!raw) {
@@ -1566,12 +1628,13 @@ async function validateAndImproveExam({
   sourceText,
   targetCount,
   model,
+  usageLedgerContext = null,
 }) {
   const output = { questions };
   assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.exam, output);
 
   const openai = getClient();
-  const response = await openai.chat.completions.create({
+  const response = await createChatCompletion(openai, {
     model,
     temperature: 0.15,
     max_tokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
@@ -1585,7 +1648,15 @@ async function validateAndImproveExam({
         content: buildExamQaPrompt(questions, language, sourceText, targetCount),
       },
     ],
-  });
+  }, withUsageLedgerCallContext(usageLedgerContext, {
+    aiPhase: "exam_qa",
+    callKey: "exam:qa",
+    metadata: {
+      targetCount,
+      maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
+      temperature: 0.15,
+    },
+  }));
 
   const raw = response.choices?.[0]?.message?.content;
   if (!raw) {
@@ -1630,7 +1701,7 @@ function buildPromptForGeneration({ generationType, language, options, sourceTex
   };
 }
 
-async function extractStudyGuideSignals({ chunks, language }) {
+async function extractStudyGuideSignals({ chunks, language, usageLedgerContext = null }) {
   const signalMaps = [];
   let usage = null;
   let modelUsed = MODEL_NAME;
@@ -1642,6 +1713,14 @@ async function extractStudyGuideSignals({ chunks, language }) {
       userPrompt: buildStudyGuideSignalExtractionPrompt(chunks[index], language, index, chunks.length),
       maxTokens: 1_400,
       temperature: 0.1,
+      usageLedgerContext: withUsageLedgerCallContext(usageLedgerContext, {
+        aiPhase: "summary_signal_extraction",
+        callKey: `summary_signal_extraction:${index + 1}`,
+        metadata: {
+          chunkIndex: index,
+          chunkCount: chunks.length,
+        },
+      }),
     });
 
     signalMaps.push(normalizeChapterMap(result.parsed));
@@ -1656,13 +1735,17 @@ async function extractStudyGuideSignals({ chunks, language }) {
   };
 }
 
-async function analyzeStudyGuideChapterMap({ signalMap, language }) {
+async function analyzeStudyGuideChapterMap({ signalMap, language, usageLedgerContext = null }) {
   const result = await createJsonCompletion({
     aiPhase: "summary_chapter_map_analysis",
     systemPrompt: "You produce global chapter maps for exam study guides as strict JSON. Return valid JSON only.",
     userPrompt: buildChapterMapPrompt(signalMap, language),
     maxTokens: SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT,
     temperature: 0.15,
+    usageLedgerContext: withUsageLedgerCallContext(usageLedgerContext, {
+      aiPhase: "summary_chapter_map_analysis",
+      callKey: "summary:chapter-map-analysis",
+    }),
   });
 
   return {
@@ -1672,13 +1755,25 @@ async function analyzeStudyGuideChapterMap({ signalMap, language }) {
   };
 }
 
-async function synthesizeStudyGuideDraft({ chapterMap, language, options, sourceTier, generationType }) {
+async function synthesizeStudyGuideDraft({
+  chapterMap,
+  language,
+  options,
+  sourceTier,
+  generationType,
+  usageLedgerContext = null,
+}) {
   const result = await createJsonCompletion({
     aiPhase: "summary_structured_synthesis",
     systemPrompt: "You generate exam study guides as strict JSON. Return valid JSON only.",
     userPrompt: buildStudyGuideSynthesisPrompt(chapterMap, language, options, sourceTier),
     maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
     temperature: 0.3,
+    usageLedgerContext: withUsageLedgerCallContext(usageLedgerContext, {
+      aiPhase: "summary_structured_synthesis",
+      callKey: "summary:structured-synthesis",
+      metadata: { sourceTier },
+    }),
   });
 
   const output = normalizeSummaryOutput(result.parsed);
@@ -1691,13 +1786,23 @@ async function synthesizeStudyGuideDraft({ chapterMap, language, options, source
   };
 }
 
-async function optimizeStudyGuideForExams({ draftText, chapterMap, language, generationType }) {
+async function optimizeStudyGuideForExams({
+  draftText,
+  chapterMap,
+  language,
+  generationType,
+  usageLedgerContext = null,
+}) {
   const result = await createJsonCompletion({
     aiPhase: "summary_exam_optimization",
     systemPrompt: "You optimize exam study guides as strict JSON. Return valid JSON only.",
     userPrompt: buildStudyGuideOptimizationPrompt(draftText, chapterMap, language),
     maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
     temperature: 0.2,
+    usageLedgerContext: withUsageLedgerCallContext(usageLedgerContext, {
+      aiPhase: "summary_exam_optimization",
+      callKey: "summary:exam-optimization",
+    }),
   });
 
   const output = normalizeSummaryOutput(result.parsed);
@@ -1710,13 +1815,22 @@ async function optimizeStudyGuideForExams({ draftText, chapterMap, language, gen
   };
 }
 
-async function enforceStudyGuideFormat({ optimizedText, language, generationType }) {
+async function enforceStudyGuideFormat({
+  optimizedText,
+  language,
+  generationType,
+  usageLedgerContext = null,
+}) {
   const result = await createJsonCompletion({
     aiPhase: "summary_format_enforcement",
     systemPrompt: "You enforce markdown format for exam study guides as strict JSON. Return valid JSON only.",
     userPrompt: buildStudyGuideFormatPrompt(optimizedText, language),
     maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
     temperature: 0.1,
+    usageLedgerContext: withUsageLedgerCallContext(usageLedgerContext, {
+      aiPhase: "summary_format_enforcement",
+      callKey: "summary:format-enforcement",
+    }),
   });
 
   const output = normalizeSummaryOutput(result.parsed);
@@ -1735,6 +1849,7 @@ async function generateSummaryStudyGuideFromExcerptsV2({
   excerpts,
   language,
   options,
+  usageLedgerContext = null,
 }) {
   const sourceMaterial = buildStudyGuideAnalysisChunks(excerpts);
   if (sourceMaterial.chunks.length === 0) {
@@ -1756,6 +1871,7 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     const extractedSignals = await extractStudyGuideSignals({
       chunks: sourceMaterial.chunks,
       language,
+      usageLedgerContext,
     });
     usage = mergeTokenUsage(usage, extractedSignals.usage);
     modelUsed = extractedSignals.modelUsed || modelUsed;
@@ -1763,6 +1879,7 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     const analysis = await analyzeStudyGuideChapterMap({
       signalMap: extractedSignals.signalMap,
       language,
+      usageLedgerContext,
     });
     usage = mergeTokenUsage(usage, analysis.usage);
     modelUsed = analysis.modelUsed || modelUsed;
@@ -1776,6 +1893,7 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     options,
     sourceTier,
     generationType,
+    usageLedgerContext,
   });
   usage = mergeTokenUsage(usage, draft.usage);
   modelUsed = draft.modelUsed || modelUsed;
@@ -1785,6 +1903,7 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     chapterMap,
     language,
     generationType,
+    usageLedgerContext,
   });
   usage = mergeTokenUsage(usage, optimized.usage);
   modelUsed = optimized.modelUsed || modelUsed;
@@ -1793,6 +1912,7 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     optimizedText: optimized.text,
     language,
     generationType,
+    usageLedgerContext,
   });
   usage = mergeTokenUsage(usage, formatted.usage);
   modelUsed = formatted.modelUsed || modelUsed;
@@ -1814,6 +1934,7 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
   excerpts,
   options,
   useGpt55Summary = true,
+  usageLedgerContext = null,
 }) {
   const sourceMaterial = prepareGpt55SummarySourceMaterial(excerpts);
   const model = resolveModelForGeneration({ generationType, useGpt55Summary });
@@ -1827,11 +1948,19 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
   messages.push({ role: "user", content: sourceMaterial.text });
 
   const openai = getClient();
-  const response = await openai.chat.completions.create({
+  const response = await createChatCompletion(openai, {
     model,
     max_completion_tokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
     messages,
-  });
+  }, withUsageLedgerCallContext(usageLedgerContext, {
+    aiPhase: "generate_clean_summary",
+    callKey: "summary:clean",
+    metadata: {
+      maxCompletionTokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
+      selectedExcerptCount: sourceMaterial.selectedExcerptCount,
+      totalExcerptCount: sourceMaterial.totalExcerptCount,
+    },
+  }));
 
   const text = cleanSummaryText(response.choices?.[0]?.message?.content);
   const output = { text };
@@ -1855,6 +1984,7 @@ export async function generateStudyMaterialFromExcerpts({
   language = "english",
   options = {},
   useGpt55Summary = true,
+  usageLedgerContext = null,
 }) {
   const normalizedOptions = normalizeGenerationOptions(generationType, options);
   if (generationType === DOCUMENT_GENERATION_TYPES.summary) {
@@ -1864,6 +1994,7 @@ export async function generateStudyMaterialFromExcerpts({
         excerpts,
         options: normalizedOptions,
         useGpt55Summary,
+        usageLedgerContext,
       });
     } catch (error) {
       captureSentryException(error, {
@@ -1890,7 +2021,7 @@ export async function generateStudyMaterialFromExcerpts({
 
   try {
     const openai = getClient();
-    const response = await openai.chat.completions.create({
+    const response = await createChatCompletion(openai, {
       model,
       temperature: 0.3,
       max_tokens: OUTPUT_TOKEN_LIMITS[generationType],
@@ -1898,7 +2029,18 @@ export async function generateStudyMaterialFromExcerpts({
         { role: "system", content: buildSystemPrompt(generationType) },
         { role: "user", content: prompt },
       ],
-    });
+    }, withUsageLedgerCallContext(usageLedgerContext, {
+      aiPhase: `${generationType}_initial_generation`,
+      callKey: `${generationType}:initial`,
+      metadata: {
+        sourceTier,
+        sampled: sourceMaterial.sampled,
+        selectedExcerptCount: sourceMaterial.selectedExcerptCount,
+        totalExcerptCount: sourceMaterial.totalExcerptCount,
+        maxTokens: OUTPUT_TOKEN_LIMITS[generationType],
+        temperature: 0.3,
+      },
+    }));
 
     const raw = response.choices?.[0]?.message?.content;
     if (!raw) {
@@ -1918,6 +2060,7 @@ export async function generateStudyMaterialFromExcerpts({
         sourceText: sourceMaterial.text,
         targetCount: effectiveOptions.cardCount,
         model,
+        usageLedgerContext,
       });
       output = qaResult.output;
       modelUsed = qaResult.modelUsed || modelUsed;
@@ -1931,6 +2074,7 @@ export async function generateStudyMaterialFromExcerpts({
         sourceText: sourceMaterial.text,
         targetCount: effectiveOptions.questionCount,
         model,
+        usageLedgerContext,
       });
       output = qaResult.output;
       modelUsed = qaResult.modelUsed || modelUsed;

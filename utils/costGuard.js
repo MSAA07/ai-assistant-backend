@@ -1,19 +1,10 @@
 import { PrismaClient } from "@prisma/client";
 
+import { estimateCost } from "./modelPricing.js";
+
 const prisma = new PrismaClient();
 
-// Pricing per 1M tokens aligned to OpenAI's public API pricing page.
-const PRICING = {
-  "gpt-4o-mini": { input: 0.15, output: 0.6 },
-  "gpt-4o": { input: 2.5, output: 10.0 },
-  "gpt-5.5": { input: 5.0, output: 30.0 },
-};
-
-export function estimateCost(modelName, inputTokens = 0, outputTokens = 0) {
-  const pricing = PRICING[modelName] || PRICING["gpt-4o-mini"];
-  return (inputTokens / 1_000_000) * pricing.input
-    + (outputTokens / 1_000_000) * pricing.output;
-}
+export { estimateCost } from "./modelPricing.js";
 
 export async function recordUsageEvent(
   userId,

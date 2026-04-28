@@ -47,6 +47,8 @@ Required environment variables:
 - `OPENAI_API_KEY`
 - `RESEND_API_KEY`
 - `AUTH_EMAIL_FROM_EMAIL`
+- `ADMIN_ALERT_EMAIL`
+- `ALERT_FROM_EMAIL`
 
 Optional environment variables:
 
@@ -55,6 +57,12 @@ Optional environment variables:
 - `AUTH_EMAIL_REPLY_TO`
 - `AUTH_EMAIL_SUPPORT_EMAIL`
 - `AUTH_EMAIL_APP_URL`
+- `ALERTS_ENABLED` (`true` default)
+- `ALERT_DAILY_COST_THRESHOLD_USD` (`10` default)
+- `ALERT_USER_COST_THRESHOLD_USD` (falls back to 80% of active user cost cap)
+- `ALERT_SPIKE_MULTIPLIER` (`3` default)
+- `ALERT_FAILED_JOB_THRESHOLD` (`3` default)
+- `ALERT_DEDUP_WINDOW_MINUTES` (`60` default)
 - password-reset callback URLs are frontend-owned via `redirectTo` from the client and should target the deployed frontend root bridge, for example `https://studymaxing.com/?auth_action=reset-password`
 - `ADMIN_EMAILS`
 - `FRONTEND_ORIGINS` (comma-separated extra allowed frontend origins when needed)

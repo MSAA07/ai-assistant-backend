@@ -5,6 +5,12 @@ import { serializeUser, toNumber } from "../utils/serializers.js";
 import { captureSentryException } from "../utils/sentry.js";
 import { deleteFile } from "../utils/storage.js";
 import { toggleGlobalFlag, grantFeature, revokeFeature } from "../utils/featureFlags.js";
+import {
+  ensureDefaultUsageCapConfigs,
+  getFallbackCapConfig,
+  getUserAllowance,
+} from "../utils/limits.js";
+import { getUsdToSarRate } from "../utils/modelPricing.js";
 
 const getIpAddress = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -40,6 +46,15 @@ const parseIntegerInput = (value, minimum = 0) => {
 
   const parsed = Number(trimmed);
   return Number.isInteger(parsed) && parsed >= minimum ? parsed : null;
+};
+
+const parseNullableNumberInput = (value, minimum = 0) => {
+  if (value === null) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= minimum ? parsed : undefined;
 };
 
 const parsePositiveInteger = (value, fallback) => {
@@ -181,8 +196,439 @@ const serializeUserLimit = (userLimit) => ({
   tokensUsedToday: userLimit.tokensUsedToday,
   docsUsedToday: userLimit.docsUsedToday,
   lastResetDate: userLimit.lastResetDate,
+  documentCapOverride: userLimit.documentCapOverride,
+  costCapUsdOverride:
+    userLimit.costCapUsdOverride === null || userLimit.costCapUsdOverride === undefined
+      ? null
+      : toNumericValue(userLimit.costCapUsdOverride),
+  tokenCapOverride: userLimit.tokenCapOverride,
+  featureCapsOverride: userLimit.featureCapsOverride,
   overrideBy: userLimit.overrideBy,
 });
+
+const serializeUsageCapConfig = (config) => ({
+  id: config.id,
+  plan: config.plan,
+  documentCap: config.documentCap,
+  costCapUsd:
+    config.costCapUsd === null || config.costCapUsd === undefined
+      ? null
+      : toNumericValue(config.costCapUsd),
+  tokenCap: config.tokenCap,
+  featureCaps: config.featureCaps,
+  updatedBy: config.updatedBy,
+  createdAt: config.createdAt,
+  updatedAt: config.updatedAt,
+});
+
+async function buildUsageCapImpact(prisma, plan, proposedCaps) {
+  const normalizedPlan = plan === "premium" ? "premium" : "free";
+  const users = await prisma.user.findMany({
+    where: {
+      plan: normalizedPlan,
+      NOT: { role: "admin" },
+    },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      userLimit: true,
+      _count: { select: { documents: true } },
+    },
+  });
+  const userIds = users.map((user) => user.id);
+  const costGroups = userIds.length > 0
+    ? await prisma.modelUsageEvent.groupBy({
+      by: ["userId"],
+      where: {
+        userId: { in: userIds },
+        billable: true,
+      },
+      _sum: {
+        estimatedCostUsd: true,
+        totalTokens: true,
+      },
+    })
+    : [];
+  const costByUserId = new Map(costGroups.map((group) => [group.userId, {
+    costUsd: toNumericValue(group._sum?.estimatedCostUsd),
+    totalTokens: group._sum?.totalTokens || 0,
+  }]));
+
+  const overDocumentUsers = [];
+  const overCostUsers = [];
+  const overTokenUsers = [];
+
+  for (const user of users) {
+    const usage = costByUserId.get(user.id) ?? { costUsd: 0, totalTokens: 0 };
+    const documentCap = user.userLimit?.documentCapOverride ?? proposedCaps.documentCap ?? null;
+    const costCapUsd = user.userLimit?.costCapUsdOverride !== null && user.userLimit?.costCapUsdOverride !== undefined
+      ? toNumericValue(user.userLimit.costCapUsdOverride)
+      : proposedCaps.costCapUsd ?? null;
+    const tokenCap = user.userLimit?.tokenCapOverride ?? proposedCaps.tokenCap ?? null;
+
+    if (documentCap !== null && user._count.documents >= documentCap) {
+      overDocumentUsers.push({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        consumed: user._count.documents,
+        cap: documentCap,
+        override: user.userLimit?.documentCapOverride !== null && user.userLimit?.documentCapOverride !== undefined,
+      });
+    }
+
+    if (costCapUsd !== null && usage.costUsd >= costCapUsd) {
+      overCostUsers.push({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        consumed: usage.costUsd,
+        cap: costCapUsd,
+        override: user.userLimit?.costCapUsdOverride !== null && user.userLimit?.costCapUsdOverride !== undefined,
+      });
+    }
+
+    if (tokenCap !== null && usage.totalTokens >= tokenCap) {
+      overTokenUsers.push({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        consumed: usage.totalTokens,
+        cap: tokenCap,
+        override: user.userLimit?.tokenCapOverride !== null && user.userLimit?.tokenCapOverride !== undefined,
+      });
+    }
+  }
+
+  return {
+    plan: normalizedPlan,
+    userCount: users.length,
+    overLimit: {
+      documents: overDocumentUsers.length,
+      costUsd: overCostUsers.length,
+      tokens: overTokenUsers.length,
+    },
+    samples: {
+      documents: overDocumentUsers.slice(0, 5),
+      costUsd: overCostUsers.slice(0, 5),
+      tokens: overTokenUsers.slice(0, 5),
+    },
+  };
+}
+
+const getJobDocumentId = (job) => job.documentId ?? job.payload?.documentId ?? null;
+const getJobGenerationId = (job) => job.payload?.generationId ?? null;
+
+const getJobDurationMs = (job, now = new Date()) => {
+  const start = job.startedAt ?? job.queuedAt;
+  const end = job.completedAt ?? (job.status === "running" ? now : null);
+  if (!start || !end) return null;
+  return Math.max(0, new Date(end).getTime() - new Date(start).getTime());
+};
+
+const isJobStuck = (job, now = new Date()) => (
+  job.status === "running"
+  && (
+    (job.leaseExpiresAt && new Date(job.leaseExpiresAt) < now)
+    || (!job.leaseExpiresAt && job.startedAt && new Date(job.startedAt).getTime() < now.getTime() - 120_000)
+  )
+);
+
+const serializeJobStageEvent = (stage) => ({
+  id: stage.id,
+  stageName: stage.stageName,
+  status: stage.status,
+  attemptNumber: stage.attemptNumber,
+  startedAt: stage.startedAt,
+  endedAt: stage.endedAt,
+  durationMs: stage.durationMs,
+  errorSummary: stage.errorSummary,
+  metadata: stage.metadata,
+});
+
+const serializeAdminJob = (job, { documentsById = new Map(), generationsByJobId = new Map(), now = new Date() } = {}) => {
+  const documentId = getJobDocumentId(job);
+  const generation = generationsByJobId.get(job.id) ?? null;
+  const document = documentId ? documentsById.get(documentId) ?? null : null;
+
+  return {
+    id: job.id,
+    shortId: job.id.slice(0, 8),
+    userId: job.userId,
+    user: serializeAdminUserRef(job.user),
+    documentId,
+    document: document
+      ? {
+        id: document.id,
+        originalName: document.originalName,
+        processingStatus: document.processingStatus,
+      }
+      : null,
+    generationId: getJobGenerationId(job) ?? generation?.id ?? null,
+    generation: generation
+      ? {
+        id: generation.id,
+        generationType: generation.generationType,
+        status: generation.status,
+        isLatest: generation.isLatest,
+      }
+      : null,
+    jobType: job.jobType,
+    status: job.status,
+    progressPct: job.progressPct,
+    retryCount: job.retryCount,
+    maxRetries: job.maxRetries,
+    queuedAt: job.queuedAt,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    workerId: job.workerId,
+    leaseExpiresAt: job.leaseExpiresAt,
+    lastHeartbeatAt: job.lastHeartbeatAt,
+    errorMessage: job.errorMessage,
+    totalDurationMs: getJobDurationMs(job, now),
+    stuck: isJobStuck(job, now),
+    stageEvents: Array.isArray(job.stageEvents)
+      ? job.stageEvents.map(serializeJobStageEvent)
+      : undefined,
+  };
+};
+
+const USAGE_GRANULARITIES = new Set(["hour", "day", "week", "month", "year"]);
+
+function buildUsageLedgerWhere(query) {
+  const dateRange = buildDateRangeFilter(query);
+  if (dateRange.error) {
+    return { error: dateRange.error };
+  }
+
+  const userId = getQueryValue(query.userId);
+  const documentId = getQueryValue(query.documentId);
+  const featureKey = getQueryValue(query.featureKey);
+  const model = getQueryValue(query.model);
+  const status = getQueryValue(query.status);
+  const billable = getQueryValue(query.billable);
+  const where = {};
+
+  if (dateRange.filter) where.createdAt = dateRange.filter;
+  if (userId) where.userId = userId;
+  if (documentId) where.documentId = documentId;
+  if (featureKey && featureKey !== "all") where.featureKey = featureKey;
+  if (model && model !== "all") where.model = model;
+  if (status && status !== "all") where.status = status;
+  if (billable === "true") where.billable = true;
+  if (billable === "false") where.billable = false;
+
+  return {
+    where,
+    dateRange,
+    filters: {
+      userId: userId || null,
+      documentId: documentId || null,
+      featureKey: featureKey || null,
+      model: model || null,
+      status: status || null,
+      billable: billable || null,
+      from: dateRange.fromRaw || null,
+      to: dateRange.toRaw || null,
+    },
+  };
+}
+
+function buildUsageMoney(usd, sarRate) {
+  const costUsd = toNumericValue(usd);
+  return {
+    costUsd,
+    costSar: costUsd * sarRate,
+  };
+}
+
+function buildUsageTotalsFromAggregate(aggregate, count, sarRate) {
+  const inputTokens = aggregate?._sum?.inputTokens || 0;
+  const outputTokens = aggregate?._sum?.outputTokens || 0;
+  const totalTokens = aggregate?._sum?.totalTokens || inputTokens + outputTokens;
+
+  return {
+    events: count || 0,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    ...buildUsageMoney(aggregate?._sum?.estimatedCostUsd, sarRate),
+  };
+}
+
+function serializeUsageGroup(group, keyField, sarRate, keyAlias = keyField) {
+  const inputTokens = group._sum?.inputTokens || 0;
+  const outputTokens = group._sum?.outputTokens || 0;
+  const totalTokens = group._sum?.totalTokens || inputTokens + outputTokens;
+
+  return {
+    [keyAlias]: group[keyField],
+    events: group._count?._all || 0,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    ...buildUsageMoney(group._sum?.estimatedCostUsd, sarRate),
+  };
+}
+
+function sortUsageGroups(groups) {
+  return groups.sort((left, right) => right.costUsd - left.costUsd);
+}
+
+function buildDocumentUsageWhere(where) {
+  return where.documentId ? where : { ...where, documentId: { not: null } };
+}
+
+async function getUsageSummary(prisma, where, sarRate) {
+  const [
+    totalEvents,
+    totals,
+    billableTotals,
+    failedEvents,
+    userGroups,
+    documentGroups,
+    featureGroups,
+    modelGroups,
+  ] = await prisma.$transaction([
+    prisma.modelUsageEvent.count({ where }),
+    prisma.modelUsageEvent.aggregate({
+      where,
+      _sum: {
+        estimatedCostUsd: true,
+        inputTokens: true,
+        outputTokens: true,
+        totalTokens: true,
+      },
+    }),
+    prisma.modelUsageEvent.aggregate({
+      where: { ...where, billable: true },
+      _sum: {
+        estimatedCostUsd: true,
+        inputTokens: true,
+        outputTokens: true,
+        totalTokens: true,
+      },
+    }),
+    prisma.modelUsageEvent.count({ where: { ...where, status: "failed" } }),
+    prisma.modelUsageEvent.groupBy({
+      by: ["userId"],
+      where,
+      _count: { _all: true },
+      _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+    }),
+    prisma.modelUsageEvent.groupBy({
+      by: ["documentId"],
+      where: buildDocumentUsageWhere(where),
+      _count: { _all: true },
+      _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+    }),
+    prisma.modelUsageEvent.groupBy({
+      by: ["featureKey"],
+      where,
+      _count: { _all: true },
+      _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+    }),
+    prisma.modelUsageEvent.groupBy({
+      by: ["model"],
+      where,
+      _count: { _all: true },
+      _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+    }),
+  ]);
+
+  return {
+    totals: {
+      ...buildUsageTotalsFromAggregate(totals, totalEvents, sarRate),
+      billableCostUsd: toNumericValue(billableTotals._sum?.estimatedCostUsd),
+      billableCostSar: toNumericValue(billableTotals._sum?.estimatedCostUsd) * sarRate,
+      failedEvents,
+    },
+    topUsers: sortUsageGroups(userGroups.map((group) => serializeUsageGroup(group, "userId", sarRate))).slice(0, 10),
+    topDocuments: sortUsageGroups(documentGroups.map((group) => serializeUsageGroup(group, "documentId", sarRate))).slice(0, 10),
+    features: sortUsageGroups(featureGroups.map((group) => serializeUsageGroup(group, "featureKey", sarRate))),
+    models: sortUsageGroups(modelGroups.map((group) => serializeUsageGroup(group, "model", sarRate))),
+  };
+}
+
+function getUsageBucketStart(date, granularity) {
+  const value = new Date(date);
+  if (granularity === "hour") {
+    value.setUTCMinutes(0, 0, 0);
+  } else if (granularity === "day") {
+    value.setUTCHours(0, 0, 0, 0);
+  } else if (granularity === "week") {
+    value.setUTCHours(0, 0, 0, 0);
+    const day = value.getUTCDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    value.setUTCDate(value.getUTCDate() + mondayOffset);
+  } else if (granularity === "month") {
+    value.setUTCDate(1);
+    value.setUTCHours(0, 0, 0, 0);
+  } else if (granularity === "year") {
+    value.setUTCMonth(0, 1);
+    value.setUTCHours(0, 0, 0, 0);
+  }
+  return value.toISOString();
+}
+
+function addUsageToBucket(bucket, event, sarRate) {
+  bucket.events += 1;
+  bucket.inputTokens += event.inputTokens || 0;
+  bucket.outputTokens += event.outputTokens || 0;
+  bucket.totalTokens += event.totalTokens || 0;
+  bucket.costUsd += toNumericValue(event.estimatedCostUsd);
+  bucket.costSar = bucket.costUsd * sarRate;
+}
+
+export async function buildUsageTimeSeries(prisma, where, granularity, sarRate) {
+  const events = [];
+  const pageSize = 1000;
+  let cursor = null;
+
+  while (true) {
+    const page = await prisma.modelUsageEvent.findMany({
+      where,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        createdAt: true,
+        inputTokens: true,
+        outputTokens: true,
+        totalTokens: true,
+        estimatedCostUsd: true,
+      },
+      take: pageSize,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+
+    events.push(...page);
+    if (page.length < pageSize) {
+      break;
+    }
+    cursor = page[page.length - 1].id;
+  }
+
+  const buckets = new Map();
+
+  for (const event of events) {
+    const bucketKey = getUsageBucketStart(event.createdAt, granularity);
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, {
+        bucketStart: bucketKey,
+        events: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        costSar: 0,
+      });
+    }
+    addUsageToBucket(buckets.get(bucketKey), event, sarRate);
+  }
+
+  return [...buckets.values()].sort((left, right) => new Date(left.bucketStart) - new Date(right.bucketStart));
+}
 
 const serializeAnomalyAlert = (alert) => ({
   id: alert.id,
@@ -191,6 +637,37 @@ const serializeAnomalyAlert = (alert) => ({
   thresholdUsd: toNumericValue(alert.thresholdUsd),
   actualUsd: toNumericValue(alert.actualUsd),
   resolved: alert.resolved,
+  createdAt: alert.createdAt,
+  user: serializeAdminUserRef(alert.user),
+});
+
+const serializeAdminAlert = (alert) => ({
+  id: alert.id,
+  alertType: alert.alertType,
+  severity: alert.severity,
+  targetType: alert.targetType,
+  targetId: alert.targetId,
+  userId: alert.userId,
+  documentId: alert.documentId,
+  jobId: alert.jobId,
+  thresholdUsd:
+    alert.thresholdUsd === null || alert.thresholdUsd === undefined
+      ? null
+      : toNumericValue(alert.thresholdUsd),
+  actualUsd:
+    alert.actualUsd === null || alert.actualUsd === undefined
+      ? null
+      : toNumericValue(alert.actualUsd),
+  thresholdCount: alert.thresholdCount,
+  actualCount: alert.actualCount,
+  emailTo: alert.emailTo,
+  emailSubject: alert.emailSubject,
+  emailStatus: alert.emailStatus,
+  providerMessageId: alert.providerMessageId,
+  errorMessage: alert.errorMessage,
+  resolved: alert.resolved,
+  metadata: alert.metadata,
+  sentAt: alert.sentAt,
   createdAt: alert.createdAt,
   user: serializeAdminUserRef(alert.user),
 });
@@ -874,6 +1351,305 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
     }
   });
 
+  router.get("/usage/summary", async (req, res) => {
+    try {
+      const ledgerQuery = buildUsageLedgerWhere(req.query);
+      if (ledgerQuery.error) {
+        return res.status(400).json({ error: ledgerQuery.error });
+      }
+
+      const sarRate = getUsdToSarRate();
+      const summary = await getUsageSummary(prisma, ledgerQuery.where, sarRate);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_LEDGER_USAGE_SUMMARY",
+        details: ledgerQuery.filters,
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        sarRate,
+        sarApproximate: true,
+        filters: ledgerQuery.filters,
+        ...summary,
+      });
+    } catch (error) {
+      console.error("Error fetching ledger usage summary:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch usage summary" });
+    }
+  });
+
+  router.get("/usage/timeseries", async (req, res) => {
+    try {
+      const granularity = getQueryValue(req.query.granularity) || "day";
+      if (!USAGE_GRANULARITIES.has(granularity)) {
+        return res.status(400).json({ error: "granularity must be hour, day, week, month, or year" });
+      }
+
+      const ledgerQuery = buildUsageLedgerWhere(req.query);
+      if (ledgerQuery.error) {
+        return res.status(400).json({ error: ledgerQuery.error });
+      }
+
+      const sarRate = getUsdToSarRate();
+      const series = await buildUsageTimeSeries(prisma, ledgerQuery.where, granularity, sarRate);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_LEDGER_USAGE_TIMESERIES",
+        details: { ...ledgerQuery.filters, granularity },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        granularity,
+        sarRate,
+        sarApproximate: true,
+        filters: ledgerQuery.filters,
+        series,
+      });
+    } catch (error) {
+      console.error("Error fetching usage timeseries:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch usage timeseries" });
+    }
+  });
+
+  router.get("/usage/users", async (req, res) => {
+    try {
+      const ledgerQuery = buildUsageLedgerWhere(req.query);
+      if (ledgerQuery.error) {
+        return res.status(400).json({ error: ledgerQuery.error });
+      }
+
+      const sarRate = getUsdToSarRate();
+      const groups = await prisma.modelUsageEvent.groupBy({
+        by: ["userId"],
+        where: ledgerQuery.where,
+        _count: { _all: true },
+        _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+      });
+      const userIds = groups.map((group) => group.userId);
+      const users = userIds.length
+        ? await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, email: true, name: true, plan: true, role: true },
+        })
+        : [];
+      const usersById = new Map(users.map((user) => [user.id, user]));
+      const usageUsers = sortUsageGroups(groups.map((group) => ({
+        ...serializeUsageGroup(group, "userId", sarRate),
+        user: usersById.get(group.userId) ?? null,
+      })));
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_LEDGER_USAGE_USERS",
+        details: ledgerQuery.filters,
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ sarRate, sarApproximate: true, filters: ledgerQuery.filters, users: usageUsers });
+    } catch (error) {
+      console.error("Error fetching usage users:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch usage by users" });
+    }
+  });
+
+  router.get("/usage/users/:userId", async (req, res) => {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.params.userId },
+        select: { id: true, email: true, name: true, plan: true, role: true },
+      });
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const ledgerQuery = buildUsageLedgerWhere({
+        ...req.query,
+        userId: req.params.userId,
+      });
+      if (ledgerQuery.error) {
+        return res.status(400).json({ error: ledgerQuery.error });
+      }
+
+      const granularity = getQueryValue(req.query.granularity) || "day";
+      if (!USAGE_GRANULARITIES.has(granularity)) {
+        return res.status(400).json({ error: "granularity must be hour, day, week, month, or year" });
+      }
+
+      const sarRate = getUsdToSarRate();
+      const [summary, featureGroups, modelGroups, documentGroups, series] = await Promise.all([
+        getUsageSummary(prisma, ledgerQuery.where, sarRate),
+        prisma.modelUsageEvent.groupBy({
+          by: ["featureKey"],
+          where: ledgerQuery.where,
+          _count: { _all: true },
+          _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+        }),
+        prisma.modelUsageEvent.groupBy({
+          by: ["model"],
+          where: ledgerQuery.where,
+          _count: { _all: true },
+          _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+        }),
+        prisma.modelUsageEvent.groupBy({
+          by: ["documentId"],
+          where: buildDocumentUsageWhere(ledgerQuery.where),
+          _count: { _all: true },
+          _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+        }),
+        buildUsageTimeSeries(prisma, ledgerQuery.where, granularity, sarRate),
+      ]);
+      const documentIds = documentGroups.map((group) => group.documentId).filter(Boolean);
+      const documents = documentIds.length
+        ? await prisma.document.findMany({
+          where: { id: { in: documentIds } },
+          select: { id: true, originalName: true, processingStatus: true },
+        })
+        : [];
+      const documentsById = new Map(documents.map((document) => [document.id, document]));
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_LEDGER_USER_USAGE_DETAIL",
+        targetId: req.params.userId,
+        details: { ...ledgerQuery.filters, granularity },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        user,
+        sarRate,
+        sarApproximate: true,
+        granularity,
+        filters: ledgerQuery.filters,
+        totals: summary.totals,
+        features: sortUsageGroups(featureGroups.map((group) => serializeUsageGroup(group, "featureKey", sarRate))),
+        models: sortUsageGroups(modelGroups.map((group) => serializeUsageGroup(group, "model", sarRate))),
+        documents: sortUsageGroups(documentGroups.map((group) => ({
+          ...serializeUsageGroup(group, "documentId", sarRate),
+          document: documentsById.get(group.documentId) ?? null,
+        }))),
+        series,
+      });
+    } catch (error) {
+      console.error("Error fetching user usage detail:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch user usage detail" });
+    }
+  });
+
+  router.get("/usage/documents", async (req, res) => {
+    try {
+      const ledgerQuery = buildUsageLedgerWhere(req.query);
+      if (ledgerQuery.error) return res.status(400).json({ error: ledgerQuery.error });
+
+      const sarRate = getUsdToSarRate();
+      const groups = await prisma.modelUsageEvent.groupBy({
+        by: ["documentId"],
+        where: buildDocumentUsageWhere(ledgerQuery.where),
+        _count: { _all: true },
+        _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+      });
+      const documentIds = groups.map((group) => group.documentId).filter(Boolean);
+      const documents = documentIds.length
+        ? await prisma.document.findMany({
+          where: { id: { in: documentIds } },
+          select: { id: true, originalName: true, userId: true, processingStatus: true },
+        })
+        : [];
+      const documentsById = new Map(documents.map((document) => [document.id, document]));
+      const documentsUsage = sortUsageGroups(groups.map((group) => ({
+        ...serializeUsageGroup(group, "documentId", sarRate),
+        document: documentsById.get(group.documentId) ?? null,
+      })));
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_LEDGER_USAGE_DOCUMENTS",
+        details: ledgerQuery.filters,
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ sarRate, sarApproximate: true, filters: ledgerQuery.filters, documents: documentsUsage });
+    } catch (error) {
+      console.error("Error fetching usage documents:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch usage by documents" });
+    }
+  });
+
+  router.get("/usage/models", async (req, res) => {
+    try {
+      const ledgerQuery = buildUsageLedgerWhere(req.query);
+      if (ledgerQuery.error) return res.status(400).json({ error: ledgerQuery.error });
+
+      const sarRate = getUsdToSarRate();
+      const groups = await prisma.modelUsageEvent.groupBy({
+        by: ["model"],
+        where: ledgerQuery.where,
+        _count: { _all: true },
+        _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_LEDGER_USAGE_MODELS",
+        details: ledgerQuery.filters,
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        sarRate,
+        sarApproximate: true,
+        filters: ledgerQuery.filters,
+        models: sortUsageGroups(groups.map((group) => serializeUsageGroup(group, "model", sarRate))),
+      });
+    } catch (error) {
+      console.error("Error fetching usage models:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch usage by models" });
+    }
+  });
+
+  router.get("/usage/features", async (req, res) => {
+    try {
+      const ledgerQuery = buildUsageLedgerWhere(req.query);
+      if (ledgerQuery.error) return res.status(400).json({ error: ledgerQuery.error });
+
+      const sarRate = getUsdToSarRate();
+      const groups = await prisma.modelUsageEvent.groupBy({
+        by: ["featureKey"],
+        where: ledgerQuery.where,
+        _count: { _all: true },
+        _sum: { estimatedCostUsd: true, inputTokens: true, outputTokens: true, totalTokens: true },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_LEDGER_USAGE_FEATURES",
+        details: ledgerQuery.filters,
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        sarRate,
+        sarApproximate: true,
+        filters: ledgerQuery.filters,
+        features: sortUsageGroups(groups.map((group) => serializeUsageGroup(group, "featureKey", sarRate))),
+      });
+    } catch (error) {
+      console.error("Error fetching usage features:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch usage by features" });
+    }
+  });
+
   router.get("/usage/:userId", async (req, res) => {
     try {
       const { userId } = req.params;
@@ -1011,6 +1787,419 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
     }
   });
 
+  router.get("/jobs/summary", async (req, res) => {
+    try {
+      const now = new Date();
+      const staleCutoff = new Date(now.getTime() - 120_000);
+      const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+      const [totalsByStatus, failedLast24h, stuckJobs, runningJobs] = await prisma.$transaction([
+        prisma.job.groupBy({
+          by: ["status"],
+          _count: { _all: true },
+        }),
+        prisma.job.count({
+          where: {
+            status: "failed",
+            completedAt: { gte: since24h },
+          },
+        }),
+        prisma.job.findMany({
+          where: {
+            status: "running",
+            OR: [
+              { leaseExpiresAt: { lt: now } },
+              {
+                leaseExpiresAt: null,
+                startedAt: { lt: staleCutoff },
+              },
+            ],
+          },
+          orderBy: { startedAt: "asc" },
+          take: 20,
+          include: {
+            user: { select: { id: true, email: true, name: true } },
+          },
+        }),
+        prisma.job.count({ where: { status: "running" } }),
+      ]);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_JOB_SUMMARY",
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        totalsByStatus: totalsByStatus.reduce((acc, group) => ({
+          ...acc,
+          [group.status]: group._count?._all || 0,
+        }), {}),
+        failedLast24h,
+        runningJobs,
+        stuckJobs: stuckJobs.map((job) => serializeAdminJob(job, { now })),
+      });
+    } catch (error) {
+      console.error("Error fetching job summary:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch job summary" });
+    }
+  });
+
+  router.get("/jobs/:id", async (req, res) => {
+    try {
+      const job = await prisma.job.findUnique({
+        where: { id: req.params.id },
+        include: {
+          user: { select: { id: true, email: true, name: true } },
+          stageEvents: {
+            orderBy: [
+              { startedAt: "asc" },
+              { createdAt: "asc" },
+            ],
+          },
+        },
+      });
+
+      if (!job) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      const documentId = getJobDocumentId(job);
+      const [document, generation] = await Promise.all([
+        documentId
+          ? prisma.document.findUnique({
+            where: { id: documentId },
+            select: { id: true, originalName: true, processingStatus: true },
+          })
+          : null,
+        prisma.documentGeneration.findFirst({
+          where: { jobId: job.id },
+          select: { id: true, generationType: true, status: true, isLatest: true },
+          orderBy: { createdAt: "desc" },
+        }),
+      ]);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_JOB_DETAIL",
+        targetId: job.id,
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        job: serializeAdminJob(job, {
+          documentsById: document ? new Map([[document.id, document]]) : new Map(),
+          generationsByJobId: generation ? new Map([[job.id, generation]]) : new Map(),
+        }),
+      });
+    } catch (error) {
+      console.error("Error fetching job detail:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch job detail" });
+    }
+  });
+
+  router.get("/jobs", async (req, res) => {
+    try {
+      const pagination = buildPagination(req.query);
+      if (pagination.error) {
+        return res.status(400).json({ error: pagination.error });
+      }
+
+      const dateRange = buildDateRangeFilter(req.query);
+      if (dateRange.error) {
+        return res.status(400).json({ error: dateRange.error });
+      }
+
+      const status = getQueryValue(req.query.status);
+      const jobType = getQueryValue(req.query.jobType);
+      const userId = getQueryValue(req.query.userId);
+      const documentId = getQueryValue(req.query.documentId);
+      const failedOnly = getQueryValue(req.query.failedOnly) === "true";
+      const stuckOnly = getQueryValue(req.query.stuckOnly) === "true";
+      const now = new Date();
+      const staleCutoff = new Date(now.getTime() - 120_000);
+      const where = {};
+
+      if (failedOnly) {
+        where.status = "failed";
+      } else if (status && status !== "all") {
+        where.status = status;
+      }
+      if (jobType && jobType !== "all") where.jobType = jobType;
+      if (userId) where.userId = userId;
+      if (documentId) where.documentId = documentId;
+      if (dateRange.filter) where.queuedAt = dateRange.filter;
+      if (stuckOnly) {
+        where.status = "running";
+        where.OR = [
+          { leaseExpiresAt: { lt: now } },
+          {
+            leaseExpiresAt: null,
+            startedAt: { lt: staleCutoff },
+          },
+        ];
+      }
+
+      const [total, jobs] = await prisma.$transaction([
+        prisma.job.count({ where }),
+        prisma.job.findMany({
+          where,
+          orderBy: { queuedAt: "desc" },
+          skip: pagination.skip,
+          take: pagination.limit,
+          include: {
+            user: { select: { id: true, email: true, name: true } },
+          },
+        }),
+      ]);
+      const documentIds = [...new Set(jobs.map(getJobDocumentId).filter(Boolean))];
+      const jobIds = jobs.map((job) => job.id);
+      const [documents, generations] = await Promise.all([
+        documentIds.length > 0
+          ? prisma.document.findMany({
+            where: { id: { in: documentIds } },
+            select: { id: true, originalName: true, processingStatus: true },
+          })
+          : [],
+        jobIds.length > 0
+          ? prisma.documentGeneration.findMany({
+            where: { jobId: { in: jobIds } },
+            select: { id: true, jobId: true, generationType: true, status: true, isLatest: true },
+          })
+          : [],
+      ]);
+      const documentsById = new Map(documents.map((document) => [document.id, document]));
+      const generationsByJobId = new Map(generations.map((generation) => [generation.jobId, generation]));
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "LIST_JOBS",
+        details: {
+          status: status || null,
+          jobType: jobType || null,
+          userId: userId || null,
+          documentId: documentId || null,
+          failedOnly,
+          stuckOnly,
+          page: pagination.page,
+          limit: pagination.limit,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        ...createPaginationMeta(pagination.page, pagination.limit, total),
+        jobs: jobs.map((job) => serializeAdminJob(job, { documentsById, generationsByJobId, now })),
+      });
+    } catch (error) {
+      console.error("Error fetching jobs:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch jobs" });
+    }
+  });
+
+  router.get("/caps/defaults", async (req, res) => {
+    try {
+      await ensureDefaultUsageCapConfigs(prisma);
+      const configs = await prisma.usageCapConfig.findMany({
+        orderBy: { plan: "asc" },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_USAGE_CAP_DEFAULTS",
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ caps: configs.map(serializeUsageCapConfig) });
+    } catch (error) {
+      console.error("Error fetching usage cap defaults:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch usage cap defaults" });
+    }
+  });
+
+  router.post("/caps/defaults/:plan/impact", async (req, res) => {
+    try {
+      const plan = typeof req.params.plan === "string"
+        ? req.params.plan.trim().toLowerCase()
+        : "";
+      if (!["free", "premium"].includes(plan)) {
+        return res.status(400).json({ error: "Invalid plan" });
+      }
+
+      const fallback = getFallbackCapConfig(plan);
+      const current = await prisma.usageCapConfig.findUnique({ where: { plan } });
+      const baseCaps = current
+        ? serializeUsageCapConfig(current)
+        : fallback;
+      const proposedCaps = {
+        documentCap: req.body?.documentCap === undefined
+          ? baseCaps.documentCap
+          : req.body.documentCap === null
+            ? null
+            : parseIntegerInput(req.body.documentCap, 0),
+        costCapUsd: req.body?.costCapUsd === undefined
+          ? baseCaps.costCapUsd
+          : parseNullableNumberInput(req.body.costCapUsd, 0),
+        tokenCap: req.body?.tokenCap === undefined
+          ? baseCaps.tokenCap
+          : req.body.tokenCap === null
+            ? null
+            : parseIntegerInput(req.body.tokenCap, 0),
+      };
+
+      if (
+        proposedCaps.documentCap === null && req.body?.documentCap !== null && req.body?.documentCap !== undefined
+      ) {
+        return res.status(400).json({ error: "documentCap must be a non-negative integer or null" });
+      }
+      if (proposedCaps.costCapUsd === undefined) {
+        return res.status(400).json({ error: "costCapUsd must be a non-negative number or null" });
+      }
+      if (proposedCaps.tokenCap === null && req.body?.tokenCap !== null && req.body?.tokenCap !== undefined) {
+        return res.status(400).json({ error: "tokenCap must be a non-negative integer or null" });
+      }
+
+      const impact = await buildUsageCapImpact(prisma, plan, proposedCaps);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "PREVIEW_USAGE_CAP_IMPACT",
+        details: {
+          plan,
+          current: current ? serializeUsageCapConfig(current) : null,
+          proposed: proposedCaps,
+          impact,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        current: current ? serializeUsageCapConfig(current) : null,
+        proposed: proposedCaps,
+        impact,
+      });
+    } catch (error) {
+      console.error("Error previewing usage cap impact:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to preview usage cap impact" });
+    }
+  });
+
+  router.patch("/caps/defaults/:plan", async (req, res) => {
+    try {
+      const plan = typeof req.params.plan === "string"
+        ? req.params.plan.trim().toLowerCase()
+        : "";
+      if (!["free", "premium"].includes(plan)) {
+        return res.status(400).json({ error: "Invalid plan" });
+      }
+
+      const updates = {};
+      for (const field of ["documentCap", "tokenCap"]) {
+        if (req.body?.[field] === undefined) {
+          continue;
+        }
+
+        const parsed = req.body[field] === null
+          ? null
+          : parseIntegerInput(req.body[field], 0);
+        if (parsed === null && req.body[field] !== null) {
+          return res.status(400).json({ error: `${field} must be a non-negative integer or null` });
+        }
+        updates[field] = parsed;
+      }
+
+      if (req.body?.costCapUsd !== undefined) {
+        const parsedCostCap = parseNullableNumberInput(req.body.costCapUsd, 0);
+        if (parsedCostCap === undefined) {
+          return res.status(400).json({ error: "costCapUsd must be a non-negative number or null" });
+        }
+        updates.costCapUsd = parsedCostCap;
+      }
+
+      if (req.body?.featureCaps !== undefined) {
+        if (!req.body.featureCaps || typeof req.body.featureCaps !== "object" || Array.isArray(req.body.featureCaps)) {
+          return res.status(400).json({ error: "featureCaps must be an object" });
+        }
+        updates.featureCaps = req.body.featureCaps;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: "No valid cap updates provided" });
+      }
+
+      const before = await prisma.usageCapConfig.findUnique({ where: { plan } });
+      const fallback = getFallbackCapConfig(plan);
+      const capConfig = await prisma.usageCapConfig.upsert({
+        where: { plan },
+        update: {
+          ...updates,
+          updatedBy: req.session.user.id,
+        },
+        create: {
+          plan,
+          documentCap: updates.documentCap === undefined ? fallback.documentCap : updates.documentCap,
+          costCapUsd: updates.costCapUsd === undefined ? fallback.costCapUsd : updates.costCapUsd,
+          tokenCap: updates.tokenCap === undefined ? fallback.tokenCap : updates.tokenCap,
+          featureCaps: updates.featureCaps ?? fallback.featureCaps,
+          updatedBy: req.session.user.id,
+        },
+      });
+      const impact = await buildUsageCapImpact(prisma, plan, {
+        documentCap: capConfig.documentCap,
+        costCapUsd: capConfig.costCapUsd === null || capConfig.costCapUsd === undefined
+          ? null
+          : toNumericValue(capConfig.costCapUsd),
+        tokenCap: capConfig.tokenCap,
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "UPDATE_USAGE_CAP_DEFAULTS",
+        details: {
+          plan,
+          before: before ? serializeUsageCapConfig(before) : null,
+          after: serializeUsageCapConfig(capConfig),
+          impact,
+          reason: typeof req.body?.reason === "string" ? req.body.reason.slice(0, 500) : null,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ cap: serializeUsageCapConfig(capConfig), impact });
+    } catch (error) {
+      console.error("Error updating usage cap defaults:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to update usage cap defaults" });
+    }
+  });
+
+  router.get("/users/:id/allowance", async (req, res) => {
+    try {
+      const allowance = await getUserAllowance(prisma, req.params.id);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_USER_ALLOWANCE",
+        targetId: req.params.id,
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ allowance });
+    } catch (error) {
+      console.error("Error fetching user allowance:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(error?.statusCode || 500).json({
+        error: error?.message || "Failed to fetch user allowance",
+        code: error?.code,
+      });
+    }
+  });
+
   router.get("/users/:id/limits", async (req, res) => {
     try {
       const { id } = req.params;
@@ -1036,7 +2225,12 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
         ipAddress: getIpAddress(req),
       });
 
-      res.json({ userLimit: serializeUserLimit(userLimit) });
+      const allowance = await getUserAllowance(prisma, id);
+
+      res.json({
+        userLimit: serializeUserLimit(userLimit),
+        allowance,
+      });
     } catch (error) {
       console.error("Error fetching user limits:", error);
       captureSentryException(error, { tags: { route: "admin" } });
@@ -1074,6 +2268,44 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
         updates[field] = parsed;
       }
 
+      for (const field of ["documentCapOverride", "tokenCapOverride"]) {
+        if (req.body?.[field] === undefined) {
+          continue;
+        }
+
+        const parsed = req.body[field] === null
+          ? null
+          : parseIntegerInput(req.body[field], 0);
+        if (parsed === null && req.body[field] !== null) {
+          return res.status(400).json({
+            error: `${field} must be a non-negative integer or null`,
+          });
+        }
+
+        updates[field] = parsed;
+      }
+
+      if (req.body?.costCapUsdOverride !== undefined) {
+        const parsedCostCap = parseNullableNumberInput(req.body.costCapUsdOverride, 0);
+        if (parsedCostCap === undefined) {
+          return res.status(400).json({
+            error: "costCapUsdOverride must be a non-negative number or null",
+          });
+        }
+        updates.costCapUsdOverride = parsedCostCap;
+      }
+
+      if (req.body?.featureCapsOverride !== undefined) {
+        if (
+          !req.body.featureCapsOverride
+          || typeof req.body.featureCapsOverride !== "object"
+          || Array.isArray(req.body.featureCapsOverride)
+        ) {
+          return res.status(400).json({ error: "featureCapsOverride must be an object" });
+        }
+        updates.featureCapsOverride = req.body.featureCapsOverride;
+      }
+
       if (Object.keys(updates).length === 0) {
         return res.status(400).json({ error: "No valid limit updates provided" });
       }
@@ -1106,11 +2338,170 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
         ipAddress: getIpAddress(req),
       });
 
-      res.json({ userLimit: serializeUserLimit(userLimit) });
+      const allowance = await getUserAllowance(prisma, id);
+
+      res.json({
+        userLimit: serializeUserLimit(userLimit),
+        allowance,
+      });
     } catch (error) {
       console.error("Error updating user limits:", error);
       captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to update user limits" });
+    }
+  });
+
+  router.post("/users/:id/limits/overrides", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await prisma.user.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const updates = {};
+      for (const field of ["documentCapOverride", "tokenCapOverride"]) {
+        if (req.body?.[field] === undefined) {
+          continue;
+        }
+
+        const parsed = req.body[field] === null
+          ? null
+          : parseIntegerInput(req.body[field], 0);
+        if (parsed === null && req.body[field] !== null) {
+          return res.status(400).json({
+            error: `${field} must be a non-negative integer or null`,
+          });
+        }
+
+        updates[field] = parsed;
+      }
+
+      if (req.body?.costCapUsdOverride !== undefined) {
+        const parsedCostCap = parseNullableNumberInput(req.body.costCapUsdOverride, 0);
+        if (parsedCostCap === undefined) {
+          return res.status(400).json({
+            error: "costCapUsdOverride must be a non-negative number or null",
+          });
+        }
+        updates.costCapUsdOverride = parsedCostCap;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: "No valid override updates provided" });
+      }
+
+      const before = await prisma.userLimit.findUnique({ where: { userId: id } });
+      const userLimit = await prisma.userLimit.upsert({
+        where: { userId: id },
+        update: {
+          ...updates,
+          overrideBy: req.session.user.id,
+        },
+        create: {
+          userId: id,
+          ...updates,
+          overrideBy: req.session.user.id,
+        },
+      });
+      const allowance = await getUserAllowance(prisma, id);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "SET_USER_CAP_OVERRIDES",
+        targetId: id,
+        details: {
+          before: before ? serializeUserLimit(before) : null,
+          after: serializeUserLimit(userLimit),
+          updates,
+          allowance,
+          reason: typeof req.body?.reason === "string" ? req.body.reason.slice(0, 500) : null,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        userLimit: serializeUserLimit(userLimit),
+        allowance,
+      });
+    } catch (error) {
+      console.error("Error setting user cap overrides:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to set user cap overrides" });
+    }
+  });
+
+  router.post("/users/:id/limits/overrides/clear", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await prisma.user.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const fields = Array.isArray(req.body?.fields)
+        ? req.body.fields
+        : ["documentCapOverride", "costCapUsdOverride", "tokenCapOverride", "featureCapsOverride"];
+      const allowedFields = new Set([
+        "documentCapOverride",
+        "costCapUsdOverride",
+        "tokenCapOverride",
+        "featureCapsOverride",
+      ]);
+      const updates = {};
+
+      for (const field of fields) {
+        if (!allowedFields.has(field)) {
+          return res.status(400).json({ error: `Invalid override field: ${field}` });
+        }
+        updates[field] = field === "featureCapsOverride" ? {} : null;
+      }
+
+      const before = await prisma.userLimit.findUnique({ where: { userId: id } });
+      const userLimit = await prisma.userLimit.upsert({
+        where: { userId: id },
+        update: {
+          ...updates,
+          overrideBy: req.session.user.id,
+        },
+        create: {
+          userId: id,
+          ...updates,
+          overrideBy: req.session.user.id,
+        },
+      });
+      const allowance = await getUserAllowance(prisma, id);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "CLEAR_USER_CAP_OVERRIDES",
+        targetId: id,
+        details: {
+          fields,
+          before: before ? serializeUserLimit(before) : null,
+          after: serializeUserLimit(userLimit),
+          allowance,
+          reason: typeof req.body?.reason === "string" ? req.body.reason.slice(0, 500) : null,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        userLimit: serializeUserLimit(userLimit),
+        allowance,
+      });
+    } catch (error) {
+      console.error("Error clearing user cap overrides:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to clear user cap overrides" });
     }
   });
 
@@ -1193,6 +2584,110 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       console.error("Error resolving anomaly alert:", error);
       captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to resolve anomaly alert" });
+    }
+  });
+
+  router.get("/alerts", async (req, res) => {
+    try {
+      const pagination = buildPagination(req.query);
+      if (pagination.error) {
+        return res.status(400).json({ error: pagination.error });
+      }
+
+      const alertType = getQueryValue(req.query.alertType);
+      const emailStatus = getQueryValue(req.query.emailStatus);
+      const resolved = getQueryValue(req.query.resolved);
+      const where = {};
+
+      if (alertType && alertType !== "all") {
+        where.alertType = alertType;
+      }
+      if (emailStatus && emailStatus !== "all") {
+        where.emailStatus = emailStatus;
+      }
+      if (resolved === "true") {
+        where.resolved = true;
+      }
+      if (resolved === "false") {
+        where.resolved = false;
+      }
+
+      const [total, alerts] = await prisma.$transaction([
+        prisma.adminAlert.count({ where }),
+        prisma.adminAlert.findMany({
+          where,
+          orderBy: [{ resolved: "asc" }, { createdAt: "desc" }],
+          skip: pagination.skip,
+          take: pagination.limit,
+          include: {
+            user: {
+              select: { id: true, email: true, name: true },
+            },
+          },
+        }),
+      ]);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_ADMIN_ALERTS",
+        details: {
+          page: pagination.page,
+          limit: pagination.limit,
+          alertType: alertType || null,
+          emailStatus: emailStatus || null,
+          resolved: resolved || null,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({
+        ...createPaginationMeta(pagination.page, pagination.limit, total),
+        alerts: alerts.map(serializeAdminAlert),
+      });
+    } catch (error) {
+      console.error("Error fetching admin alerts:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch admin alerts" });
+    }
+  });
+
+  router.patch("/alerts/:id/resolve", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const existingAlert = await prisma.adminAlert.findUnique({
+        where: { id },
+      });
+
+      if (!existingAlert) {
+        return res.status(404).json({ error: "Admin alert not found" });
+      }
+
+      const alert = await prisma.adminAlert.update({
+        where: { id },
+        data: { resolved: true },
+        include: {
+          user: {
+            select: { id: true, email: true, name: true },
+          },
+        },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "RESOLVE_ADMIN_ALERT",
+        targetId: id,
+        details: {
+          alertType: existingAlert.alertType,
+          previouslyResolved: existingAlert.resolved,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ alert: serializeAdminAlert(alert) });
+    } catch (error) {
+      console.error("Error resolving admin alert:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to resolve admin alert" });
     }
   });
 
