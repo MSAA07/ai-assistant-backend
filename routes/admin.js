@@ -57,6 +57,44 @@ const parseNullableNumberInput = (value, minimum = 0) => {
   return Number.isFinite(parsed) && parsed >= minimum ? parsed : undefined;
 };
 
+const isBlankInput = (value) => (
+  value === undefined
+  || value === null
+  || (typeof value === "string" && value.trim() === "")
+);
+
+const parseCreateIntegerOverride = (value, field) => {
+  if (isBlankInput(value)) {
+    return { valid: true, value: null, provided: false };
+  }
+
+  const parsed = parseIntegerInput(value, 0);
+  if (parsed === null) {
+    return {
+      valid: false,
+      error: `${field} must be a non-negative integer`,
+    };
+  }
+
+  return { valid: true, value: parsed, provided: true };
+};
+
+const parseCreateCostOverride = (value) => {
+  if (isBlankInput(value)) {
+    return { valid: true, value: null, provided: false };
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return {
+      valid: false,
+      error: "costCapUsdOverride must be a non-negative number",
+    };
+  }
+
+  return { valid: true, value: parsed, provided: true };
+};
+
 const parsePositiveInteger = (value, fallback) => {
   if (value === undefined || value === null || value === "") {
     return fallback;
@@ -765,19 +803,40 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
 
   router.post("/users", async (req, res) => {
     try {
-      const { email, name, password, role, plan, monthlyLimit } = req.body;
+      const {
+        email,
+        name,
+        password,
+        role,
+        plan,
+        documentCapOverride,
+        costCapUsdOverride,
+        tokenCapOverride,
+        monthlyLimit,
+      } = req.body;
+      const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+      const normalizedName = typeof name === "string" ? name.trim() : "";
+      const normalizedPassword = typeof password === "string" ? password : "";
       const normalizedRole = typeof role === "string" ? role.trim().toLowerCase() : undefined;
       const normalizedPlan = typeof plan === "string" ? plan.trim().toLowerCase() : undefined;
 
-      if (!email || !name) {
+      if (!normalizedEmail || !normalizedName) {
         return res.status(400).json({ error: "Email and name are required" });
       }
 
-      if (normalizedRole && !["admin", "user"].includes(normalizedRole)) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ error: "Invalid email" });
+      }
+
+      if (!normalizedPassword.trim()) {
+        return res.status(400).json({ error: "Temporary password is required" });
+      }
+
+      if (!normalizedRole || !["admin", "user"].includes(normalizedRole)) {
         return res.status(400).json({ error: "Invalid role" });
       }
 
-      if (normalizedPlan && !["free", "premium"].includes(normalizedPlan)) {
+      if (!normalizedPlan || !["free", "premium"].includes(normalizedPlan)) {
         return res.status(400).json({ error: "Invalid plan" });
       }
 
@@ -785,23 +844,29 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
         return res.status(500).json({ error: "Auth createUser not available" });
       }
 
-      if (monthlyLimit !== undefined) {
-        const parsed = Number(monthlyLimit);
-        if (!Number.isFinite(parsed) || parsed < 1) {
-          return res.status(400).json({ error: "Invalid monthly limit" });
-        }
+      const parsedDocumentCap = parseCreateIntegerOverride(documentCapOverride, "documentCapOverride");
+      if (!parsedDocumentCap.valid) {
+        return res.status(400).json({ error: parsedDocumentCap.error });
+      }
+
+      const parsedCostCap = parseCreateCostOverride(costCapUsdOverride);
+      if (!parsedCostCap.valid) {
+        return res.status(400).json({ error: parsedCostCap.error });
+      }
+
+      const parsedTokenCap = parseCreateIntegerOverride(tokenCapOverride, "tokenCapOverride");
+      if (!parsedTokenCap.valid) {
+        return res.status(400).json({ error: parsedTokenCap.error });
       }
 
       const payload = {
-        email,
-        name,
-        password: password || undefined,
-        role: normalizedRole || undefined,
+        email: normalizedEmail,
+        name: normalizedName,
+        password: normalizedPassword,
+        role: normalizedRole,
         data: {
-          ...(normalizedPlan ? { plan: normalizedPlan } : {}),
-          ...(monthlyLimit !== undefined
-            ? { monthlyLimit: Number(monthlyLimit) }
-            : {}),
+          plan: normalizedPlan,
+          emailVerified: true,
         },
       };
 
@@ -822,14 +887,44 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
         where: { id: created.user.id },
       });
 
+      const limitUpdates = {};
+      if (parsedDocumentCap.provided) {
+        limitUpdates.documentCapOverride = parsedDocumentCap.value;
+      }
+      if (parsedCostCap.provided) {
+        limitUpdates.costCapUsdOverride = parsedCostCap.value;
+      }
+      if (parsedTokenCap.provided) {
+        limitUpdates.tokenCapOverride = parsedTokenCap.value;
+      }
+
+      if (Object.keys(limitUpdates).length > 0) {
+        await prisma.userLimit.upsert({
+          where: { userId: created.user.id },
+          update: {
+            ...limitUpdates,
+            overrideBy: req.session.user.id,
+          },
+          create: {
+            userId: created.user.id,
+            ...limitUpdates,
+            overrideBy: req.session.user.id,
+          },
+        });
+      }
+
       await logAdminAction(prisma, {
         adminId: req.session.user.id,
         action: "CREATE_USER",
         targetId: created.user.id,
         details: {
-          email,
-          role: normalizedRole || "user",
-          plan: normalizedPlan || "free",
+          email: normalizedEmail,
+          role: normalizedRole,
+          plan: normalizedPlan,
+          passwordCredentialCreated: true,
+          emailVerified: true,
+          capOverrides: limitUpdates,
+          legacyMonthlyLimitIgnored: monthlyLimit !== undefined,
         },
         ipAddress: getIpAddress(req),
       });
