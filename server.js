@@ -19,6 +19,10 @@ import { createJobsRouter } from "./routes/jobs.js";
 import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { createCorsOriginValidator } from "./utils/frontendOrigins.js";
+import {
+  buildFrontendAuthActionUrl,
+  buildRelativeAuthBridgeCallbackPath,
+} from "./utils/authBridgeUrls.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 import { STUDY_PDF_LAYOUT_VERSION } from "./utils/studyPdf.js";
 import { assertStorageConfiguredForRuntime } from "./utils/storage.js";
@@ -82,6 +86,44 @@ app.get("/verify-email", (req, res) => {
   }
 
   return res.redirect(302, redirectUrl);
+});
+
+app.get("/auth/verify-email", (req, res) => {
+  const token = Array.isArray(req.query.token) ? req.query.token[0] : req.query.token;
+  if (token) {
+    const callbackURL = buildRelativeAuthBridgeCallbackPath({
+      pathname: "/auth/verify-email",
+      nextUrl: req.query.next,
+      action: "verify-email",
+    });
+    const redirectUrl = buildBetterAuthRedirectUrl("/verify-email", {
+      token,
+      callbackURL,
+    });
+
+    if (!redirectUrl) {
+      return res.status(500).send("Better Auth base URL is not configured");
+    }
+
+    return res.redirect(302, redirectUrl);
+  }
+
+  const frontendUrl = buildFrontendAuthActionUrl({
+    nextUrl: req.query.next,
+    action: "verify-email",
+    error: req.query.error,
+  });
+  return res.redirect(302, frontendUrl);
+});
+
+app.get("/auth/reset-password", (req, res) => {
+  const frontendUrl = buildFrontendAuthActionUrl({
+    nextUrl: req.query.next,
+    action: "reset-password",
+    token: req.query.token,
+    error: req.query.error,
+  });
+  return res.redirect(302, frontendUrl);
 });
 
 app.get("/reset-password/:token", (req, res) => {

@@ -63,7 +63,7 @@ Optional environment variables:
 - `ALERT_SPIKE_MULTIPLIER` (`3` default)
 - `ALERT_FAILED_JOB_THRESHOLD` (`3` default)
 - `ALERT_DEDUP_WINDOW_MINUTES` (`60` default)
-- password-reset callback URLs are frontend-owned via `redirectTo` from the client and should target the deployed frontend root bridge, for example `https://studymaxing.com/?auth_action=reset-password`
+- auth email callback targets are backend-owned `/auth/verify-email` and `/auth/reset-password` bridge URLs; the final frontend destination can still be controlled by frontend env overrides or `AUTH_EMAIL_APP_URL`
 - `ADMIN_EMAILS`
 - `FRONTEND_ORIGINS` (comma-separated extra allowed frontend origins when needed)
 - `R2_ENDPOINT`
