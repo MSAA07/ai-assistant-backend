@@ -13,7 +13,46 @@ import { Readable } from 'stream'
 import { captureSentryException } from './sentry.js'
 import { buildStorageObjectKey } from './filenames.js'
 
-const r2 = process.env.R2_ENDPOINT ? new S3Client({
+function hasValue(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+export function isProductionLikeStorageEnvironment(env = process.env) {
+  return env.NODE_ENV === 'production'
+    || hasValue(env.RAILWAY_ENVIRONMENT)
+    || hasValue(env.RAILWAY_PUBLIC_DOMAIN)
+    || hasValue(env.RAILWAY_STATIC_URL)
+    || hasValue(env.RAILWAY_SERVICE_ID)
+    || hasValue(env.RAILWAY_PROJECT_ID)
+    || hasValue(env.BACKEND_DEPLOYMENT_ENV)
+}
+
+export function getStorageConfigurationStatus(env = process.env) {
+  const missing = [
+    'R2_ENDPOINT',
+    'R2_ACCESS_KEY_ID',
+    'R2_SECRET_ACCESS_KEY',
+    'R2_BUCKET_NAME',
+  ].filter((name) => !hasValue(env[name]))
+
+  return {
+    configured: missing.length === 0,
+    missing,
+    productionLike: isProductionLikeStorageEnvironment(env),
+  }
+}
+
+export function assertStorageConfiguredForRuntime(env = process.env) {
+  const status = getStorageConfigurationStatus(env)
+  if (!status.productionLike || status.configured) {
+    return status
+  }
+
+  throw new Error(`R2 storage is required in production-like deployments; missing ${status.missing.join(', ')}`)
+}
+
+const storageStatus = getStorageConfigurationStatus()
+const r2 = storageStatus.configured ? new S3Client({
   region: 'auto',
   endpoint: process.env.R2_ENDPOINT,
   credentials: {
@@ -22,10 +61,11 @@ const r2 = process.env.R2_ENDPOINT ? new S3Client({
   }
 }) : null
 
-const BUCKET = process.env.R2_BUCKET_NAME || 'ai-study-assistant-uploads'
+const BUCKET = process.env.R2_BUCKET_NAME
 
 export async function uploadFile(localPath, userId, originalFilename, mimeType) {
   if (!r2) {
+    assertStorageConfiguredForRuntime()
     console.warn('[storage] R2 not configured — using local /tmp (files will not persist on restart)')
     // In fallback mode, we return the local path as the key so we can find it later
     // However, since /tmp is ephemeral, this is just for dev/testing without R2

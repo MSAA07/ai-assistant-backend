@@ -26,6 +26,7 @@ import {
 } from "./utils/adminAlerts.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { captureSentryException, flushSentry, initSentry } from "./utils/sentry.js";
+import { assertStorageConfiguredForRuntime } from "./utils/storage.js";
 
 const prisma = new PrismaClient();
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
@@ -53,6 +54,7 @@ initSentry({ serviceName: "worker", disableProcessHandlers: true });
 async function runWorker() {
   console.log(`[worker] started as ${WORKER_ID}, polling every 2s`);
 
+  assertStorageConfiguredForRuntime();
   await waitForRequiredSchema(prisma);
   await ensureDocumentGenerationSchema(prisma);
   await backfillDocumentProcessingState(prisma);

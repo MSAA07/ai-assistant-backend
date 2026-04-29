@@ -3,12 +3,12 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { toNodeHandler } from "better-auth/node";
-import { hashPassword } from "better-auth/crypto";
 
 import { auth, resolvedBetterAuthBaseURL } from "./auth.js";
 import { createRequireAuth } from "./middleware/auth.js";
-import { createAuthHardeningMiddleware, getAuthSecurityDiagnostics } from "./middleware/authHardening.js";
+import { createAuthHardeningMiddleware } from "./middleware/authHardening.js";
 import { createRequireAdmin } from "./middleware/adminGuard.js";
+import { createMutatingOriginGuard } from "./middleware/mutatingOriginGuard.js";
 import { createUserRouter } from "./routes/user.js";
 import { createDocumentsRouter } from "./routes/documents.js";
 import { createFlashcardsRouter, createFlashcardSetsRouter } from "./routes/flashcards.js";
@@ -19,11 +19,9 @@ import { createJobsRouter } from "./routes/jobs.js";
 import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { createCorsOriginValidator } from "./utils/frontendOrigins.js";
-import { getAuthEmailDiagnostics } from "./utils/email.js";
-import { getAuthCallbackDiagnostics } from "./utils/authCallbackUrls.js";
-import { getAuthTelemetrySnapshot } from "./utils/authTelemetry.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
 import { STUDY_PDF_LAYOUT_VERSION } from "./utils/studyPdf.js";
+import { assertStorageConfiguredForRuntime } from "./utils/storage.js";
 
 dotenv.config();
 
@@ -66,84 +64,6 @@ function buildBetterAuthRedirectUrl(pathname, query = {}) {
   return target.toString();
 }
 
-const LEGACY_STAGE_ADMIN_EMAIL = "admin@ai.com";
-const LEGACY_STAGE_ADMIN_PASSWORD = "admin123";
-const LEGACY_STAGE_ADMIN_NAME = "Admin";
-
-function shouldRepairLegacyStageAdmin() {
-  const deploymentHint = [
-    process.env.BETTER_AUTH_URL,
-    process.env.BETTER_AUTH_BASE_URL,
-    process.env.RAILWAY_PUBLIC_DOMAIN,
-    process.env.RAILWAY_STATIC_URL,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  return deploymentHint.includes("staging");
-}
-
-async function ensureLegacyStageAdminAccess() {
-  if (!shouldRepairLegacyStageAdmin()) {
-    return;
-  }
-
-  const hashedPassword = await hashPassword(LEGACY_STAGE_ADMIN_PASSWORD);
-  const now = new Date();
-
-  const user = await prisma.user.upsert({
-    where: { email: LEGACY_STAGE_ADMIN_EMAIL },
-    update: {
-      name: LEGACY_STAGE_ADMIN_NAME,
-      role: "admin",
-      emailVerified: true,
-      plan: "premium",
-      monthlyLimit: 9999,
-    },
-    create: {
-      email: LEGACY_STAGE_ADMIN_EMAIL,
-      name: LEGACY_STAGE_ADMIN_NAME,
-      emailVerified: true,
-      role: "admin",
-      plan: "premium",
-      monthlyLimit: 9999,
-    },
-  });
-
-  const existingCredentialAccount = await prisma.account.findFirst({
-    where: {
-      userId: user.id,
-      providerId: "credential",
-    },
-  });
-
-  if (existingCredentialAccount) {
-    await prisma.account.update({
-      where: { id: existingCredentialAccount.id },
-      data: {
-        accountId: user.id,
-        password: hashedPassword,
-        updatedAt: now,
-      },
-    });
-  } else {
-    await prisma.account.create({
-      data: {
-        id: `credential:${user.id}`,
-        accountId: user.id,
-        providerId: "credential",
-        userId: user.id,
-        password: hashedPassword,
-        createdAt: now,
-        updatedAt: now,
-      },
-    });
-  }
-
-  console.log("[startup] ensured legacy stage admin credentials");
-}
-
 app.use(
   cors({
     origin: createCorsOriginValidator(),
@@ -181,21 +101,16 @@ const requireAdmin = createRequireAdmin({ prisma });
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
-    message: "AI Study Assistant API is running",
     studyPdfLayoutVersion: STUDY_PDF_LAYOUT_VERSION,
     deployGitCommit:
       process.env.RAILWAY_GIT_COMMIT_SHA
       || process.env.RAILWAY_GIT_COMMIT
       || process.env.VERCEL_GIT_COMMIT_SHA
       || "",
-    authEmail: getAuthEmailDiagnostics(),
-    authCallbacks: getAuthCallbackDiagnostics(),
-    authTelemetry: getAuthTelemetrySnapshot(),
-    authSecurity: getAuthSecurityDiagnostics(),
-    betterAuthBaseURL: resolvedBetterAuthBaseURL,
   });
 });
 
+app.use("/api", createMutatingOriginGuard());
 app.use("/api/user", createUserRouter({ prisma, requireAuth }));
 app.use("/api", createDocumentsRouter({ prisma, requireAuth }));
 app.use("/api/flashcard", createFlashcardsRouter({ prisma, requireAuth }));
@@ -229,9 +144,9 @@ app.use((error, req, res, next) => {
 const PORT = process.env.PORT || 3001;
 
 async function startServer() {
+  assertStorageConfiguredForRuntime();
   await ensureDocumentGenerationSchema(prisma);
   await backfillDocumentProcessingState(prisma);
-  await ensureLegacyStageAdminAccess();
 
   app.listen(PORT, () => {
     console.log(`AI Study Assistant API running on port ${PORT}`);

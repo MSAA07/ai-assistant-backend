@@ -54,9 +54,18 @@ const FLAGS = [
 ];
 
 async function ensureAdminUser() {
-  const adminEmail = "admin@ai.com";
-  const adminPassword = "admin123";
-  const adminName = "Admin";
+  const adminEmail = process.env.ADMIN_SEED_EMAIL?.trim().toLowerCase() || "";
+  const adminPassword = process.env.ADMIN_SEED_PASSWORD || "";
+  const adminName = process.env.ADMIN_SEED_NAME?.trim() || "Admin";
+
+  if (!adminEmail && !adminPassword) {
+    console.log("ℹ️ ADMIN_SEED_EMAIL/ADMIN_SEED_PASSWORD not set. Skipping admin user seed.");
+    return;
+  }
+
+  if (!adminEmail || !adminPassword) {
+    throw new Error("ADMIN_SEED_EMAIL and ADMIN_SEED_PASSWORD must both be set to seed an admin user.");
+  }
 
   const existing = await prisma.user.findUnique({
     where: { email: adminEmail },
@@ -113,7 +122,7 @@ async function ensureAdminUser() {
     });
   }
 
-  console.log(`✅ Admin user created: ${adminEmail} / ${adminPassword}`);
+  console.log(`✅ Admin user created: ${adminEmail}`);
 }
 
 async function seedFeatureFlags() {

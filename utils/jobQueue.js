@@ -23,6 +23,9 @@ import {
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 export const JOB_LEASE_DURATION_MS = 120_000;
 export const STALE_JOB_SWEEP_INTERVAL_MS = 15_000;
+export const RETRY_BACKOFF_BASE_MS = 5_000;
+export const RETRY_BACKOFF_MAX_MS = 5 * 60_000;
+export const RETRY_BACKOFF_JITTER_RATIO = 0.25;
 
 function getLeaseExpiryDate(now = new Date()) {
   return new Date(now.getTime() + JOB_LEASE_DURATION_MS);
@@ -30,6 +33,20 @@ function getLeaseExpiryDate(now = new Date()) {
 
 function isExtractionJob(job) {
   return job?.jobType === "extract_document";
+}
+
+export function calculateRetryBackoffMs(nextRetryCount, {
+  random = Math.random,
+  baseMs = RETRY_BACKOFF_BASE_MS,
+  maxMs = RETRY_BACKOFF_MAX_MS,
+  jitterRatio = RETRY_BACKOFF_JITTER_RATIO,
+} = {}) {
+  const safeRetryCount = Math.max(1, Number.parseInt(nextRetryCount, 10) || 1);
+  const exponentialDelay = baseMs * (2 ** (safeRetryCount - 1));
+  const cappedDelay = Math.min(exponentialDelay, maxMs);
+  const jitter = cappedDelay * jitterRatio * Math.max(0, Math.min(Number(random()), 1));
+
+  return Math.round(Math.min(cappedDelay + jitter, maxMs));
 }
 
 async function markQueuedJobRunning(tx, job) {
@@ -216,10 +233,14 @@ async function completeGenerationJob(tx, job, result, completedAt) {
 
 function getRetryDecision(job, error, shouldRetry = true) {
   const nextRetryCount = (job.retryCount || 0) + 1;
+  const retryDelayMs = calculateRetryBackoffMs(nextRetryCount);
+  const retryAt = new Date(Date.now() + retryDelayMs);
 
   return {
     nextRetryCount,
     shouldRetry: shouldRetry && nextRetryCount < job.maxRetries,
+    retryDelayMs,
+    retryAt,
     errorMessage: error instanceof Error
       ? error.message
       : typeof error === "string"
@@ -252,10 +273,12 @@ export async function updateJobProgress(prisma, jobId, workerId, progressPct) {
 
 export async function claimNextQueuedJob(prisma, workerId) {
   return prisma.$transaction(async (tx) => {
+    const now = new Date();
     const claimCandidates = await tx.$queryRaw`
       SELECT "id"
       FROM "Job"
       WHERE "status" = 'queued'
+        AND "queuedAt" <= ${now}
       ORDER BY "queuedAt" ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -266,7 +289,6 @@ export async function claimNextQueuedJob(prisma, workerId) {
       return null;
     }
 
-    const now = new Date();
     const claimedJob = await tx.job.update({
       where: { id: claimCandidate.id },
       data: {
@@ -350,7 +372,7 @@ export async function requeueJob(prisma, job, error, shouldRetry = true) {
         workerId: null,
         leaseExpiresAt: null,
         lastHeartbeatAt: null,
-        queuedAt: now,
+        queuedAt: retryDecision.retryAt,
       },
     });
 
@@ -358,8 +380,12 @@ export async function requeueJob(prisma, job, error, shouldRetry = true) {
       jobId: job.id,
       stageName: "queued",
       attemptNumber: retryDecision.nextRetryCount + 1,
-      startedAt: now,
-      metadata: { retryFromError: retryDecision.errorMessage },
+      startedAt: retryDecision.retryAt,
+      metadata: {
+        retryFromError: retryDecision.errorMessage,
+        retryDelayMs: retryDecision.retryDelayMs,
+        retryScheduledAt: retryDecision.retryAt.toISOString(),
+      },
     });
 
     if (isExtractionJob(job)) {
