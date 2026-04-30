@@ -7,8 +7,46 @@ const SECRET_PATTERNS = [
   /((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[:=]\s*)[^\s,;]+/gi,
   /(TELEGRAM_BOT_TOKEN\s*[:=]\s*)[^\s,;]+/gi,
   /(TELEGRAM_ADMIN_CHAT_ID\s*[:=]\s*)[^\s,;]+/gi,
-  /(document\s+(?:text|content)|extracted\s+text|excerpt\s+content)\s*[:=]\s*[\s\S]+/gi,
+  /((?:document|generated)\s+(?:text|content)|extracted\s+text|excerpt\s+content)\s*[:=]\s*[\s\S]+/gi,
 ];
+
+const EVENT_METADATA = Object.freeze({
+  extraction_permanent_failure: {
+    label: "Extraction failed permanently",
+    severity: "critical",
+    action: "Check document extraction logs and file type.",
+  },
+  generation_permanent_failure: {
+    label: "Generation failed permanently",
+    severity: "critical",
+    action: "Check worker logs, model/provider response, and generation inputs.",
+  },
+  job_failed_after_retries: {
+    label: "Job failed after retries",
+    severity: "critical",
+    action: "Check worker logs and retry history.",
+  },
+  stale_job_recovered: {
+    label: "Stale job recovered",
+    severity: "warning",
+    action: "Monitor job queue and worker heartbeat.",
+  },
+  cost_anomaly_created: {
+    label: "Cost anomaly detected",
+    severity: "warning",
+    action: "Review user usage and cost anomaly dashboard.",
+  },
+  cost_anomaly_resolved: {
+    label: "Cost anomaly resolved",
+    severity: "info",
+    action: "No action needed.",
+  },
+  telegram_test_alert: {
+    label: "Telegram test alert",
+    severity: "info",
+    action: "No action needed.",
+  },
+});
 
 function getEnvironmentName(env = process.env) {
   return env.RAILWAY_ENVIRONMENT
@@ -55,6 +93,34 @@ function getErrorSummary(error) {
   return redactTelegramText(error);
 }
 
+function getEventMetadata(eventType) {
+  return EVENT_METADATA[eventType] || {
+    label: redactTelegramText(eventType || "Unknown event"),
+    severity: "info",
+    action: "Review backend logs.",
+  };
+}
+
+function formatField(value, fallback = "n/a") {
+  const redacted = redactTelegramText(value);
+  return redacted || fallback;
+}
+
+function formatUser(user, userId) {
+  const safeUserId = user?.id || userId;
+  const safeEmail = user?.email;
+
+  if (!safeUserId && !safeEmail) {
+    return "n/a";
+  }
+
+  if (safeUserId && safeEmail) {
+    return `${formatField(safeUserId)} / ${formatField(safeEmail)}`;
+  }
+
+  return formatField(safeUserId || safeEmail);
+}
+
 async function maybeGetUser(prisma, userId) {
   if (!prisma || !userId) {
     return null;
@@ -87,32 +153,22 @@ function buildMessage({
   timestamp,
   details,
 }) {
-  const safeUserId = user?.id || userId;
-  const safeErrorSummary = errorSummary || getErrorSummary(error) || "No error summary provided";
+  const metadata = getEventMetadata(eventType);
+  const safeErrorSummary = errorSummary || getErrorSummary(error);
   const lines = [
-    "StudyMaxing admin alert",
-    `Environment: ${redactTelegramText(env)}`,
-    `Event: ${redactTelegramText(eventType)}`,
+    "🚨 StudyMaxing Admin Alert",
+    `Environment: ${formatField(env)}`,
+    `Event: ${formatField(metadata.label)}`,
+    `Severity: ${formatField(metadata.severity)}`,
+    `User: ${formatUser(user, userId)}`,
+    `Document: ${formatField(documentId)}`,
+    `Job: ${formatField(jobId)}`,
+    `Generation: ${formatField(generationType)}`,
+    `Details: ${formatField(details)}`,
+    `Error: ${formatField(safeErrorSummary)}`,
+    `Time: ${formatField(timestamp || new Date().toISOString())}`,
+    `Action: ${formatField(metadata.action)}`,
   ];
-
-  if (safeUserId || user?.email) {
-    lines.push(`User: ${redactTelegramText(safeUserId || "unknown")}${user?.email ? ` / ${redactTelegramText(user.email)}` : ""}`);
-  }
-  if (documentId) {
-    lines.push(`Document: ${redactTelegramText(documentId)}`);
-  }
-  if (jobId) {
-    lines.push(`Job: ${redactTelegramText(jobId)}`);
-  }
-  if (generationType) {
-    lines.push(`Generation: ${redactTelegramText(generationType)}`);
-  }
-  if (details) {
-    lines.push(`Details: ${redactTelegramText(details)}`);
-  }
-
-  lines.push(`Error: ${safeErrorSummary}`);
-  lines.push(`Timestamp: ${redactTelegramText(timestamp || new Date().toISOString())}`);
 
   return lines.join("\n");
 }

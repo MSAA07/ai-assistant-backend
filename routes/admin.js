@@ -2675,13 +2675,15 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
         ipAddress: getIpAddress(req),
       });
 
-      await sendTelegramAdminNotification({
-        eventType: "cost_anomaly_resolved",
-        user: alert.user,
-        userId: alert.userId,
-        errorSummary: `Cost anomaly ${id} resolved by admin ${req.session.user.id}`,
-        details: `Alert type ${alert.alertType}`,
-      });
+      if (!existingAlert.resolved) {
+        await sendTelegramAdminNotification({
+          eventType: "cost_anomaly_resolved",
+          user: alert.user,
+          userId: alert.userId,
+          errorSummary: `Cost anomaly ${id} resolved by admin ${req.session.user.id}`,
+          details: `Alert type ${alert.alertType}`,
+        });
+      }
 
       res.json({ anomaly: serializeAnomalyAlert(alert) });
     } catch (error) {

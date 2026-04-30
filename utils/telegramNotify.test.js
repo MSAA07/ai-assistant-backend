@@ -44,12 +44,17 @@ test("sendTelegramAdminNotification sends safe structured message", async () => 
 
   const body = JSON.parse(calls[0].options.body);
   assert.equal(body.chat_id, "chat_1");
+  assert.match(body.text, /🚨 StudyMaxing Admin Alert/);
   assert.match(body.text, /Environment: test/);
-  assert.match(body.text, /Event: generation_permanent_failure/);
+  assert.match(body.text, /Event: Generation failed permanently/);
+  assert.match(body.text, /Severity: critical/);
   assert.match(body.text, /User: user_1/);
   assert.match(body.text, /Document: doc_1/);
   assert.match(body.text, /Job: job_1/);
   assert.match(body.text, /Generation: summary/);
+  assert.match(body.text, /Details: n\/a/);
+  assert.match(body.text, /Time: /);
+  assert.match(body.text, /Action: Check worker logs, model\/provider response, and generation inputs\./);
   assert.doesNotMatch(body.text, /abc123/);
   assert.doesNotMatch(body.text, /supersecret/);
 });
@@ -76,10 +81,11 @@ test("sendTelegramAdminNotification swallows Telegram failures", async () => {
 });
 
 test("redactTelegramText removes sensitive labels and truncates text", () => {
-  const redacted = redactTelegramText(`cookie=sessionid token=abc password=hunter2 ${"x".repeat(500)}`);
+  const redacted = redactTelegramText(`cookie=sessionid token=abc password=hunter2 generated content: private ${"x".repeat(500)}`);
 
   assert.doesNotMatch(redacted, /sessionid/);
   assert.doesNotMatch(redacted, /abc/);
   assert.doesNotMatch(redacted, /hunter2/);
+  assert.doesNotMatch(redacted, /private/);
   assert.ok(redacted.length <= 240);
 });

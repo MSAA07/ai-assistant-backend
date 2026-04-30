@@ -548,15 +548,5 @@ export async function recoverStaleJobs(prisma) {
     }
 
     await failJob(prisma, staleJob, staleError);
-    await sendTelegramAdminNotification({
-      prisma,
-      eventType: "stale_job_recovered",
-      userId: staleJob.userId,
-      documentId: staleJob.documentId ?? staleJob.payload?.documentId,
-      jobId: staleJob.id,
-      generationType,
-      error: staleError,
-      details: "Recovered stale running job by marking it failed after retries",
-    });
   }
 }
