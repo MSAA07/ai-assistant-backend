@@ -46,6 +46,16 @@ const EVENT_METADATA = Object.freeze({
     severity: "info",
     action: "No action needed.",
   },
+  new_user_signup: {
+    label: "New user signup",
+    severity: "info",
+    action: "Review user activity if needed.",
+  },
+  daily_admin_digest: {
+    label: "Daily admin digest",
+    severity: "info",
+    action: "Review admin dashboard if any warnings are present.",
+  },
 });
 
 function getEnvironmentName(env = process.env) {
@@ -150,8 +160,10 @@ function buildMessage({
   generationType,
   error,
   errorSummary,
+  severity,
   timestamp,
   details,
+  action,
 }) {
   const metadata = getEventMetadata(eventType);
   const safeErrorSummary = errorSummary || getErrorSummary(error);
@@ -159,7 +171,7 @@ function buildMessage({
     "🚨 StudyMaxing Admin Alert",
     `Environment: ${formatField(env)}`,
     `Event: ${formatField(metadata.label)}`,
-    `Severity: ${formatField(metadata.severity)}`,
+    `Severity: ${formatField(severity || metadata.severity)}`,
     `User: ${formatUser(user, userId)}`,
     `Document: ${formatField(documentId)}`,
     `Job: ${formatField(jobId)}`,
@@ -167,7 +179,7 @@ function buildMessage({
     `Details: ${formatField(details)}`,
     `Error: ${formatField(safeErrorSummary)}`,
     `Time: ${formatField(timestamp || new Date().toISOString())}`,
-    `Action: ${formatField(metadata.action)}`,
+    `Action: ${formatField(action || metadata.action)}`,
   ];
 
   return lines.join("\n");
@@ -182,7 +194,9 @@ export async function sendTelegramAdminNotification({
   generationType,
   error,
   errorSummary,
+  severity,
   details,
+  action,
   timestamp = new Date().toISOString(),
   prisma,
   env = process.env,
@@ -212,7 +226,9 @@ export async function sendTelegramAdminNotification({
       generationType,
       error,
       errorSummary,
+      severity,
       details,
+      action,
       timestamp,
     });
     const controller = new AbortController();

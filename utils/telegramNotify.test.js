@@ -59,6 +59,41 @@ test("sendTelegramAdminNotification sends safe structured message", async () => 
   assert.doesNotMatch(body.text, /supersecret/);
 });
 
+test("sendTelegramAdminNotification formats new user signup safely", async () => {
+  const calls = [];
+  const result = await sendTelegramAdminNotification({
+    eventType: "new_user_signup",
+    user: { id: "user_2", email: "new@example.com" },
+    timestamp: "2026-04-30T12:00:00.000Z",
+    env: {
+      TELEGRAM_BOT_TOKEN: "bot_token",
+      TELEGRAM_ADMIN_CHAT_ID: "chat_1",
+      NODE_ENV: "test",
+    },
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200 };
+    },
+  });
+
+  assert.equal(result.status, "sent");
+
+  const body = JSON.parse(calls[0].options.body);
+  assert.match(body.text, /Event: New user signup/);
+  assert.match(body.text, /Severity: info/);
+  assert.match(body.text, /User: user_2 \/ new@example\.com/);
+  assert.match(body.text, /Document: n\/a/);
+  assert.match(body.text, /Job: n\/a/);
+  assert.match(body.text, /Generation: n\/a/);
+  assert.match(body.text, /Details: n\/a/);
+  assert.match(body.text, /Error: n\/a/);
+  assert.match(body.text, /Time: 2026-04-30T12:00:00\.000Z/);
+  assert.match(body.text, /Action: Review user activity if needed\./);
+  assert.doesNotMatch(body.text, /password/i);
+  assert.doesNotMatch(body.text, /cookie/i);
+  assert.doesNotMatch(body.text, /session/i);
+});
+
 test("sendTelegramAdminNotification swallows Telegram failures", async () => {
   const result = await sendTelegramAdminNotification({
     eventType: "test",
