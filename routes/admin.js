@@ -11,6 +11,7 @@ import {
   getUserAllowance,
 } from "../utils/limits.js";
 import { getUsdToSarRate } from "../utils/modelPricing.js";
+import { sendTelegramAdminNotification } from "../utils/telegramNotify.js";
 
 const getIpAddress = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -2672,6 +2673,14 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
           previouslyResolved: existingAlert.resolved,
         },
         ipAddress: getIpAddress(req),
+      });
+
+      await sendTelegramAdminNotification({
+        eventType: "cost_anomaly_resolved",
+        user: alert.user,
+        userId: alert.userId,
+        errorSummary: `Cost anomaly ${id} resolved by admin ${req.session.user.id}`,
+        details: `Alert type ${alert.alertType}`,
       });
 
       res.json({ anomaly: serializeAnomalyAlert(alert) });

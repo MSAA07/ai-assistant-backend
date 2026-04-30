@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
 import { estimateCost } from "./modelPricing.js";
+import { sendTelegramAdminNotification } from "./telegramNotify.js";
 
 const prisma = new PrismaClient();
 
@@ -38,7 +39,7 @@ export async function recordUsageEvent(
 export async function checkAnomaly(userId) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { createdAt: true },
+    select: { id: true, email: true, createdAt: true },
   });
 
   if (!user) {
@@ -121,7 +122,7 @@ export async function checkAnomaly(userId) {
     return;
   }
 
-  await prisma.costAnomalyAlert.create({
+  const alert = await prisma.costAnomalyAlert.create({
     data: {
       userId,
       alertType: "daily_spend_3x_avg",
@@ -133,4 +134,12 @@ export async function checkAnomaly(userId) {
   console.warn(
     `[costGuard] anomaly alert created for user ${userId}: $${todaySpend.toFixed(4)} vs $${(baselineUsd * 3).toFixed(4)} threshold`,
   );
+
+  await sendTelegramAdminNotification({
+    eventType: "cost_anomaly_created",
+    user,
+    userId,
+    errorSummary: `Daily spend $${todaySpend.toFixed(4)} exceeded threshold $${(baselineUsd * 3).toFixed(4)}`,
+    details: `Alert ${alert.id}`,
+  });
 }

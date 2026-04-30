@@ -19,6 +19,7 @@ import {
   alertJobFailure,
   evaluateJobAlertSweeps,
 } from "./adminAlerts.js";
+import { sendTelegramAdminNotification } from "./telegramNotify.js";
 
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 export const JOB_LEASE_DURATION_MS = 120_000;
@@ -33,6 +34,18 @@ function getLeaseExpiryDate(now = new Date()) {
 
 function isExtractionJob(job) {
   return job?.jobType === "extract_document";
+}
+
+function getPermanentFailureEventType(job) {
+  if (isExtractionJob(job)) {
+    return "extraction_permanent_failure";
+  }
+
+  if (isGenerationJobType(job?.jobType)) {
+    return "generation_permanent_failure";
+  }
+
+  return "job_failed_after_retries";
 }
 
 export function calculateRetryBackoffMs(nextRetryCount, {
@@ -404,6 +417,9 @@ export async function requeueJob(prisma, job, error, shouldRetry = true) {
 export async function failJob(prisma, job, error) {
   const retryDecision = getRetryDecision(job, error, true);
   const completedAt = new Date();
+  const generationType = isGenerationJobType(job.jobType)
+    ? getGenerationTypeForJobType(job.jobType)
+    : null;
 
   await prisma.$transaction(async (tx) => {
     await finishRunningJobStages(tx, job.id, {
@@ -436,6 +452,16 @@ export async function failJob(prisma, job, error) {
   });
 
   await Promise.all([
+    sendTelegramAdminNotification({
+      prisma,
+      eventType: getPermanentFailureEventType(job),
+      userId: job.userId,
+      documentId: job.documentId ?? job.payload?.documentId,
+      jobId: job.id,
+      generationType,
+      error,
+      timestamp: completedAt.toISOString(),
+    }),
     alertJobFailure(prisma, {
       ...job,
       retryCount: retryDecision.nextRetryCount,
@@ -502,12 +528,35 @@ export async function recoverStaleJobs(prisma) {
   for (const staleJob of staleJobs) {
     const shouldRetry = (staleJob.retryCount || 0) + 1 < staleJob.maxRetries;
     const staleError = new Error("Job lease expired before completion");
+    const generationType = isGenerationJobType(staleJob.jobType)
+      ? getGenerationTypeForJobType(staleJob.jobType)
+      : null;
 
     if (shouldRetry) {
       await requeueJob(prisma, staleJob, staleError, true);
+      await sendTelegramAdminNotification({
+        prisma,
+        eventType: "stale_job_recovered",
+        userId: staleJob.userId,
+        documentId: staleJob.documentId ?? staleJob.payload?.documentId,
+        jobId: staleJob.id,
+        generationType,
+        error: staleError,
+        details: "Recovered stale running job by requeueing it for retry",
+      });
       continue;
     }
 
     await failJob(prisma, staleJob, staleError);
+    await sendTelegramAdminNotification({
+      prisma,
+      eventType: "stale_job_recovered",
+      userId: staleJob.userId,
+      documentId: staleJob.documentId ?? staleJob.payload?.documentId,
+      jobId: staleJob.id,
+      generationType,
+      error: staleError,
+      details: "Recovered stale running job by marking it failed after retries",
+    });
   }
 }
