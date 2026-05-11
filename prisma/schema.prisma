@@ -42,6 +42,9 @@ model User {
   usageEvents       UsageEvent[]
   modelUsageEvents  ModelUsageEvent[]
   jobs              Job[]
+  telegramConnection TelegramConnection?
+  telegramLinkTokens  TelegramLinkToken[]
+  telegramDeliveryLogs TelegramDeliveryLog[]
 
   @@index([lastActive])
   @@map("user")
@@ -116,6 +119,7 @@ model Document {
   flashcardSets    FlashcardSet[]
   examRecords      ExamRecord[]
   exportArtifacts  ExportArtifact[]
+  telegramDeliveryLogs TelegramDeliveryLog[]
   storageKey       String? // R2 object key - added for P1-S04
 
   @@index([userId])
@@ -540,6 +544,55 @@ model ModelUsageEvent {
   @@index([generationId])
   @@index([jobId])
   @@index([status])
+}
+
+model TelegramConnection {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  telegramUserId   String
+  telegramChatId   String
+  telegramUsername String?
+  connectedAt      DateTime  @default(now())
+  disconnectedAt   DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([telegramUserId])
+  @@index([telegramChatId])
+  @@index([disconnectedAt])
+}
+
+model TelegramLinkToken {
+  id        String    @id @default(cuid())
+  token     String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+model TelegramDeliveryLog {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documentId   String
+  document     Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  type         String
+  status       String
+  itemCount    Int       @default(0)
+  errorMessage String?
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, type, status])
+  @@index([documentId, createdAt])
+  @@index([status, createdAt])
 }
 
 enum FeatureEntityType {

@@ -15,6 +15,7 @@
     "auth:check-config": "node scripts/print-auth-config.js",
     "unicode:diagnose": "node scripts/diagnose_unicode.js",
     "telegram:test-alert": "node scripts/send-telegram-test-alert.js",
+    "telegram:setup-webhook": "node scripts/setup-telegram-webhook.js",
     "telegram:daily-digest": "node scripts/send-daily-admin-digest.js",
     "telegram:daily-digest:dry-run": "node scripts/send-daily-admin-digest.js --dry-run"
   },

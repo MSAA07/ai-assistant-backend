@@ -43,12 +43,13 @@ ai-assistant-backend/
 
 ## Routes
 
-- `routes/user.js`: Study Hub Library bootstrap
+- `routes/user.js`: user profile bootstrap (`GET /me`), allowance (`GET /allowance`), account data export (`GET /export`)
 - `routes/documents.js`: upload, read, rename, delete, excerpts, generation queueing
 - `routes/jobs.js`: job execution lifecycle polling used by the guided upload flow and study surfaces
 - `routes/flashcards.js`: legacy flashcard progress plus canonical flashcard-set routes
 - `routes/exams.js`: legacy exam attempt plus canonical exam and attempt routes
 - `routes/exports.js`: export artifact routes
+- `routes/telegram.js`: Telegram account linking, webhook handling, and study-material delivery routes
 - `routes/admin.js`: admin APIs for users, files, sessions, analytics, usage, costs, limits, anomalies, feature flags, and generation evaluation annotation
 
 ## Middleware
@@ -92,6 +93,7 @@ Operational support:
 - `utils/auditLog.js`
 - `utils/sentry.js`
 - `utils/serializers.js`
+- `utils/telegramDelivery.js`: Telegram Bot API delivery helpers, deep-link token helpers, message/poll formatting, and env validation
 
 ## Prisma Layer
 
@@ -106,6 +108,12 @@ Current migration folders:
 - `20260308000000_document_processing_lifecycle_stabilization`
 - `20260309000000_generation_architecture_f2`
 - `20260310010000_phase2_foundations_m1`
+- `20260427000000_phase1_model_usage_ledger`
+- `20260427010000_phase2_caps_and_allowances`
+- `20260427020000_phase3_job_stage_observability`
+- `20260427030000_phase5_admin_email_alerts`
+- `20260427040000_phase6_admin_controls`
+- `20260511000000_add_telegram_delivery`
 
 ## Scripts
 
@@ -113,6 +121,8 @@ Current migration folders:
 - `scripts/backfill-phase2-canonical.js`: legacy-to-canonical backfill and reconciliation
 - `scripts/run-with-prisma.js`: env-aware startup wrapper for safe Prisma schema application
 - `scripts/print-auth-config.js`: prints Better Auth base URL and shared allowed-origin config
+- `scripts/diagnose_unicode.js`: unicode diagnostics helper for extracted text issues
+- `scripts/setup-telegram-webhook.js`: registers the Telegram webhook using `TELEGRAM_WEBHOOK_URL` and `TELEGRAM_WEBHOOK_SECRET`
 
 ## Structure Notes
 
@@ -121,6 +131,7 @@ Current migration folders:
 - `POST /api/upload` and worker processing still use `/tmp/uploads` during local/temp file handling before R2 or local-path persistence is finalized.
 - `utils/extractionPipeline.js` sanitizes extracted excerpt content before `DocumentExcerpt` persistence so invalid UTF-8 control bytes do not reach PostgreSQL.
 - Prompt/version, rollout, and benchmark traceability reuse existing JSON metadata surfaces and do not add new Prisma models.
+- Telegram user study delivery is linked per user through `TelegramConnection` and logged through `TelegramDeliveryLog`; `TELEGRAM_ADMIN_CHAT_ID` remains admin-alert-only.
 - Backend phase markdown files in the repo root are archival rollout records. Use `SYSTEM_OVERVIEW.md` and `PROJECT_STRUCTURE.md` for live runtime truth.
 
-Last Updated: March 28, 2026
+Last Updated: May 11, 2026

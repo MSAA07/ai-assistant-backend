@@ -12,6 +12,10 @@ import {
 } from "../utils/limits.js";
 import { getUsdToSarRate } from "../utils/modelPricing.js";
 import { sendTelegramAdminNotification } from "../utils/telegramNotify.js";
+import {
+  TELEGRAM_DELIVERY_STATUS,
+  TELEGRAM_DELIVERY_TYPES,
+} from "../utils/telegramDelivery.js";
 
 const getIpAddress = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -209,6 +213,77 @@ const serializeAdminUserRef = (user) => {
     name: user.name,
   };
 };
+
+async function getTelegramUsageByUserIds(prisma, userIds = []) {
+  const uniqueUserIds = [...new Set(userIds.filter(Boolean))];
+  const usageByUserId = new Map(
+    uniqueUserIds.map((userId) => [userId, {
+      connected: false,
+      usedTelegramSend: false,
+      lastTelegramSendAt: null,
+      flashcardSendCount: 0,
+      examSendCount: 0,
+    }]),
+  );
+
+  if (uniqueUserIds.length === 0) {
+    return usageByUserId;
+  }
+
+  const [connections, deliveryGroups, lastSendGroups] = await prisma.$transaction([
+    prisma.telegramConnection.findMany({
+      where: { userId: { in: uniqueUserIds } },
+      select: {
+        userId: true,
+        connectedAt: true,
+        disconnectedAt: true,
+      },
+    }),
+    prisma.telegramDeliveryLog.groupBy({
+      by: ["userId", "type"],
+      where: {
+        userId: { in: uniqueUserIds },
+        status: TELEGRAM_DELIVERY_STATUS.sent,
+      },
+      _count: { _all: true },
+    }),
+    prisma.telegramDeliveryLog.groupBy({
+      by: ["userId"],
+      where: {
+        userId: { in: uniqueUserIds },
+        status: TELEGRAM_DELIVERY_STATUS.sent,
+        sentAt: { not: null },
+      },
+      _max: { sentAt: true },
+    }),
+  ]);
+
+  for (const connection of connections) {
+    const usage = usageByUserId.get(connection.userId);
+    if (!usage) continue;
+    usage.connected = Boolean(connection.connectedAt && !connection.disconnectedAt);
+  }
+
+  for (const group of deliveryGroups) {
+    const usage = usageByUserId.get(group.userId);
+    if (!usage) continue;
+    const count = group._count?._all || 0;
+    if (group.type === TELEGRAM_DELIVERY_TYPES.flashcards) {
+      usage.flashcardSendCount = count;
+    } else if (group.type === TELEGRAM_DELIVERY_TYPES.exam) {
+      usage.examSendCount = count;
+    }
+    usage.usedTelegramSend = usage.flashcardSendCount > 0 || usage.examSendCount > 0;
+  }
+
+  for (const group of lastSendGroups) {
+    const usage = usageByUserId.get(group.userId);
+    if (!usage) continue;
+    usage.lastTelegramSendAt = group._max?.sentAt ?? null;
+  }
+
+  return usageByUserId;
+}
 
 const serializeUsageEvent = (event) => ({
   id: event.id,
@@ -779,6 +854,10 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
           },
         }),
       ]);
+      const telegramUsageByUserId = await getTelegramUsageByUserIds(
+        prisma,
+        users.map((user) => user.id),
+      );
 
       await logAdminAction(prisma, {
         adminId: req.session.user.id,
@@ -793,6 +872,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
           ...serializeUser(user),
           documentCount: user._count?.documents || 0,
           sessionCount: user._count?.sessions || 0,
+          telegram: telegramUsageByUserId.get(user.id),
         })),
       });
     } catch (error) {
@@ -956,6 +1036,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
         prisma.examAttempt.count({ where: { userId: id } }),
         prisma.flashcardProgress.count({ where: { userId: id } }),
       ]);
+      const telegramUsage = (await getTelegramUsageByUserIds(prisma, [id])).get(id);
 
       await logAdminAction(prisma, {
         adminId: req.session.user.id,
@@ -965,12 +1046,16 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       });
 
       res.json({
-        user: serializeUser(user),
+        user: {
+          ...serializeUser(user),
+          telegram: telegramUsage,
+        },
         stats: {
           documents: user._count?.documents || 0,
           sessions: user._count?.sessions || 0,
           examAttempts,
           flashcardProgress,
+          telegram: telegramUsage,
         },
       });
     } catch (error) {

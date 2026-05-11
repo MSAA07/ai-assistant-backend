@@ -47,7 +47,7 @@ API server:
 
 - `server.js`
 - mounts Better Auth under `/api/auth/*`
-- mounts REST routes under `/api/*`
+- mounts REST routes under `/api/*` (user profile/export at `/api/user`, documents at `/api`, study-data sub-routers at `/api/flashcard`, `/api/exam`, `/api/exports`, Telegram delivery at `/api/telegram` and `/api/document/:id/telegram/*`, admin at `/api/admin`)
 - runs schema and document-state reconciliation on startup
 - uses one shared allowed-origin source for Better Auth trusted origins and Express CORS
 - Better Auth email/password verification emails are sent through the configured transactional email provider
@@ -65,6 +65,7 @@ Persistence:
 
 - PostgreSQL via Prisma
 - Cloudflare R2 when configured, local absolute-path fallback otherwise
+- every Prisma model or persisted-contract change requires a migration
 
 Extraction:
 
@@ -118,6 +119,7 @@ Behavior:
 - matching active generations can be reused
 - active conflicting option sets return `409`
 - successful flashcard/exam generation updates canonical study records and document mirrors
+- regeneration accepts optional grounded guidance through `options.regenerationGuidance`
 - prompt versions are persisted for released generations in `Job.result` and `UsageEvent.metadata`
 - benchmark metadata and rollout metadata are attached through existing internal JSON metadata, not new schema
 - evaluator outcomes for benchmark runs can be attached later through the admin evaluation flow
@@ -129,6 +131,19 @@ Behavior:
   - extracted `Section: ...` labels when certainty is weak but structure is reliable
   - omitted references when no reliable structure exists
 - DOCX synthetic chunks are internal anchors only and are not documented or treated as real pages
+
+Telegram delivery pipeline:
+
+`POST /api/telegram/link-token -> Telegram /start webhook -> TelegramConnection -> POST /api/document/:id/telegram/*/send -> TelegramDeliveryLog`
+
+Behavior:
+
+- user study delivery never uses `TELEGRAM_ADMIN_CHAT_ID`
+- users connect Telegram through a short-lived one-time deep-link token; raw StudyMaxing user ids are not placed in Telegram start payloads
+- `/api/telegram/webhook` validates the Telegram secret-token header before processing `/start`
+- flashcard and exam sends require auth, document ownership, complete `Document.processingStatus`, an active Telegram connection, and ready canonical records
+- send routes read canonical `FlashcardSet` / `FlashcardCard` and `ExamRecord` / `ExamQuestion`; they do not queue generation, mutate `DocumentGeneration`, or create exam attempts
+- delivery usage is stored in `TelegramDeliveryLog` for admin visibility only; Telegram answers/results are not saved
 
 ## API Surface
 
@@ -168,6 +183,15 @@ Canonical study activity APIs:
 - `GET /api/exports/:id`
 - `GET /api/exports/:id/download`
 
+Telegram APIs:
+
+- `GET /api/telegram/status`
+- `POST /api/telegram/link-token`
+- `DELETE /api/telegram/link`
+- `POST /api/telegram/webhook`
+- `POST /api/document/:id/telegram/flashcards/send`
+- `POST /api/document/:id/telegram/exam/send`
+
 Admin coverage:
 
 - users
@@ -180,6 +204,7 @@ Admin coverage:
 - anomaly resolution
 - feature flags and flag audit
 - benchmark/evaluation annotation for completed generation jobs
+- read-only Telegram connection and delivery usage indicators
 
 ## Current Prisma Model Set
 
@@ -190,9 +215,6 @@ Current schema models:
 - `Account`
 - `Verification`
 - `Document`
-- `DocumentExcerpt`
-- `DocumentGeneration`
-- `Job`
 - `FlashcardProgress`
 - `ExamAttempt`
 - `FlashcardSet`
@@ -202,12 +224,22 @@ Current schema models:
 - `ExamQuestion`
 - `ExportArtifact`
 - `AuditLog`
+- `DocumentExcerpt`
+- `DocumentGeneration`
+- `Job`
+- `JobStageEvent`
 - `FeatureFlag`
 - `FeatureFlagAssignment`
 - `FeatureFlagAuditLog`
 - `UserLimit`
+- `UsageCapConfig`
 - `CostAnomalyAlert`
+- `AdminAlert`
 - `UsageEvent`
+- `ModelUsageEvent`
+- `TelegramConnection`
+- `TelegramLinkToken`
+- `TelegramDeliveryLog`
 
 Current migration folders:
 
@@ -216,6 +248,61 @@ Current migration folders:
 - `20260308000000_document_processing_lifecycle_stabilization`
 - `20260309000000_generation_architecture_f2`
 - `20260310010000_phase2_foundations_m1`
+- `20260427000000_phase1_model_usage_ledger`
+- `20260427010000_phase2_caps_and_allowances`
+- `20260427020000_phase3_job_stage_observability`
+- `20260427030000_phase5_admin_email_alerts`
+- `20260427040000_phase6_admin_controls`
+- `20260511000000_add_telegram_delivery`
+
+## Environment Variables
+
+Required:
+
+- `DATABASE_URL`
+- `BETTER_AUTH_SECRET`
+- `BETTER_AUTH_BASE_URL` or `BETTER_AUTH_URL`
+- `OPENAI_API_KEY`
+
+Optional core operations:
+
+- `ADMIN_EMAILS`
+- `FRONTEND_ORIGINS`
+- `R2_ENDPOINT`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET_NAME`
+
+Optional auth email and callbacks:
+
+- `AUTH_EMAIL_PROVIDER` (`resend` default)
+- `AUTH_EMAIL_FROM_EMAIL`
+- `AUTH_EMAIL_FROM_NAME` (`Studymaxing` default)
+- `AUTH_EMAIL_REPLY_TO`
+- `AUTH_EMAIL_SUPPORT_EMAIL`
+- `AUTH_EMAIL_APP_URL`
+- `RESEND_API_KEY`
+
+Optional alerting:
+
+- `ALERTS_ENABLED` (`true` default)
+- `ADMIN_ALERT_EMAIL`
+- `ALERT_FROM_EMAIL`
+- `ALERT_DAILY_COST_THRESHOLD_USD` (`10` default)
+- `ALERT_USER_COST_THRESHOLD_USD` (falls back to 80% of active user cost cap)
+- `ALERT_SPIKE_MULTIPLIER` (`3` default)
+- `ALERT_FAILED_JOB_THRESHOLD` (`3` default)
+- `ALERT_DEDUP_WINDOW_MINUTES` (`60` default)
+
+Optional Telegram integration:
+
+- `TELEGRAM_BOT_USERNAME`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET`
+- `TELEGRAM_WEBHOOK_URL`
+- `TELEGRAM_ADMIN_CHAT_ID` (admin alerts only; not used for user study delivery)
+
+Auth email callback targets are backend-owned `/auth/verify-email` and `/auth/reset-password` bridge URLs. The final frontend destination can still be controlled by frontend env overrides or `AUTH_EMAIL_APP_URL`.
 
 ## Maintenance Triggers
 
@@ -230,5 +317,6 @@ Update this file when any of these change:
 - rollout validation or traceability requirements
 - final execution brief or locked implementation decisions
 - prompt-version persistence or weak-reference resolution behavior
+- Telegram linking, webhook, delivery, or admin usage contracts
 
-Last Updated: March 28, 2026
+Last Updated: May 11, 2026

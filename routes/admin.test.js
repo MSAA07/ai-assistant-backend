@@ -21,14 +21,14 @@ function createTestApp({ prisma, auth }) {
   return app;
 }
 
-async function request(app, path, body) {
+async function request(app, path, body, { method = "POST" } = {}) {
   const server = app.listen(0);
   try {
     const { port } = server.address();
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
     });
     const data = await response.json();
     return { status: response.status, data };
@@ -191,4 +191,77 @@ test("admin create user rejects non-numeric cost cap overrides before creating a
   assert.equal(response.status, 400);
   assert.equal(response.data.error, "costCapUsdOverride must be a non-negative number");
   assert.equal(deps.calls.createUserBodies.length, 0);
+});
+
+test("admin users include read-only Telegram usage indicators", async () => {
+  const user = {
+    id: "user_1",
+    email: "telegram@example.com",
+    name: "Telegram User",
+    role: "user",
+    plan: "free",
+    banned: false,
+    banReason: null,
+    banExpires: null,
+    documentsUsed: 0,
+    monthlyLimit: 5,
+    storageUsed: 0,
+    lastActive: new Date("2026-05-11T00:00:00.000Z"),
+    createdAt: new Date("2026-05-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-11T00:00:00.000Z"),
+    _count: { documents: 1, sessions: 2 },
+  };
+  const deps = {
+    auth: {},
+    prisma: {
+      async $transaction(input) {
+        return Promise.all(input);
+      },
+      user: {
+        async count() {
+          return 1;
+        },
+        async findMany() {
+          return [user];
+        },
+      },
+      telegramConnection: {
+        async findMany() {
+          return [{
+            userId: "user_1",
+            connectedAt: new Date("2026-05-11T01:00:00.000Z"),
+            disconnectedAt: null,
+          }];
+        },
+      },
+      telegramDeliveryLog: {
+        async groupBy({ by }) {
+          if (by.length === 2) {
+            return [
+              { userId: "user_1", type: "flashcards", _count: { _all: 2 } },
+              { userId: "user_1", type: "exam", _count: { _all: 1 } },
+            ];
+          }
+
+          return [{
+            userId: "user_1",
+            _max: { sentAt: new Date("2026-05-11T02:00:00.000Z") },
+          }];
+        },
+      },
+      auditLog: {
+        async create() {},
+      },
+    },
+  };
+  const app = createTestApp(deps);
+
+  const response = await request(app, "/api/admin/users", null, { method: "GET" });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.data.users[0].telegram.connected, true);
+  assert.equal(response.data.users[0].telegram.usedTelegramSend, true);
+  assert.equal(response.data.users[0].telegram.flashcardSendCount, 2);
+  assert.equal(response.data.users[0].telegram.examSendCount, 1);
+  assert.equal(response.data.users[0].telegram.lastTelegramSendAt, "2026-05-11T02:00:00.000Z");
 });
