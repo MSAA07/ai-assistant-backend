@@ -106,6 +106,27 @@ const documentDetailsInclude = {
   },
 };
 
+function serializeLatestExamAttempt(attempt) {
+  if (!attempt) return null;
+
+  const score = Number(attempt.score);
+  const totalQuestions = Number(attempt.totalQuestions);
+  const safeScore = Number.isFinite(score) ? score : 0;
+  const safeTotal = Number.isFinite(totalQuestions) && totalQuestions > 0 ? totalQuestions : 0;
+
+  return {
+    id: attempt.id,
+    documentId: attempt.documentId,
+    examRecordId: attempt.examRecordId,
+    score: safeScore,
+    totalQuestions: safeTotal,
+    scorePercent: safeTotal > 0 ? Math.round((safeScore / safeTotal) * 100) : null,
+    status: attempt.status,
+    submittedAt: attempt.submittedAt,
+    completedAt: attempt.completedAt,
+  };
+}
+
 const resetMonthlyUsageIfNeeded = async (prisma, user) => {
   const now = new Date();
   const lastReset = new Date(user.lastReset);
@@ -542,11 +563,36 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
   router.get("/document/:id", requireAuth, async (req, res) => {
     try {
       const document = await getAuthorizedDocument(prisma, req.params.id, req.session.user, documentDetailsInclude);
+      const latestExamAttempt = await prisma.examAttempt.findFirst({
+        where: {
+          documentId: document.id,
+          userId: req.session.user.id,
+          status: "submitted",
+        },
+        select: {
+          id: true,
+          documentId: true,
+          examRecordId: true,
+          score: true,
+          totalQuestions: true,
+          status: true,
+          submittedAt: true,
+          completedAt: true,
+        },
+        orderBy: [
+          { submittedAt: "desc" },
+          { completedAt: "desc" },
+          { startedAt: "desc" },
+        ],
+      });
 
       res.json({
-        document: serializeDocument(document, {
-          excerptCount: document._count?.excerpts ?? 0,
-        }),
+        document: {
+          ...serializeDocument(document, {
+            excerptCount: document._count?.excerpts ?? 0,
+          }),
+          latestExamAttempt: serializeLatestExamAttempt(latestExamAttempt),
+        },
       });
     } catch (error) {
       console.error("Error fetching document:", error);
