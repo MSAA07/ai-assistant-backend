@@ -117,6 +117,10 @@ function splitTelegramMessage(text, limit = TELEGRAM_SAFE_MESSAGE_LIMIT) {
   return chunks;
 }
 
+function escapeTelegramMarkdownV2(value) {
+  return normalizeString(value).replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+}
+
 async function sleep(ms) {
   if (!ms) return;
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -196,6 +200,7 @@ async function sendMessage(chatId, text, options = {}) {
   return callTelegramApi("sendMessage", {
     chat_id: chatId,
     text,
+    parse_mode: normalizeString(options.parseMode) || undefined,
     disable_web_page_preview: true,
   }, options);
 }
@@ -267,21 +272,23 @@ function formatDocumentTitle(document) {
 }
 
 function formatFlashcardMessage({ documentTitle, card, index, total }) {
+  const question = normalizeString(card?.question ?? card?.front);
+  const answer = normalizeString(card?.answer ?? card?.back);
   const parts = [
-    documentTitle,
+    escapeTelegramMarkdownV2(documentTitle),
     "",
     `Card ${index + 1} of ${total}`,
     "",
-    "Front:",
-    normalizeString(card?.question ?? card?.front),
+    "Question:",
+    escapeTelegramMarkdownV2(question),
     "",
-    "Back:",
-    normalizeString(card?.answer ?? card?.back),
+    "Answer:",
+    `||${escapeTelegramMarkdownV2(answer)}||`,
   ];
 
   const explanation = normalizeString(card?.explanation);
   if (explanation) {
-    parts.push("", "Explanation:", explanation);
+    parts.push("", "Explanation:", escapeTelegramMarkdownV2(explanation));
   }
 
   return parts.join("\n");
@@ -343,7 +350,7 @@ export async function sendFlashcardsToTelegram({
     await sendLongMessage(
       resolvedChatId,
       formatFlashcardMessage({ documentTitle, card: usableCards[index], index, total: usableCards.length }),
-      options,
+      { ...options, parseMode: "MarkdownV2" },
     );
     await sleep(pacingMs);
   }
