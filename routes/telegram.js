@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { timingSafeEqual } from "crypto";
 import express from "express";
 
 import { createRateLimiter } from "../middleware/rateLimit.js";
@@ -57,7 +57,7 @@ function safeEquals(left = "", right = "") {
 
 function cryptoSafeTimingEqual(leftBuffer, rightBuffer) {
   try {
-    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+    return timingSafeEqual(leftBuffer, rightBuffer);
   } catch {
     return false;
   }
