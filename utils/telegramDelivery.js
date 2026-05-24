@@ -271,12 +271,10 @@ function formatDocumentTitle(document) {
     || "StudyMaxing document";
 }
 
-function formatFlashcardMessage({ documentTitle, card, index, total }) {
+function formatFlashcardMessage({ card, index, total }) {
   const question = normalizeString(card?.question ?? card?.front);
   const answer = normalizeString(card?.answer ?? card?.back);
   const parts = [
-    escapeTelegramMarkdownV2(documentTitle),
-    "",
     `Card ${index + 1} of ${total}`,
     "",
     "Question:",
@@ -349,7 +347,7 @@ export async function sendFlashcardsToTelegram({
   for (let index = 0; index < usableCards.length; index += 1) {
     await sendLongMessage(
       resolvedChatId,
-      formatFlashcardMessage({ documentTitle, card: usableCards[index], index, total: usableCards.length }),
+      formatFlashcardMessage({ card: usableCards[index], index, total: usableCards.length }),
       { ...options, parseMode: "MarkdownV2" },
     );
     await sleep(pacingMs);
