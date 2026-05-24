@@ -80,6 +80,19 @@ const COLORS = Object.freeze({
   accentPanel: "#F3F6FB",
 });
 
+const FLASHCARD_PDF = Object.freeze({
+  padding: 9,
+  gapBetweenCards: 6,
+  sectionGap: 4,
+  labelGap: 2,
+  labelFontSize: 7.2,
+  questionFontSize: 8.2,
+  bodyFontSize: 8,
+  lineGap: 2,
+  radius: 6,
+  borderWidth: 0.8,
+});
+
 const MOCK_EXAM_PDF = Object.freeze({
   page: {
     size: "LETTER",
@@ -1697,8 +1710,8 @@ function measureLabeledTextBlock(doc, label, text, options = {}) {
   const labelMetrics = getLineMetrics(doc, label, {
     width,
     bold: true,
-    fontSize: PDF_SYSTEM.typography.label.size,
-    lineGap: PDF_SYSTEM.typography.label.lineGap,
+    fontSize: options.labelFontSize ?? PDF_SYSTEM.typography.label.size,
+    lineGap: options.labelLineGap ?? PDF_SYSTEM.typography.label.lineGap,
     direction: getTextDirection(label),
   });
   const textMetrics = getLineMetrics(doc, normalizeParagraphText(text), {
@@ -1709,7 +1722,7 @@ function measureLabeledTextBlock(doc, label, text, options = {}) {
     direction: options.direction,
   });
 
-  return labelMetrics.height + SPACING.xs + textMetrics.height;
+  return labelMetrics.height + (options.labelGap ?? SPACING.xs) + textMetrics.height;
 }
 
 function drawLabeledTextBlock(doc, label, text, options = {}) {
@@ -1717,14 +1730,14 @@ function drawLabeledTextBlock(doc, label, text, options = {}) {
     x: options.x,
     y: options.y,
     width: options.width,
-    fontSize: PDF_SYSTEM.typography.label.size,
-    lineGap: PDF_SYSTEM.typography.label.lineGap,
+    fontSize: options.labelFontSize ?? PDF_SYSTEM.typography.label.size,
+    lineGap: options.labelLineGap ?? PDF_SYSTEM.typography.label.lineGap,
     bold: true,
     color: options.labelColor ?? COLORS.subtle,
     advanceCursor: false,
   });
 
-  const textY = options.y + labelHeight + SPACING.xs;
+  const textY = options.y + labelHeight + (options.labelGap ?? SPACING.xs);
   const textHeight = drawWrappedText(doc, normalizeParagraphText(text), {
     x: options.x,
     y: textY,
@@ -1738,7 +1751,7 @@ function drawLabeledTextBlock(doc, label, text, options = {}) {
   });
 
   return {
-    height: labelHeight + SPACING.xs + textHeight,
+    height: labelHeight + (options.labelGap ?? SPACING.xs) + textHeight,
     nextY: textY + textHeight,
   };
 }
@@ -1892,25 +1905,34 @@ function measureFlashcardCardHeight(doc, flashcard, index, contentWidth) {
   const explanation = normalizeString(flashcard?.explanation);
   const questionLabel = `Question ${index + 1}`;
 
-  let cardHeight = PDF_SYSTEM.components.flashcard.padding * 2;
+  let cardHeight = FLASHCARD_PDF.padding * 2;
   cardHeight += measureLabeledTextBlock(doc, questionLabel, questionText, {
     width: contentWidth,
-    fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
-    lineGap: SPACING.xs,
+    labelFontSize: FLASHCARD_PDF.labelFontSize,
+    labelLineGap: FLASHCARD_PDF.lineGap,
+    labelGap: FLASHCARD_PDF.labelGap,
+    fontSize: FLASHCARD_PDF.questionFontSize,
+    lineGap: FLASHCARD_PDF.lineGap,
   });
-  cardHeight += PDF_SYSTEM.components.flashcard.sectionGap;
+  cardHeight += FLASHCARD_PDF.sectionGap;
   cardHeight += measureLabeledTextBlock(doc, "Answer", answerText, {
     width: contentWidth,
-    fontSize: PDF_SYSTEM.typography.body.size,
-    lineGap: SPACING.xs,
+    labelFontSize: FLASHCARD_PDF.labelFontSize,
+    labelLineGap: FLASHCARD_PDF.lineGap,
+    labelGap: FLASHCARD_PDF.labelGap,
+    fontSize: FLASHCARD_PDF.bodyFontSize,
+    lineGap: FLASHCARD_PDF.lineGap,
   });
 
   if (explanation) {
-    cardHeight += PDF_SYSTEM.components.flashcard.sectionGap;
+    cardHeight += FLASHCARD_PDF.sectionGap;
     cardHeight += measureLabeledTextBlock(doc, "Explanation", explanation, {
       width: contentWidth,
-      fontSize: PDF_SYSTEM.typography.body.size,
-      lineGap: SPACING.xs,
+      labelFontSize: FLASHCARD_PDF.labelFontSize,
+      labelLineGap: FLASHCARD_PDF.lineGap,
+      labelGap: FLASHCARD_PDF.labelGap,
+      fontSize: FLASHCARD_PDF.bodyFontSize,
+      lineGap: FLASHCARD_PDF.lineGap,
       color: COLORS.muted,
     });
   }
@@ -1928,14 +1950,14 @@ function computeFlashcardLayoutPlan(doc, flashcards = [], startY = doc.y) {
   const container = getContentMetrics(doc);
   const cardX = container.x;
   const cardWidth = container.width;
-  const contentX = cardX + PDF_SYSTEM.components.flashcard.padding;
-  const contentWidth = cardWidth - (PDF_SYSTEM.components.flashcard.padding * 2);
+  const contentX = cardX + FLASHCARD_PDF.padding;
+  const contentWidth = cardWidth - (FLASHCARD_PDF.padding * 2);
   const cards = [];
   let cursorY = startY;
 
   flashcards.forEach((flashcard, index) => {
     const measured = measureFlashcardCardHeight(doc, flashcard, index, contentWidth);
-    const gapAfter = index < flashcards.length - 1 ? PDF_SYSTEM.components.flashcard.gapBetweenCards : 0;
+    const gapAfter = index < flashcards.length - 1 ? FLASHCARD_PDF.gapBetweenCards : 0;
     const nextY = cursorY + measured.cardHeight + gapAfter;
 
     cards.push({
@@ -1982,41 +2004,50 @@ function renderFlashcards(doc, flashcards = []) {
     ensureVerticalSpace(doc, cardHeight);
     doc
       .save()
-      .roundedRect(cardX, doc.y, cardWidth, cardHeight, PDF_SYSTEM.components.radius)
-      .lineWidth(1.15)
+      .roundedRect(cardX, doc.y, cardWidth, cardHeight, FLASHCARD_PDF.radius)
+      .lineWidth(FLASHCARD_PDF.borderWidth)
       .fillAndStroke(index % 2 === 0 ? COLORS.panel : COLORS.accentPanel, COLORS.border)
       .restore();
 
-    let cursorY = doc.y + PDF_SYSTEM.components.flashcard.padding;
+    let cursorY = doc.y + FLASHCARD_PDF.padding;
 
     cursorY = drawLabeledTextBlock(doc, questionLabel, questionText, {
       x: contentX,
       y: cursorY,
       width: contentWidth,
-      fontSize: PDF_SYSTEM.typography.flashcardQuestion.size,
-      lineGap: SPACING.xs,
+      labelFontSize: FLASHCARD_PDF.labelFontSize,
+      labelLineGap: FLASHCARD_PDF.lineGap,
+      labelGap: FLASHCARD_PDF.labelGap,
+      fontSize: FLASHCARD_PDF.questionFontSize,
+      lineGap: FLASHCARD_PDF.lineGap,
       color: COLORS.strongText,
     }).nextY;
 
-    cursorY += PDF_SYSTEM.components.flashcard.sectionGap;
+    cursorY += FLASHCARD_PDF.sectionGap;
 
     cursorY = drawLabeledTextBlock(doc, "Answer", answerText, {
       x: contentX,
       y: cursorY,
       width: contentWidth,
-      fontSize: PDF_SYSTEM.typography.body.size,
-      lineGap: SPACING.xs,
+      labelFontSize: FLASHCARD_PDF.labelFontSize,
+      labelLineGap: FLASHCARD_PDF.lineGap,
+      labelGap: FLASHCARD_PDF.labelGap,
+      fontSize: FLASHCARD_PDF.bodyFontSize,
+      lineGap: FLASHCARD_PDF.lineGap,
       color: COLORS.muted,
     }).nextY;
 
     if (explanation) {
-      cursorY += PDF_SYSTEM.components.flashcard.sectionGap;
+      cursorY += FLASHCARD_PDF.sectionGap;
       drawLabeledTextBlock(doc, "Explanation", explanation, {
         x: contentX,
         y: cursorY,
         width: contentWidth,
-        fontSize: PDF_SYSTEM.typography.body.size,
-        lineGap: SPACING.xs,
+        labelFontSize: FLASHCARD_PDF.labelFontSize,
+        labelLineGap: FLASHCARD_PDF.lineGap,
+        labelGap: FLASHCARD_PDF.labelGap,
+        fontSize: FLASHCARD_PDF.bodyFontSize,
+        lineGap: FLASHCARD_PDF.lineGap,
         color: COLORS.muted,
       });
     }
