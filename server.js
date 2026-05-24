@@ -38,6 +38,13 @@ const app = express();
 const prisma = new PrismaClient();
 app.set("trust proxy", 1);
 
+const corsOptions = {
+  origin: createCorsOriginValidator(),
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
 function buildBetterAuthRedirectUrl(pathname, query = {}) {
   const baseUrl = resolvedBetterAuthBaseURL?.trim();
   if (!baseUrl) {
@@ -67,14 +74,8 @@ function buildBetterAuthRedirectUrl(pathname, query = {}) {
   return target.toString();
 }
 
-app.use(
-  cors({
-    origin: createCorsOriginValidator(),
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "User-Agent"],
-  }),
-);
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json());
 app.use("/api/auth", createAuthHardeningMiddleware({ auth, prisma }));
 

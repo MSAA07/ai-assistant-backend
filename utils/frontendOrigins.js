@@ -12,10 +12,14 @@ const PRODUCTION_FRONTEND_ORIGINS = [
   "https://www.studymaxing.com",
 ];
 
+const STAGING_FRONTEND_ORIGINS = [
+  "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
+];
+
 const PREVIEW_FRONTEND_ORIGINS = [
   "https://my-ai-assistant-ypzx.vercel.app",
   "https://my-ai-assistant-taupe.vercel.app",
-  "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
+  ...STAGING_FRONTEND_ORIGINS,
 ];
 
 const REMOVED_FRONTEND_ORIGINS = new Set([
@@ -59,6 +63,7 @@ export function getAllowedFrontendOrigins() {
 
   return [
     ...PRODUCTION_FRONTEND_ORIGINS,
+    ...STAGING_FRONTEND_ORIGINS,
     ...environmentOrigins,
     ...developmentOrigins,
   ].filter((origin) => !REMOVED_FRONTEND_ORIGINS.has(origin));
