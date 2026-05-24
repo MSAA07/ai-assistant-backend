@@ -94,6 +94,149 @@ export const createUserRouter = ({ prisma, requireAuth }) => {
     }
   });
 
+  router.get("/export", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.user.id;
+
+      const [
+        user,
+        documents,
+        flashcardSets,
+        examAttempts,
+        telegramConnection,
+        lastTelegramSend,
+      ] = await Promise.all([
+        prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            emailVerified: true,
+            image: true,
+            createdAt: true,
+            updatedAt: true,
+            lastActive: true,
+            role: true,
+            plan: true,
+            documentsUsed: true,
+            monthlyLimit: true,
+            storageUsed: true,
+            lastReset: true,
+          },
+        }),
+        prisma.document.findMany({
+          where: { userId },
+          orderBy: { uploadDate: "desc" },
+          select: {
+            id: true,
+            originalName: true,
+            filename: true,
+            uploadDate: true,
+            processingStatus: true,
+          },
+        }),
+        prisma.flashcardSet.findMany({
+          where: {
+            document: { userId },
+          },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            documentId: true,
+            title: true,
+            options: true,
+            cardCount: true,
+            sourceType: true,
+            isLatest: true,
+            createdAt: true,
+            updatedAt: true,
+            cards: {
+              where: { isDeleted: false },
+              orderBy: { position: "asc" },
+              select: {
+                id: true,
+                position: true,
+                question: true,
+                answer: true,
+                explanation: true,
+                sourceRefs: true,
+                createdAt: true,
+                updatedAt: true,
+              },
+            },
+          },
+        }),
+        prisma.examAttempt.findMany({
+          where: { userId },
+          orderBy: [{ startedAt: "desc" }],
+          select: {
+            id: true,
+            documentId: true,
+            examRecordId: true,
+            score: true,
+            totalQuestions: true,
+            answers: true,
+            status: true,
+            startedAt: true,
+            lastSavedAt: true,
+            submittedAt: true,
+            completedAt: true,
+            feedbackMode: true,
+          },
+        }),
+        prisma.telegramConnection.findUnique({
+          where: { userId },
+          select: {
+            telegramUsername: true,
+            connectedAt: true,
+            disconnectedAt: true,
+          },
+        }),
+        prisma.telegramDeliveryLog.findFirst({
+          where: {
+            userId,
+            status: "sent",
+            sentAt: { not: null },
+          },
+          orderBy: [{ sentAt: "desc" }, { createdAt: "desc" }],
+          select: { sentAt: true },
+        }),
+      ]);
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      return res.json({
+        profile: {
+          ...user,
+          storageUsed: toNumber(user.storageUsed),
+        },
+        documents: documents.map((document) => ({
+          id: document.id,
+          title: document.originalName || document.filename,
+          createdAt: document.uploadDate,
+          status: document.processingStatus,
+        })),
+        flashcardSets,
+        examAttempts,
+        telegram: {
+          connected: Boolean(telegramConnection && !telegramConnection.disconnectedAt),
+          username: telegramConnection?.telegramUsername ?? null,
+          connectedAt: telegramConnection && !telegramConnection.disconnectedAt
+            ? telegramConnection.connectedAt
+            : null,
+          lastSendAt: lastTelegramSend?.sentAt ?? null,
+        },
+      });
+    } catch (error) {
+      console.error("Error exporting user data:", error);
+      captureSentryException(error);
+      return res.status(500).json({ error: "Failed to export user data" });
+    }
+  });
+
   router.get("/allowance", requireAuth, async (req, res) => {
     try {
       const allowance = await getUserAllowance(prisma, req.session.user.id);

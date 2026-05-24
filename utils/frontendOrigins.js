@@ -5,15 +5,17 @@ const LOCAL_FRONTEND_ORIGINS = [
   "http://127.0.0.1:5174",
 ];
 
-const DEPLOYED_FRONTEND_ORIGINS = [
-  "https://my-ai-assistant*.vercel.app",
-  "https://my-ai-assistant-ypzx.vercel.app",
-  "https://my-ai-assistant-taupe.vercel.app",
-  "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
+const PRODUCTION_FRONTEND_ORIGINS = [
   "https://my-ai-assistant-git-production-mohammed-abushayiqahs-projects.vercel.app",
   "https://my-ai-assistant.vercel.app",
   "https://studymaxing.com",
   "https://www.studymaxing.com",
+];
+
+const PREVIEW_FRONTEND_ORIGINS = [
+  "https://my-ai-assistant-ypzx.vercel.app",
+  "https://my-ai-assistant-taupe.vercel.app",
+  "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
 ];
 
 const REMOVED_FRONTEND_ORIGINS = new Set([
@@ -33,6 +35,10 @@ function parseOriginList(raw = "") {
 }
 
 export function isAllowedVercelPreviewOrigin(origin = "") {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+
   const normalizedOrigin = normalizeOrigin(origin);
   if (REMOVED_FRONTEND_ORIGINS.has(normalizedOrigin)) {
     return false;
@@ -43,10 +49,18 @@ export function isAllowedVercelPreviewOrigin(origin = "") {
 }
 
 export function getAllowedFrontendOrigins() {
+  const environmentOrigins = parseOriginList(process.env.FRONTEND_ORIGINS || "");
+  const developmentOrigins = process.env.NODE_ENV === "development"
+    ? [
+        ...LOCAL_FRONTEND_ORIGINS,
+        ...PREVIEW_FRONTEND_ORIGINS,
+      ]
+    : [];
+
   return [
-    ...LOCAL_FRONTEND_ORIGINS,
-    ...DEPLOYED_FRONTEND_ORIGINS,
-    ...parseOriginList(process.env.FRONTEND_ORIGINS || ""),
+    ...PRODUCTION_FRONTEND_ORIGINS,
+    ...environmentOrigins,
+    ...developmentOrigins,
   ].filter((origin) => !REMOVED_FRONTEND_ORIGINS.has(origin));
 }
 

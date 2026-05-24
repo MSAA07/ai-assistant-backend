@@ -317,11 +317,9 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       const user = req.session.user;
       const originalName = normalizeUploadedFilename(file?.originalname);
 
-      console.log("Upload request received:", {
-        userId: user?.id,
-        fileName: originalName,
-        fileType: file?.mimetype,
-        fileSize: file?.size,
+      console.log("[upload] file received", {
+        sizeBytes: file?.size,
+        mimeType: file?.mimetype,
       });
 
       if (!file) {

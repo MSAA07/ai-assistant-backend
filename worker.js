@@ -1,4 +1,6 @@
 import os from "os";
+import fs from "fs/promises";
+import path from "path";
 
 import { PrismaClient } from "@prisma/client";
 
@@ -24,9 +26,19 @@ import {
   evaluateSystemUsageAlerts,
   evaluateUsageAlertsForUser,
 } from "./utils/adminAlerts.js";
-import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
+import { backfillDocumentProcessingState, serializeDocument } from "./utils/documentStatus.js";
 import { captureSentryException, flushSentry, initSentry } from "./utils/sentry.js";
-import { assertStorageConfiguredForRuntime } from "./utils/storage.js";
+import {
+  assertStorageConfiguredForRuntime,
+  safeUnlink,
+  uploadFile,
+} from "./utils/storage.js";
+import {
+  buildStudyPdfBuffer,
+  buildStudyPdfFileName,
+  hasStudyExportContent,
+  normalizeStudyExportFeature,
+} from "./utils/studyPdf.js";
 
 const prisma = new PrismaClient();
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
@@ -45,11 +57,320 @@ const JOB_PROCESSORS = {
   [GENERATION_JOB_TYPES.summary]: processGeneration,
   [GENERATION_JOB_TYPES.flashcards]: processGeneration,
   [GENERATION_JOB_TYPES.exam]: processGeneration,
+  export_pdf: processExportPdf,
 };
 
 let fatalWorkerShutdownStarted = false;
 
 initSentry({ serviceName: "worker", disableProcessHandlers: true });
+
+function normalizeExportString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeExportConfig(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function createExportJobError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function getExportErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "Export failed";
+}
+
+function getExportArtifactIdFromJob(job) {
+  const payload = normalizeExportConfig(job?.payload);
+  return normalizeExportString(payload.artifactId)
+    || normalizeExportString(payload.exportArtifactId)
+    || normalizeExportString(payload.exportId);
+}
+
+function getExportFeature(artifact) {
+  const config = normalizeExportConfig(artifact?.config);
+  const configuredFeature = normalizeStudyExportFeature(
+    config.feature || config.type || config.exportType || config.contentType,
+  );
+
+  if (configuredFeature) {
+    return configuredFeature;
+  }
+
+  if (artifact?.examRecordId || artifact?.attemptId) {
+    return "exam";
+  }
+
+  return "";
+}
+
+function serializeFlashcardCards(cards = []) {
+  return cards.map((card) => ({
+    id: card.id,
+    position: card.position,
+    question: card.question,
+    answer: card.answer,
+    explanation: card.explanation,
+    sourceRefs: card.sourceRefs,
+  }));
+}
+
+function serializeExamQuestions(questions = []) {
+  return questions.map((question) => ({
+    id: question.id,
+    position: question.position,
+    questionType: question.questionType,
+    type: question.questionType,
+    question: question.question,
+    options: question.options,
+    correctAnswer: question.correctAnswer,
+    explanation: question.explanation,
+    sourceRefs: question.sourceRefs,
+  }));
+}
+
+async function findExportArtifactForJob(prismaClient, job) {
+  const artifactId = getExportArtifactIdFromJob(job);
+  const matchers = [{ jobId: job.id }];
+  if (artifactId) {
+    matchers.unshift({ id: artifactId });
+  }
+
+  return prismaClient.exportArtifact.findFirst({
+    where: { OR: matchers },
+    include: {
+      document: {
+        include: {
+          generations: {
+            where: { isLatest: true },
+            orderBy: [{ generationType: "asc" }, { createdAt: "desc" }],
+          },
+        },
+      },
+      examRecord: {
+        include: {
+          questions: {
+            orderBy: [{ position: "asc" }],
+          },
+        },
+      },
+    },
+  });
+}
+
+async function getFlashcardsForExport(prismaClient, artifact) {
+  const config = normalizeExportConfig(artifact.config);
+  const configuredSetId = normalizeExportString(config.flashcardSetId || config.setId);
+  const baseWhere = { documentId: artifact.documentId };
+  let flashcardSet = await prismaClient.flashcardSet.findFirst({
+    where: configuredSetId
+      ? { ...baseWhere, id: configuredSetId }
+      : { ...baseWhere, isLatest: true },
+    orderBy: [{ createdAt: "desc" }],
+    include: {
+      cards: {
+        where: { isDeleted: false },
+        orderBy: [{ position: "asc" }],
+      },
+    },
+  });
+
+  if (!flashcardSet && !configuredSetId) {
+    flashcardSet = await prismaClient.flashcardSet.findFirst({
+      where: baseWhere,
+      orderBy: [{ createdAt: "desc" }],
+      include: {
+        cards: {
+          where: { isDeleted: false },
+          orderBy: [{ position: "asc" }],
+        },
+      },
+    });
+  }
+
+  return flashcardSet ? serializeFlashcardCards(flashcardSet.cards) : [];
+}
+
+async function getExamQuestionsForExport(prismaClient, artifact) {
+  const config = normalizeExportConfig(artifact.config);
+  const configuredExamId = normalizeExportString(config.examId || config.examRecordId);
+  let examRecord = artifact.examRecord;
+
+  if (!examRecord && configuredExamId) {
+    examRecord = await prismaClient.examRecord.findFirst({
+      where: {
+        id: configuredExamId,
+        documentId: artifact.documentId,
+      },
+      include: {
+        questions: {
+          orderBy: [{ position: "asc" }],
+        },
+      },
+    });
+  }
+
+  if (!examRecord && artifact.attemptId) {
+    const attempt = await prismaClient.examAttempt.findFirst({
+      where: {
+        id: artifact.attemptId,
+        userId: artifact.userId,
+        documentId: artifact.documentId,
+      },
+      include: {
+        examRecord: {
+          include: {
+            questions: {
+              orderBy: [{ position: "asc" }],
+            },
+          },
+        },
+      },
+    });
+    examRecord = attempt?.examRecord ?? null;
+  }
+
+  if (!examRecord) {
+    examRecord = await prismaClient.examRecord.findFirst({
+      where: { documentId: artifact.documentId, isLatest: true },
+      include: {
+        questions: {
+          orderBy: [{ position: "asc" }],
+        },
+      },
+    });
+  }
+
+  if (!examRecord) {
+    examRecord = await prismaClient.examRecord.findFirst({
+      where: { documentId: artifact.documentId },
+      orderBy: [{ createdAt: "desc" }],
+      include: {
+        questions: {
+          orderBy: [{ position: "asc" }],
+        },
+      },
+    });
+  }
+
+  return examRecord ? serializeExamQuestions(examRecord.questions) : [];
+}
+
+async function buildExportDocument(prismaClient, artifact, feature) {
+  const serializedDocument = serializeDocument(artifact.document);
+
+  if (serializedDocument.processingStatus !== "complete") {
+    throw createExportJobError("Document content is not ready for export", "document_not_ready");
+  }
+
+  if (feature === "flashcards") {
+    const flashcards = await getFlashcardsForExport(prismaClient, artifact);
+    if (flashcards.length > 0) {
+      return { ...serializedDocument, flashcards };
+    }
+  }
+
+  if (feature === "exam") {
+    const examQuestions = await getExamQuestionsForExport(prismaClient, artifact);
+    if (examQuestions.length > 0) {
+      return { ...serializedDocument, examQuestions };
+    }
+  }
+
+  return serializedDocument;
+}
+
+async function markExportArtifactFailed(prismaClient, artifactId, error) {
+  await prismaClient.exportArtifact.update({
+    where: { id: artifactId },
+    data: {
+      status: "failed",
+      errorMessage: getExportErrorMessage(error),
+    },
+  });
+}
+
+async function processExportPdf(prismaClient, job) {
+  let artifactId = getExportArtifactIdFromJob(job);
+  let tmpPath = "";
+  let uploadedKey = "";
+
+  try {
+    const artifact = await findExportArtifactForJob(prismaClient, job);
+    if (!artifact) {
+      throw createExportJobError("Export artifact not found", "export_artifact_not_found");
+    }
+
+    artifactId = artifact.id;
+    await prismaClient.exportArtifact.update({
+      where: { id: artifact.id },
+      data: {
+        status: "running",
+        jobId: job.id,
+        errorMessage: null,
+      },
+    });
+
+    const feature = getExportFeature(artifact);
+    if (!feature) {
+      throw createExportJobError("Export artifact does not specify a PDF feature", "invalid_export_job");
+    }
+
+    const exportDocument = await buildExportDocument(prismaClient, artifact, feature);
+    if (!hasStudyExportContent(exportDocument, feature)) {
+      throw createExportJobError("Selected study content is not ready for export", "export_not_ready");
+    }
+
+    const pdfBuffer = await buildStudyPdfBuffer(exportDocument, feature);
+    const fileName = buildStudyPdfFileName(exportDocument, feature);
+    tmpPath = path.join(os.tmpdir(), `${job.id}-${Date.now()}-${path.basename(fileName)}`);
+    await fs.writeFile(tmpPath, pdfBuffer);
+
+    const upload = await uploadFile(tmpPath, artifact.userId, fileName, "application/pdf");
+    uploadedKey = upload.key;
+
+    const completedArtifact = await prismaClient.exportArtifact.update({
+      where: { id: artifact.id },
+      data: {
+        status: "complete",
+        storageKey: uploadedKey,
+        fileName,
+        mimeType: "application/pdf",
+        fileSize: pdfBuffer.length,
+        errorMessage: null,
+        readyAt: new Date(),
+      },
+    });
+
+    return {
+      artifactId: completedArtifact.id,
+      storageKey: completedArtifact.storageKey,
+      fileName: completedArtifact.fileName,
+      fileSize: completedArtifact.fileSize,
+      mimeType: completedArtifact.mimeType,
+      feature,
+    };
+  } catch (error) {
+    if (artifactId) {
+      await markExportArtifactFailed(prismaClient, artifactId, error).catch((updateError) => {
+        console.error("[worker] failed to mark export artifact failed:", updateError);
+      });
+    }
+    throw error;
+  } finally {
+    if (tmpPath && (!uploadedKey || !path.isAbsolute(uploadedKey))) {
+      await safeUnlink(tmpPath);
+    }
+  }
+}
 
 async function runWorker() {
   console.log(`[worker] started as ${WORKER_ID}, polling every 2s`);
@@ -218,6 +539,9 @@ function isNonRetryableJobError(error) {
     || error?.code === "invalid_generation_request"
     || error?.code === "invalid_generation_job"
     || error?.code === "generation_config_missing"
+    || error?.code === "export_artifact_not_found"
+    || error?.code === "invalid_export_job"
+    || error?.code === "export_not_ready"
     || error?.code === "unsupported_job_type";
 }
 

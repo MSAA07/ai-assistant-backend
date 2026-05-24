@@ -1,11 +1,11 @@
 import dotenv from "dotenv";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
 
 import { validateTelegramEnv } from "../utils/telegramDelivery.js";
 import { redactTelegramText } from "../utils/telegramNotify.js";
 
 dotenv.config();
-
-const EXPECTED_STAGING_WEBHOOK_URL = "https://ai-assistant-backend-staging.up.railway.app/api/telegram/webhook";
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -18,17 +18,27 @@ function fail(message) {
 
 const envCheck = validateTelegramEnv(process.env, { requireWebhookUrl: true });
 if (!envCheck.ok) {
+  if (envCheck.missing.includes("TELEGRAM_WEBHOOK_URL")) {
+    fail("ERROR: TELEGRAM_WEBHOOK_URL is not set. Set it in your .env before running this script.");
+  }
+
   fail(`Telegram webhook setup missing environment: ${envCheck.missing.join(", ")}`);
 }
 
 const webhookUrl = normalizeString(process.env.TELEGRAM_WEBHOOK_URL);
-const allowNonStaging = process.argv.includes("--allow-non-staging");
 
-if (webhookUrl !== EXPECTED_STAGING_WEBHOOK_URL && !allowNonStaging) {
-  fail(
-    `Refusing to register unexpected webhook URL. Expected ${EXPECTED_STAGING_WEBHOOK_URL}. `
-    + "Pass --allow-non-staging only when intentionally configuring another environment.",
-  );
+if (!webhookUrl) {
+  fail("ERROR: TELEGRAM_WEBHOOK_URL is not set. Set it in your .env before running this script.");
+}
+
+console.log(`About to register Telegram webhook URL: ${webhookUrl}`);
+
+const rl = createInterface({ input, output });
+const confirmation = await rl.question("Continue? Type yes to register this webhook: ");
+rl.close();
+
+if (confirmation.trim().toLowerCase() !== "yes") {
+  fail("Telegram webhook registration cancelled.");
 }
 
 const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/setWebhook`, {
