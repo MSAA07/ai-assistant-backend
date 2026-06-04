@@ -798,7 +798,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
   const router = express.Router();
   const limiter = createRateLimiter({
     windowMs: 60000,
-    max: 120,
+    max: 240,
     keyGenerator: (req) => req.session?.user?.id || req.ip,
   });
 
