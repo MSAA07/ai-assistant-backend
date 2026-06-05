@@ -26,11 +26,14 @@ ai-assistant-backend/
 |-- auth.js
 |-- backfill-storage.js
 |-- reset-db.js
+|-- test-extraction.mjs
 |-- middleware/
 |-- prisma/
 |-- routes/
 |-- scripts/
 `-- utils/
+    |-- extractionPipeline.js
+    `-- mistralOcr.js
 ```
 
 ## Top-Level Responsibilities
@@ -70,6 +73,7 @@ Lifecycle and serialization:
 Worker processors:
 
 - `utils/extractionPipeline.js`
+- `utils/mistralOcr.js`: Mistral OCR fallback for scanned/image-based PDFs — uploads file to Mistral API, gets signed URL, runs OCR, deletes file, returns plain text
 - `utils/generationPipeline.js`: generation worker pipeline, routing resolution, prompt/cost trace persistence, default-path token reconciliation, and V2 summary source budgeting
 - `utils/studyMaterials.js`: shared prompt framework, feature prompts, flagged V2 summary study-guide pipeline, weak-reference resolution, and output normalization
 - `utils/modelRoutingPolicy.js`: per-tier execution policy, quality-mode access, stronger-model upgrade rules, and fallback policy
@@ -123,6 +127,7 @@ Current migration folders:
 - `scripts/print-auth-config.js`: prints Better Auth base URL and shared allowed-origin config
 - `scripts/diagnose_unicode.js`: unicode diagnostics helper for extracted text issues
 - `scripts/setup-telegram-webhook.js`: registers the Telegram webhook using `TELEGRAM_WEBHOOK_URL` and `TELEGRAM_WEBHOOK_SECRET`
+- `test-extraction.mjs`: standalone local QA tester — runs extraction on files in `test-files/` folder and produces `extraction-report.html` with pass/warn/fail verdicts per file, zero API cost
 
 ## Structure Notes
 
@@ -134,4 +139,4 @@ Current migration folders:
 - Telegram user study delivery is linked per user through `TelegramConnection` and logged through `TelegramDeliveryLog`; `TELEGRAM_ADMIN_CHAT_ID` remains admin-alert-only.
 - Backend phase markdown files in the repo root are archival rollout records. Use `SYSTEM_OVERVIEW.md` and `PROJECT_STRUCTURE.md` for live runtime truth.
 
-Last Updated: May 11, 2026
+Last Updated: June 6, 2026

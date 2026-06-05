@@ -52,6 +52,7 @@ Optional:
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
 - `R2_BUCKET_NAME`
+- `MISTRAL_API_KEY` (Mistral OCR fallback — must be set on both backend and worker Railway services)
 
 ## Documentation Triggers
 
@@ -60,4 +61,4 @@ Optional:
 - onboarding/setup: update `README.md`
 - agent workflow rules: update `agent.md` / `AGENTS.md`
 
-Last Updated: March 28, 2026
+Last Updated: June 6, 2026

@@ -70,9 +70,11 @@ Persistence:
 Extraction:
 
 - `utils/extractionPipeline.js`
-- PDF via `pdf-parse`
+- PDF via `pdf-parse` (free, fast)
+- If `pdf-parse` returns fewer than 50 characters (scanned/image-based PDF), Mistral OCR fallback runs automatically via `utils/mistralOcr.js`
 - DOCX via `mammoth`
 - PPTX via `scripts/extract_pptx.py`
+- 200 page/slide limit enforced — files over this limit are rejected before any API call with error code `document_too_long`
 - extracted excerpt text is sanitized before `DocumentExcerpt` rows are inserted so invalid UTF-8 control bytes cannot be persisted
 
 Generation:
@@ -302,6 +304,10 @@ Optional Telegram integration:
 - `TELEGRAM_WEBHOOK_URL`
 - `TELEGRAM_ADMIN_CHAT_ID` (admin alerts only; not used for user study delivery)
 
+Optional OCR:
+
+- `MISTRAL_API_KEY` (required on BOTH backend and worker Railway services for scanned PDF OCR fallback)
+
 Auth email callback targets are backend-owned `/auth/verify-email` and `/auth/reset-password` bridge URLs. The final frontend destination can still be controlled by frontend env overrides or `AUTH_EMAIL_APP_URL`.
 
 ## Maintenance Triggers
@@ -319,4 +325,4 @@ Update this file when any of these change:
 - prompt-version persistence or weak-reference resolution behavior
 - Telegram linking, webhook, delivery, or admin usage contracts
 
-Last Updated: May 11, 2026
+Last Updated: June 6, 2026

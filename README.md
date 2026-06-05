@@ -9,6 +9,7 @@ Backend API and worker stack for the AI Study Assistant.
 - Prisma/PostgreSQL persistence
 - worker-driven extraction and generation
 - canonical study records and compatibility mirrors
+- Mistral OCR fallback for scanned/image-based PDFs via `@mistralai/mistralai` SDK
 - Railway deployment configuration
 
 ## Quick Orientation
@@ -49,6 +50,7 @@ Required environment variables:
 - `AUTH_EMAIL_FROM_EMAIL`
 - `ADMIN_ALERT_EMAIL`
 - `ALERT_FROM_EMAIL`
+- `MISTRAL_API_KEY` (must be set on BOTH backend and worker Railway services — used for Mistral OCR fallback on scanned PDFs)
 
 Optional environment variables:
 
@@ -109,4 +111,4 @@ npm run auth:check-config
 
 It prints the resolved Better Auth base URL plus the frontend origins allowed by both Better Auth and Express CORS.
 
-Last Updated: March 28, 2026
+Last Updated: June 6, 2026
