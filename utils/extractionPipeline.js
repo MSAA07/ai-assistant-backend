@@ -13,6 +13,7 @@ import {
   ensureUserLimitExists,
   checkAndIncrementDailyDocCap,
 } from "./limits.js";
+import { extractWithMistralOcr } from "./mistralOcr.js";
 import { downloadFileToTmp, safeUnlink } from "./storage.js";
 
 const EXTRACTED_TEXT_CHUNK_CHAR_LIMIT = 3_000;
@@ -425,6 +426,27 @@ async function extractPdf(filePath) {
   const buffer = fs.readFileSync(filePath);
   const data = await pdfParse(buffer);
   const pages = data.text.split("\f");
+  const totalCharactersExtracted = pages.reduce((total, pageText) => total + pageText.trim().length, 0);
+
+  if (totalCharactersExtracted < 50) {
+    console.log(`[MistralOCR] pdf-parse returned empty, falling back to Mistral OCR for: ${path.basename(filePath)}`);
+
+    try {
+      const ocrText = await extractWithMistralOcr(filePath);
+      const ocrExcerpts = chunkExtractedTextForExcerpts(ocrText, {
+        slideOrPage: 1,
+        excerptType: "slide_text",
+      });
+
+      if (ocrExcerpts.length === 0) {
+        throw new Error("Mistral OCR returned no extractable text");
+      }
+
+      return ocrExcerpts;
+    } catch {
+      throw new Error("This document appears to be a scanned image and could not be processed. Please upload a PDF with selectable text, or a DOCX/PPTX file.");
+    }
+  }
 
   return pages.flatMap((pageText, index) => chunkExtractedTextForExcerpts(pageText, {
     slideOrPage: index + 1,
