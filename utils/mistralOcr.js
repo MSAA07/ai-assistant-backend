@@ -28,6 +28,7 @@ export async function extractWithMistralOcr(filePath) {
 
     if (!uploadResponse.ok) {
       const errorBody = await uploadResponse.text();
+      console.log("[MistralOCR] File upload failed, status:", uploadResponse.status, "body:", errorBody);
       throw new Error(`Mistral file upload returned ${uploadResponse.status}: ${errorBody || uploadResponse.statusText}`);
     }
 
@@ -36,8 +37,9 @@ export async function extractWithMistralOcr(filePath) {
     if (!fileId) {
       throw new Error("Mistral file upload response did not include a file id");
     }
+    console.log("[MistralOCR] File uploaded successfully, fileId:", fileId);
 
-    const response = await fetch(MISTRAL_OCR_ENDPOINT, {
+    const ocrResponse = await fetch(MISTRAL_OCR_ENDPOINT, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -51,22 +53,27 @@ export async function extractWithMistralOcr(filePath) {
         },
       }),
     });
+    console.log("[MistralOCR] OCR raw response status:", ocrResponse.status);
 
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Mistral OCR API returned ${response.status}: ${errorBody || response.statusText}`);
+    if (!ocrResponse.ok) {
+      const errorBody = await ocrResponse.text();
+      throw new Error(`Mistral OCR API returned ${ocrResponse.status}: ${errorBody || ocrResponse.statusText}`);
     }
 
-    const result = await response.json();
-    if (!Array.isArray(result?.pages)) {
+    const ocrData = await ocrResponse.json();
+    console.log("[MistralOCR] OCR raw response body:", JSON.stringify(ocrData).slice(0, 500));
+    if (!Array.isArray(ocrData?.pages)) {
       throw new Error("Mistral OCR response did not include a pages array");
     }
 
-    const pages = result.pages;
-    return pages
+    const pages = ocrData.pages;
+    const text = pages
       .map((page) => (typeof page?.markdown_content === "string" ? page.markdown_content : ""))
       .join("\n\n");
+    console.log("[MistralOCR] Pages returned:", ocrData.pages?.length, "Total chars:", text.length);
+    return text;
   } catch (error) {
+    console.log("[MistralOCR] Error:", error.message);
     if (error?.message?.startsWith("Mistral OCR failed:")) {
       throw error;
     }
