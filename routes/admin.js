@@ -32,6 +32,7 @@ const parseNumber = (value, fallback) => {
 };
 
 const MAX_PAGE_SIZE = 100;
+const QA_SYSTEM_EMAIL = "qa@studymaxing.com";
 
 const getQueryValue = (value) => (Array.isArray(value) ? value[0] : value);
 
@@ -816,7 +817,7 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       const limit = Math.min(parseNumber(getQueryValue(req.query.limit), 50), 200);
       const offset = Math.max(parseNumber(getQueryValue(req.query.offset), 0), 0);
 
-      const where = { AND: [] };
+      const where = { AND: [{ email: { not: QA_SYSTEM_EMAIL } }] };
       if (search) {
         where.AND.push({
           OR: [
@@ -836,10 +837,6 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
       }
       if (status === "active") {
         where.AND.push({ OR: [{ banned: false }, { banned: null }] });
-      }
-
-      if (where.AND.length === 0) {
-        delete where.AND;
       }
 
       const [total, users] = await prisma.$transaction([
