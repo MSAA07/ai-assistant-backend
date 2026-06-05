@@ -18,6 +18,8 @@ import { downloadFileToTmp, safeUnlink } from "./storage.js";
 
 const EXTRACTED_TEXT_CHUNK_CHAR_LIMIT = 3_000;
 const EXTRACTED_TEXT_CHUNK_MIN_SPLIT = 1_800;
+const MAX_DOCUMENT_PAGE_COUNT = 200;
+const DOCUMENT_TOO_LONG_MESSAGE = "This document has too many pages. Please upload a document with 200 pages or fewer.";
 
 function buildExtractionResult(documentId, excerptCount, excerptSource) {
   return {
@@ -26,6 +28,18 @@ function buildExtractionResult(documentId, excerptCount, excerptSource) {
     excerptSource,
     generated: false,
   };
+}
+
+function createDocumentTooLongError() {
+  const error = new Error(DOCUMENT_TOO_LONG_MESSAGE);
+  error.code = "document_too_long";
+  return error;
+}
+
+function assertDocumentPageLimit(pageCount) {
+  if (pageCount > MAX_DOCUMENT_PAGE_COUNT) {
+    throw createDocumentTooLongError();
+  }
 }
 
 export function sanitizeExtractedText(value) {
@@ -362,7 +376,10 @@ export async function processExtraction(prisma, job, workerId) {
         return extractDocx(workingPath);
       }
       if (mimeType.includes("presentationml") || mimeType.includes("pptx")) {
-        return extractPptx(workingPath);
+        const pptxExcerpts = await extractPptx(workingPath);
+        const slideCount = new Set(pptxExcerpts.map((excerpt) => excerpt.slideOrPage)).size;
+        assertDocumentPageLimit(slideCount);
+        return pptxExcerpts;
       }
       throw new Error(`Unsupported file type: ${mimeType}`);
     }, {
@@ -425,6 +442,7 @@ export async function processExtraction(prisma, job, workerId) {
 async function extractPdf(filePath) {
   const buffer = fs.readFileSync(filePath);
   const data = await pdfParse(buffer);
+  assertDocumentPageLimit(data.numpages);
   const pages = data.text.split("\f");
   const totalCharactersExtracted = pages.reduce((total, pageText) => total + pageText.trim().length, 0);
 

@@ -45,9 +45,10 @@ const WORKER_ID = `${os.hostname()}-${process.pid}`;
 const POLL_INTERVAL_MS = 2000;
 const SCHEMA_WAIT_INTERVAL_MS = 5000;
 const SCHEMA_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_JOB_TIMEOUT_MS = 300_000;
 const JOB_TIMEOUTS = {
   extract_document: 60_000,
-  [GENERATION_JOB_TYPES.summary]: 90_000,
+  [GENERATION_JOB_TYPES.summary]: 300_000,
   [GENERATION_JOB_TYPES.flashcards]: 90_000,
   [GENERATION_JOB_TYPES.exam]: 90_000,
   export_pdf: 30_000,
@@ -452,7 +453,7 @@ async function runWorker() {
         continue;
       }
 
-      const timeout = JOB_TIMEOUTS[job.jobType] || 60_000;
+      const timeout = JOB_TIMEOUTS[job.jobType] || DEFAULT_JOB_TIMEOUT_MS;
       const heartbeatHandle = startLeaseHeartbeat(job.id);
 
       try {
