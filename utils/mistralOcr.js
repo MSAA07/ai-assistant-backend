@@ -1,88 +1,28 @@
-import fs from "fs";
 import path from "path";
-import { Mistral } from "@mistralai/mistralai";
 
 export async function extractWithMistralOcr(filePath) {
   const filename = path.basename(filePath);
-  console.log("[MistralOCR] Starting OCR for:", filename);
+  console.log("[MistralOCR] Step 1 - function called for:", filename);
 
-  const apiKey = process.env.MISTRAL_API_KEY;
-  if (!apiKey) {
-    throw new Error("[MistralOCR] MISTRAL_API_KEY environment variable is not set");
-  }
-
-  const client = new Mistral({ apiKey });
-
-  // Step 1: Upload the file to Mistral
-  console.log("[MistralOCR] Uploading file...");
-  let uploadedFile;
   try {
-    const fileBuffer = fs.readFileSync(filePath);
-    uploadedFile = await client.files.upload({
-      file: {
-        file_name: filename,
-        content: fileBuffer,
-      },
-      purpose: "ocr",
-    });
-    console.log("[MistralOCR] File uploaded, id:", uploadedFile.id);
+    console.log("[MistralOCR] Step 2 - importing SDK...");
+    const { Mistral } = await import("@mistralai/mistralai");
+    console.log("[MistralOCR] Step 3 - SDK imported successfully");
+
+    const apiKey = process.env.MISTRAL_API_KEY;
+    console.log("[MistralOCR] Step 4 - API key present:", !!apiKey, "length:", apiKey?.length);
+
+    const client = new Mistral({ apiKey });
+    console.log("[MistralOCR] Step 5 - client created successfully");
+
+    const models = await client.models.list();
+    console.log("[MistralOCR] Step 6 - API connection works, models count:", models?.data?.length);
+
   } catch (err) {
-    console.log("[MistralOCR] Upload error:", err.message);
-    throw new Error("Mistral file upload failed: " + err.message);
+    console.log("[MistralOCR] CRASH at step above. Error name:", err.name);
+    console.log("[MistralOCR] CRASH message:", err.message);
+    console.log("[MistralOCR] CRASH stack:", err.stack?.slice(0, 300));
   }
 
-  // Step 2: Get signed URL
-  let signedUrl;
-  try {
-    const signedUrlResponse = await client.files.getSignedUrl({
-      fileId: uploadedFile.id,
-    });
-    signedUrl = signedUrlResponse.url;
-    console.log("[MistralOCR] Got signed URL");
-  } catch (err) {
-    console.log("[MistralOCR] Signed URL error:", err.message);
-    throw new Error("Mistral signed URL failed: " + err.message);
-  }
-
-  // Step 3: Run OCR
-  let ocrText = "";
-  try {
-    console.log("[MistralOCR] Running OCR...");
-    const ocrResponse = await client.ocr.process({
-      model: "mistral-ocr-latest",
-      document: {
-        type: "document_url",
-        documentUrl: signedUrl,
-      },
-    });
-
-    const pages = ocrResponse.pages || [];
-    console.log("[MistralOCR] Pages returned:", pages.length);
-
-    ocrText = pages
-      .map((p) => p.markdown || p.markdownContent || p.markdown_content || "")
-      .join("\n\n")
-      .trim();
-
-    console.log("[MistralOCR] Total chars extracted:", ocrText.length);
-  } catch (err) {
-    console.log("[MistralOCR] OCR error:", err.message);
-    throw new Error("Mistral OCR processing failed: " + err.message);
-  } finally {
-    // Step 4: Delete the uploaded file
-    try {
-      await client.files.delete({ fileId: uploadedFile.id });
-      console.log("[MistralOCR] File deleted from Mistral storage");
-    } catch (err) {
-      console.log("[MistralOCR] File delete error (non-fatal):", err.message);
-    }
-  }
-
-  if (!ocrText) {
-    throw new Error(
-      "This document appears to be a scanned image and could not be processed. Please upload a PDF with selectable text, or a DOCX/PPTX file."
-    );
-  }
-
-  return ocrText;
+  throw new Error("Diagnostic mode - OCR not attempted yet");
 }
