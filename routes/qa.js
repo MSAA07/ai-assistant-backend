@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const QA_TEST_PDF_PATH = path.resolve(__dirname, "../tests/qa-test-document.pdf");
+const QA_TESTS_DIR = path.resolve(__dirname, "../tests");
 const QA_RATE_LIMIT_MS = 5 * 60 * 1000;
 const QA_EMAIL = "qa@studymaxing.com";
 const QA_PASSWORD = "tester123";
@@ -25,9 +25,19 @@ const DEFAULT_TARGETS = Object.freeze({
 const TEST_NAMES = Object.freeze({
   health: "Health check",
   signIn: "Sign in as QA account",
-  upload: "Upload test PDF",
-  extraction: "Wait for extraction to complete",
-  generation: "Wait for AI generation to complete",
+  uploadEnglishPdf: "Upload English PDF",
+  extractEnglishPdf: "Wait for English PDF extraction",
+  generateEnglishPdf: "Wait for English PDF generation",
+  uploadEnglishDocx: "Upload English DOCX",
+  processEnglishDocx: "Wait for DOCX extraction and generation",
+  uploadEnglishPptx: "Upload English PPTX",
+  processEnglishPptx: "Wait for PPTX extraction and generation",
+  uploadArabicPdf: "Upload Arabic PDF",
+  processArabicPdf: "Wait for Arabic PDF extraction and generation",
+  uploadArabicPptx: "Upload Arabic PPTX",
+  processArabicPptx: "Wait for Arabic PPTX extraction and generation",
+  oversizedRejection: "Oversized file rejection",
+  corruptGracefulFailure: "Corrupt file graceful failure",
   exportPdf: "PDF export",
   adminHealth: "Admin endpoints health",
   signOut: "Sign out QA account",
@@ -36,9 +46,19 @@ const TEST_NAMES = Object.freeze({
 const TEST_SEQUENCE = Object.freeze([
   TEST_NAMES.health,
   TEST_NAMES.signIn,
-  TEST_NAMES.upload,
-  TEST_NAMES.extraction,
-  TEST_NAMES.generation,
+  TEST_NAMES.uploadEnglishPdf,
+  TEST_NAMES.extractEnglishPdf,
+  TEST_NAMES.generateEnglishPdf,
+  TEST_NAMES.uploadEnglishDocx,
+  TEST_NAMES.processEnglishDocx,
+  TEST_NAMES.uploadEnglishPptx,
+  TEST_NAMES.processEnglishPptx,
+  TEST_NAMES.uploadArabicPdf,
+  TEST_NAMES.processArabicPdf,
+  TEST_NAMES.uploadArabicPptx,
+  TEST_NAMES.processArabicPptx,
+  TEST_NAMES.oversizedRejection,
+  TEST_NAMES.corruptGracefulFailure,
   TEST_NAMES.exportPdf,
   TEST_NAMES.adminHealth,
   TEST_NAMES.signOut,
@@ -48,13 +68,68 @@ const TEST_INDEX_BY_NAME = new Map(TEST_SEQUENCE.map((name, index) => [name, ind
 
 const BASELINE_TEST_DURATIONS_MS = Object.freeze({
   [TEST_NAMES.health]: 500,
-  [TEST_NAMES.signIn]: 1_000,
-  [TEST_NAMES.upload]: 3_000,
-  [TEST_NAMES.extraction]: 20_000,
-  [TEST_NAMES.generation]: 90_000,
-  [TEST_NAMES.exportPdf]: 5_000,
+  [TEST_NAMES.signIn]: 1_500,
+  [TEST_NAMES.uploadEnglishPdf]: 3_000,
+  [TEST_NAMES.extractEnglishPdf]: 20_000,
+  [TEST_NAMES.generateEnglishPdf]: 67_000,
+  [TEST_NAMES.uploadEnglishDocx]: 5_000,
+  [TEST_NAMES.processEnglishDocx]: 55_000,
+  [TEST_NAMES.uploadEnglishPptx]: 5_000,
+  [TEST_NAMES.processEnglishPptx]: 55_000,
+  [TEST_NAMES.uploadArabicPdf]: 5_000,
+  [TEST_NAMES.processArabicPdf]: 115_000,
+  [TEST_NAMES.uploadArabicPptx]: 5_000,
+  [TEST_NAMES.processArabicPptx]: 55_000,
+  [TEST_NAMES.oversizedRejection]: 5_000,
+  [TEST_NAMES.corruptGracefulFailure]: 15_000,
+  [TEST_NAMES.exportPdf]: 28_000,
   [TEST_NAMES.adminHealth]: 1_000,
-  [TEST_NAMES.signOut]: 500,
+  [TEST_NAMES.signOut]: 1_000,
+});
+
+const QA_FIXTURES = Object.freeze({
+  englishPdf: {
+    path: path.join(QA_TESTS_DIR, "qa-test-document.pdf"),
+    filename: "qa-test-document.pdf",
+    mimeType: "application/pdf",
+    label: "English PDF",
+  },
+  englishDocx: {
+    path: path.join(QA_TESTS_DIR, "qa-test-english.docx"),
+    filename: "qa-test-english.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    label: "English DOCX",
+  },
+  englishPptx: {
+    path: path.join(QA_TESTS_DIR, "extraction_test_ENGLISH.pptx"),
+    filename: "extraction_test_ENGLISH.pptx",
+    mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    label: "English PPTX",
+  },
+  arabicPdf: {
+    path: path.join(QA_TESTS_DIR, "arabic.pdf"),
+    filename: "arabic.pdf",
+    mimeType: "application/pdf",
+    label: "Arabic scanned PDF - tests Mistral OCR path",
+  },
+  arabicPptx: {
+    path: path.join(QA_TESTS_DIR, "extraction_test_ARABIC.pptx"),
+    filename: "extraction_test_ARABIC.pptx",
+    mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    label: "Arabic PPTX",
+  },
+  oversizedPdf: {
+    path: path.join(QA_TESTS_DIR, "qa-test-oversized.pdf"),
+    filename: "qa-test-oversized.pdf",
+    mimeType: "application/pdf",
+    label: "Oversized PDF",
+  },
+  corruptPdf: {
+    path: path.join(QA_TESTS_DIR, "qa-test-corrupt.pdf"),
+    filename: "qa-test-corrupt.pdf",
+    mimeType: "application/pdf",
+    label: "Corrupt PDF",
+  },
 });
 
 const qaRunRateLimit = new Map();
@@ -94,6 +169,7 @@ function createResult(name, status, message, durationMs = 0) {
     status,
     message,
     durationMs: Math.max(0, Math.round(durationMs)),
+    order: getTestOrder(name),
   };
 }
 
@@ -381,25 +457,46 @@ function getDocumentFromResponse(data) {
   return data?.document || data;
 }
 
-function hasGeneratedMaterials(document) {
+function getGeneratedMaterialStats(document) {
   const summary = typeof document?.summary === "string" ? document.summary.trim() : "";
   const flashcards = Array.isArray(document?.flashcards) ? document.flashcards : [];
   const examQuestions = Array.isArray(document?.examQuestions) ? document.examQuestions : [];
-  const flashcardCount = Number(document?.flashcardCount) || flashcards.length;
-  const questionCount = Number(document?.questionCount) || examQuestions.length;
+  const flashcardCount = Math.max(Number(document?.flashcardCount) || 0, flashcards.length);
+  const questionCount = Math.max(Number(document?.questionCount) || 0, examQuestions.length);
 
   return {
-    summary: summary.length > 0,
-    flashcards: flashcards.length > 0 || flashcardCount > 0,
-    exam: examQuestions.length > 0 || questionCount > 0,
+    summaryLength: summary.length,
+    flashcardCount,
+    questionCount,
   };
 }
 
-function getMissingMaterials(document) {
-  const materials = hasGeneratedMaterials(document);
-  return Object.entries(materials)
-    .filter(([, exists]) => !exists)
-    .map(([name]) => name);
+function pluralize(count, singular, plural = `${singular}s`) {
+  return count === 1 ? singular : plural;
+}
+
+function getQualityFailures(document) {
+  const stats = getGeneratedMaterialStats(document);
+  const failures = [];
+
+  if (stats.summaryLength < 100) {
+    failures.push(`Summary too short (${stats.summaryLength} chars)`);
+  }
+
+  if (stats.flashcardCount < 3) {
+    failures.push(`Only ${stats.flashcardCount} ${pluralize(stats.flashcardCount, "flashcard")} generated`);
+  }
+
+  if (stats.questionCount < 3) {
+    failures.push(`Only ${stats.questionCount} exam ${pluralize(stats.questionCount, "question")} generated`);
+  }
+
+  return failures;
+}
+
+function formatQualityPassMessage(document) {
+  const stats = getGeneratedMaterialStats(document);
+  return `Generated summary (${stats.summaryLength} chars), ${stats.flashcardCount} flashcards, and ${stats.questionCount} exam questions`;
 }
 
 async function signInQaAccount(auth) {
@@ -429,20 +526,34 @@ async function signInQaAccount(auth) {
   };
 }
 
-async function uploadTestPdf(baseUrl, cookieHeader) {
-  const pdfBuffer = await fs.readFile(QA_TEST_PDF_PATH);
+async function uploadFixtureRaw(baseUrl, cookieHeader, fixture, timeoutMs = 30_000) {
+  const fileBuffer = await fs.readFile(fixture.path);
   const formData = new FormData();
   formData.append(
     "file",
-    new Blob([pdfBuffer], { type: "application/pdf" }),
-    "qa-test-document.pdf",
+    new Blob([fileBuffer], { type: fixture.mimeType }),
+    fixture.filename,
   );
 
-  const { data } = await fetchJson(`${baseUrl}/api/upload`, {
+  const response = await fetchWithTimeout(`${baseUrl}/api/upload`, {
     method: "POST",
     headers: buildCookieHeaders(cookieHeader),
     body: formData,
-  }, 30_000, "PDF upload failed");
+  }, timeoutMs);
+  const data = await readJson(response);
+
+  return { response, data };
+}
+
+async function uploadTestFile(baseUrl, cookieHeader, fixture) {
+  const { response, data } = await uploadFixtureRaw(baseUrl, cookieHeader, fixture);
+
+  if (!response.ok) {
+    const error = new Error(getResponseMessage(data, `${fixture.label} upload failed (${response.status})`));
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
 
   if (!data?.documentId || !data?.jobId) {
     throw new Error("Upload did not return both a document ID and job ID");
@@ -470,10 +581,13 @@ async function getDocument(baseUrl, cookieHeader, documentId) {
   return getDocumentFromResponse(data);
 }
 
-async function waitForExtraction(baseUrl, cookieHeader, documentId, jobId) {
+async function waitForExtraction(baseUrl, cookieHeader, documentId, jobId, {
+  timeoutMs = 60_000,
+  pollMs = 3_000,
+} = {}) {
   const startedAt = Date.now();
 
-  while (elapsedSince(startedAt) < 60_000) {
+  while (elapsedSince(startedAt) < timeoutMs) {
     const job = await getJob(baseUrl, cookieHeader, jobId);
 
     if (job.status === "failed") {
@@ -490,10 +604,10 @@ async function waitForExtraction(baseUrl, cookieHeader, documentId, jobId) {
       }
     }
 
-    await sleep(3_000);
+    await sleep(pollMs);
   }
 
-  throw new Error("Extraction timed out after 60s");
+  throw new Error(`Extraction timed out after ${Math.round(timeoutMs / 1000)}s`);
 }
 
 async function queueGeneration(baseUrl, cookieHeader, documentId, generationType) {
@@ -511,7 +625,10 @@ async function queueGeneration(baseUrl, cookieHeader, documentId, generationType
   };
 }
 
-async function waitForGeneration(baseUrl, cookieHeader, documentId, state) {
+async function waitForGenerationQuality(baseUrl, cookieHeader, documentId, state, {
+  timeoutMs = 120_000,
+  pollMs = 5_000,
+} = {}) {
   const queuedGenerations = [];
 
   for (const generationType of ["summary", "flashcards", "exam"]) {
@@ -524,12 +641,12 @@ async function waitForGeneration(baseUrl, cookieHeader, documentId, state) {
 
   const startedAt = Date.now();
 
-  while (elapsedSince(startedAt) < 120_000) {
+  while (elapsedSince(startedAt) < timeoutMs) {
     const document = await getDocument(baseUrl, cookieHeader, documentId);
-    const missing = getMissingMaterials(document);
+    const qualityFailures = getQualityFailures(document);
 
-    if (missing.length === 0) {
-      return;
+    if (qualityFailures.length === 0) {
+      return document;
     }
 
     const activeJobIds = queuedGenerations
@@ -542,15 +659,15 @@ async function waitForGeneration(baseUrl, cookieHeader, documentId, state) {
       }
     }
 
-    await sleep(5_000);
+    await sleep(pollMs);
   }
 
   const document = await getDocument(baseUrl, cookieHeader, documentId).catch(() => null);
-  const missing = getMissingMaterials(document);
+  const qualityFailures = getQualityFailures(document);
   throw new Error(
-    missing.length > 0
-      ? `Generation timed out after 120s; missing ${missing.join(", ")}`
-      : "Generation timed out after 120s",
+    qualityFailures.length > 0
+      ? `Generation quality check failed: ${qualityFailures.join("; ")}`
+      : `Generation timed out after ${Math.round(timeoutMs / 1000)}s`,
   );
 }
 
@@ -606,6 +723,153 @@ async function cleanupDocument(baseUrl, cookieHeader, documentId) {
     }, 30_000, "QA document cleanup failed");
   } catch (error) {
     console.error("[qa] Failed to clean up QA document:", error);
+  }
+}
+
+function rememberQaDocument(state, key, upload) {
+  state.documents.set(key, {
+    documentId: upload.documentId,
+    jobId: upload.jobId,
+  });
+}
+
+function getQaDocument(state, key) {
+  const document = state.documents.get(key);
+  if (!document?.documentId || !document?.jobId) {
+    throw new Error("Required QA document was not uploaded");
+  }
+  return document;
+}
+
+async function cleanupQaDocument(state, key) {
+  const document = state.documents.get(key);
+  if (!document?.documentId) return;
+
+  await cleanupDocument(state.baseUrl, state.qaCookieHeader, document.documentId);
+  state.documents.delete(key);
+}
+
+async function cleanupAllQaDocuments(state) {
+  const keys = [...state.documents.keys()];
+  for (const key of keys) {
+    await cleanupQaDocument(state, key);
+  }
+}
+
+async function uploadFixtureForRun(state, key) {
+  const fixture = QA_FIXTURES[key];
+  const upload = await uploadTestFile(state.baseUrl, state.qaCookieHeader, fixture);
+  rememberQaDocument(state, key, upload);
+  return upload;
+}
+
+async function waitForFixtureExtractionAndQuality(state, key, {
+  totalTimeoutMs = null,
+  extractionTimeoutMs,
+  extractionPollMs = 5_000,
+  generationTimeoutMs,
+  generationPollMs = 5_000,
+}) {
+  const document = getQaDocument(state, key);
+  const startedAt = Date.now();
+
+  try {
+    await waitForExtraction(state.baseUrl, state.qaCookieHeader, document.documentId, document.jobId, {
+      timeoutMs: extractionTimeoutMs || totalTimeoutMs || 60_000,
+      pollMs: extractionPollMs,
+    });
+    const remainingTimeoutMs = totalTimeoutMs
+      ? Math.max(1_000, totalTimeoutMs - elapsedSince(startedAt))
+      : null;
+    const generatedDocument = await waitForGenerationQuality(state.baseUrl, state.qaCookieHeader, document.documentId, state, {
+      timeoutMs: generationTimeoutMs || remainingTimeoutMs || 120_000,
+      pollMs: generationPollMs,
+    });
+    return formatQualityPassMessage(generatedDocument);
+  } finally {
+    await cleanupQaDocument(state, key);
+  }
+}
+
+function skipTests(results, testNames, message) {
+  for (const testName of testNames) {
+    skipStep(results, testName, message);
+  }
+}
+
+function isOversizedRejection(response, data) {
+  const message = getResponseMessage(data, "").toLowerCase();
+  return data?.code === "document_too_long"
+    || response.status === 400
+    || response.status === 422
+    || message.includes("too many pages")
+    || message.includes("too long");
+}
+
+async function assertOversizedFileRejected(state) {
+  const { response, data } = await uploadFixtureRaw(state.baseUrl, state.qaCookieHeader, QA_FIXTURES.oversizedPdf, 45_000);
+
+  if (!response.ok) {
+    if (isOversizedRejection(response, data)) {
+      return `Oversized file rejected with ${response.status}: ${getResponseMessage(data, "document_too_long")}`;
+    }
+    throw new Error(`Oversized file returned unexpected ${response.status}: ${getResponseMessage(data, "Request failed")}`);
+  }
+
+  if (data?.documentId) {
+    await cleanupDocument(state.baseUrl, state.qaCookieHeader, data.documentId);
+  }
+
+  throw new Error("Oversized file was accepted when it should have been rejected");
+}
+
+async function waitForCorruptFileFailure(state, documentId, jobId) {
+  const startedAt = Date.now();
+
+  while (elapsedSince(startedAt) < 30_000) {
+    const [job, document] = await Promise.all([
+      getJob(state.baseUrl, state.qaCookieHeader, jobId).catch(() => null),
+      getDocument(state.baseUrl, state.qaCookieHeader, documentId).catch(() => null),
+    ]);
+
+    if (job?.status === "failed") {
+      return job.errorMessage || "Corrupt file extraction job failed gracefully";
+    }
+
+    if (document?.processingStatus === "failed") {
+      return document.processingError || "Corrupt file failed gracefully";
+    }
+
+    if (job?.status === "succeeded" || document?.processingStatus === "complete") {
+      throw new Error("Corrupt file was processed successfully when it should have failed");
+    }
+
+    await sleep(3_000);
+  }
+
+  throw new Error("Corrupt file did not reach failed status within 30s");
+}
+
+async function assertCorruptFileFailsGracefully(state) {
+  const { response, data } = await uploadFixtureRaw(state.baseUrl, state.qaCookieHeader, QA_FIXTURES.corruptPdf, 30_000);
+
+  if (!response.ok) {
+    const message = getResponseMessage(data, "");
+    if (response.status >= 400 && response.status < 500 && message) {
+      return `Corrupt file rejected gracefully with ${response.status}: ${message}`;
+    }
+    throw new Error(`Corrupt file returned ${response.status}: ${message || "no useful message"}`);
+  }
+
+  if (!data?.documentId || !data?.jobId) {
+    throw new Error("Corrupt file upload did not return both a document ID and job ID");
+  }
+
+  try {
+    const failureMessage = await waitForCorruptFileFailure(state, data.documentId, data.jobId);
+    return `Corrupt file failed gracefully: ${failureMessage}`;
+  } finally {
+    await cleanupDocument(state.baseUrl, state.qaCookieHeader, data.documentId);
   }
 }
 
@@ -793,6 +1057,7 @@ export const createQaRouter = ({ prisma, auth }) => {
       documentId: "",
       jobId: "",
       generationJobIds: [],
+      documents: new Map(),
     };
 
     beginQaProgress({ target, triggeredBy, estimates: durationEstimates });
@@ -803,9 +1068,36 @@ export const createQaRouter = ({ prisma, auth }) => {
       }
     });
 
-    let shouldContinue = true;
+    let canRunAuthenticatedTests = true;
 
-    shouldContinue = await runStep(results, TEST_NAMES.health, async () => {
+    const runUploadAndProcess = async ({
+      key,
+      uploadTestName,
+      processTestName,
+      totalTimeoutMs,
+      uploadMessage,
+    }) => {
+      const uploaded = await runStep(results, uploadTestName, async () => {
+        await uploadFixtureForRun(state, key);
+        return uploadMessage || `${QA_FIXTURES[key].label} uploaded and extraction job was created`;
+      });
+
+      if (!uploaded) {
+        await cleanupQaDocument(state, key);
+        skipStep(results, processTestName, `Skipped because ${QA_FIXTURES[key].label} upload failed`);
+        return;
+      }
+
+      await runStep(results, processTestName, async () => {
+        return await waitForFixtureExtractionAndQuality(state, key, {
+          totalTimeoutMs,
+          extractionPollMs: 5_000,
+          generationPollMs: 5_000,
+        });
+      });
+    };
+
+    const healthOk = await runStep(results, TEST_NAMES.health, async () => {
       const response = await fetchWithTimeout(`${state.baseUrl}/api/health`, { method: "GET" }, 15_000);
       if (!response.ok) {
         throw new Error(`Health check returned ${response.status}`);
@@ -813,85 +1105,131 @@ export const createQaRouter = ({ prisma, auth }) => {
       return "Health endpoint returned 200";
     });
 
-    if (!shouldContinue) {
-      skipStep(results, TEST_NAMES.signIn, "Skipped because the health check failed");
-      skipStep(results, TEST_NAMES.upload, "Skipped because the health check failed");
-      skipStep(results, TEST_NAMES.extraction, "Skipped because the health check failed");
-      skipStep(results, TEST_NAMES.generation, "Skipped because the health check failed");
-      skipStep(results, TEST_NAMES.exportPdf, "Skipped because the health check failed");
-      skipStep(results, TEST_NAMES.adminHealth, "Skipped because the health check failed");
-      skipStep(results, TEST_NAMES.signOut, "Skipped because no QA session was created");
+    if (!healthOk) {
+      skipTests(results, TEST_SEQUENCE.slice(1), "Skipped because the health check failed");
+      canRunAuthenticatedTests = false;
     }
 
-    if (shouldContinue) {
-      shouldContinue = await runStep(results, TEST_NAMES.signIn, async () => {
+    if (canRunAuthenticatedTests) {
+      const signInOk = await runStep(results, TEST_NAMES.signIn, async () => {
         const session = await signInQaAccount(auth);
         state.qaCookieHeader = session.cookieHeader;
         state.qaUserId = session.userId;
         return "QA account signed in and returned a session token";
       });
+
+      if (!signInOk) {
+        skipTests(results, TEST_SEQUENCE.slice(2), "Skipped because QA sign-in failed");
+        canRunAuthenticatedTests = false;
+      }
     }
 
-    if (!shouldContinue && state.qaCookieHeader) {
-      skipStep(results, TEST_NAMES.upload, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.extraction, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.generation, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.exportPdf, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.adminHealth, "Skipped because QA sign-in failed");
-    } else if (!shouldContinue && results.at(-1)?.name === TEST_NAMES.signIn) {
-      skipStep(results, TEST_NAMES.upload, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.extraction, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.generation, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.exportPdf, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.adminHealth, "Skipped because QA sign-in failed");
-      skipStep(results, TEST_NAMES.signOut, "Skipped because no QA session was created");
-    }
-
-    if (shouldContinue) {
-      shouldContinue = await runStep(results, TEST_NAMES.upload, async () => {
-        const upload = await uploadTestPdf(state.baseUrl, state.qaCookieHeader);
+    if (canRunAuthenticatedTests) {
+      const englishPdfUploaded = await runStep(results, TEST_NAMES.uploadEnglishPdf, async () => {
+        const upload = await uploadFixtureForRun(state, "englishPdf");
         state.documentId = upload.documentId;
         state.jobId = upload.jobId;
-        return "Test PDF uploaded and extraction job was created";
+        return "English PDF uploaded and extraction job was created";
       });
-    }
 
-    if (!shouldContinue && state.qaCookieHeader && results.at(-1)?.name === TEST_NAMES.upload) {
-      skipStep(results, TEST_NAMES.extraction, "Skipped because upload failed");
-      skipStep(results, TEST_NAMES.generation, "Skipped because upload failed");
-      skipStep(results, TEST_NAMES.exportPdf, "Skipped because upload failed");
-      skipStep(results, TEST_NAMES.adminHealth, "Skipped because upload failed");
-    }
+      if (!englishPdfUploaded) {
+        skipStep(results, TEST_NAMES.extractEnglishPdf, "Skipped because English PDF upload failed");
+        skipStep(results, TEST_NAMES.generateEnglishPdf, "Skipped because English PDF upload failed");
+      } else {
+        let englishPdfExtracted = false;
+        const extractionOk = await runStep(results, TEST_NAMES.extractEnglishPdf, async () => {
+          const document = getQaDocument(state, "englishPdf");
+          try {
+            await waitForExtraction(state.baseUrl, state.qaCookieHeader, document.documentId, document.jobId, {
+              timeoutMs: 60_000,
+              pollMs: 3_000,
+            });
+            englishPdfExtracted = true;
+            return "English PDF extraction completed";
+          } finally {
+            if (!englishPdfExtracted) {
+              await cleanupQaDocument(state, "englishPdf");
+            }
+          }
+        });
 
-    if (shouldContinue) {
-      shouldContinue = await runStep(results, TEST_NAMES.extraction, async () => {
-        await waitForExtraction(state.baseUrl, state.qaCookieHeader, state.documentId, state.jobId);
-        return "Extraction completed for the QA document";
+        if (!extractionOk) {
+          skipStep(results, TEST_NAMES.generateEnglishPdf, "Skipped because English PDF extraction failed");
+        } else {
+          await runStep(results, TEST_NAMES.generateEnglishPdf, async () => {
+            const document = getQaDocument(state, "englishPdf");
+            try {
+              const generatedDocument = await waitForGenerationQuality(
+                state.baseUrl,
+                state.qaCookieHeader,
+                document.documentId,
+                state,
+                { timeoutMs: 120_000, pollMs: 5_000 },
+              );
+              return formatQualityPassMessage(generatedDocument);
+            } finally {
+              await cleanupQaDocument(state, "englishPdf");
+            }
+          });
+        }
+      }
+
+      await runUploadAndProcess({
+        key: "englishDocx",
+        uploadTestName: TEST_NAMES.uploadEnglishDocx,
+        processTestName: TEST_NAMES.processEnglishDocx,
+        totalTimeoutMs: 180_000,
       });
-    }
 
-    if (!shouldContinue && state.qaCookieHeader && results.at(-1)?.name === TEST_NAMES.extraction) {
-      skipStep(results, TEST_NAMES.generation, "Skipped because extraction did not complete");
-      skipStep(results, TEST_NAMES.exportPdf, "Skipped because extraction did not complete");
-      skipStep(results, TEST_NAMES.adminHealth, "Skipped because extraction did not complete");
-    }
-
-    if (shouldContinue) {
-      shouldContinue = await runStep(results, TEST_NAMES.generation, async () => {
-        await waitForGeneration(state.baseUrl, state.qaCookieHeader, state.documentId, state);
-        return "Summary, flashcards, and exam content were generated";
+      await runUploadAndProcess({
+        key: "englishPptx",
+        uploadTestName: TEST_NAMES.uploadEnglishPptx,
+        processTestName: TEST_NAMES.processEnglishPptx,
+        totalTimeoutMs: 180_000,
       });
-    }
 
-    if (!shouldContinue && state.qaCookieHeader && results.at(-1)?.name === TEST_NAMES.generation) {
-      skipStep(results, TEST_NAMES.exportPdf, "Skipped because AI generation did not complete");
-      skipStep(results, TEST_NAMES.adminHealth, "Skipped because AI generation did not complete");
-    }
+      await runUploadAndProcess({
+        key: "arabicPdf",
+        uploadTestName: TEST_NAMES.uploadArabicPdf,
+        processTestName: TEST_NAMES.processArabicPdf,
+        totalTimeoutMs: 240_000,
+        uploadMessage: "Arabic scanned PDF - tests Mistral OCR path uploaded and extraction job was created",
+      });
 
-    if (shouldContinue) {
+      await runUploadAndProcess({
+        key: "arabicPptx",
+        uploadTestName: TEST_NAMES.uploadArabicPptx,
+        processTestName: TEST_NAMES.processArabicPptx,
+        totalTimeoutMs: 180_000,
+      });
+
+      await runStep(results, TEST_NAMES.oversizedRejection, async () => {
+        return await assertOversizedFileRejected(state);
+      });
+
+      await runStep(results, TEST_NAMES.corruptGracefulFailure, async () => {
+        return await assertCorruptFileFailsGracefully(state);
+      });
+
       await runStep(results, TEST_NAMES.exportPdf, async () => {
-        await requestPdfExport(state.baseUrl, state.qaCookieHeader, state.documentId);
-        return "PDF export returned an application/pdf file";
+        let exportDocument = null;
+        try {
+          exportDocument = await uploadTestFile(state.baseUrl, state.qaCookieHeader, QA_FIXTURES.englishPdf);
+          await waitForExtraction(state.baseUrl, state.qaCookieHeader, exportDocument.documentId, exportDocument.jobId, {
+            timeoutMs: 60_000,
+            pollMs: 3_000,
+          });
+          await waitForGenerationQuality(state.baseUrl, state.qaCookieHeader, exportDocument.documentId, state, {
+            timeoutMs: 120_000,
+            pollMs: 5_000,
+          });
+          await requestPdfExport(state.baseUrl, state.qaCookieHeader, exportDocument.documentId);
+          return "Fresh English PDF generated and exported as application/pdf";
+        } finally {
+          if (exportDocument?.documentId) {
+            await cleanupDocument(state.baseUrl, state.qaCookieHeader, exportDocument.documentId);
+          }
+        }
       });
 
       await runStep(results, TEST_NAMES.adminHealth, async () => {
@@ -900,9 +1238,8 @@ export const createQaRouter = ({ prisma, auth }) => {
       });
     }
 
+    await cleanupAllQaDocuments(state);
     const estimatedCostUsd = await calculateEstimatedCost(prisma, state, runStartedAt);
-
-    await cleanupDocument(state.baseUrl, state.qaCookieHeader, state.documentId);
 
     if (state.qaCookieHeader && !results.some((result) => result.name === TEST_NAMES.signOut)) {
       await runStep(results, TEST_NAMES.signOut, async () => {
