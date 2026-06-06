@@ -595,6 +595,30 @@ model TelegramDeliveryLog {
   @@index([status, createdAt])
 }
 
+model QaRun {
+  id               String        @id @default(cuid())
+  target           String
+  ranAt            DateTime      @default(now())
+  totalDurationMs  Int
+  passed           Int
+  failed           Int
+  skipped          Int
+  estimatedCostUsd Float
+  triggeredBy      String
+  results          QaRunResult[]
+}
+
+model QaRunResult {
+  id         String @id @default(cuid())
+  qaRunId    String
+  qaRun      QaRun  @relation(fields: [qaRunId], references: [id], onDelete: Cascade)
+  testName   String
+  status     String
+  message    String
+  durationMs Int
+  order      Int
+}
+
 enum FeatureEntityType {
   user
   tier

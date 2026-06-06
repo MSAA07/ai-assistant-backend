@@ -33,7 +33,32 @@ const TEST_NAMES = Object.freeze({
   signOut: "Sign out QA account",
 });
 
+const TEST_SEQUENCE = Object.freeze([
+  TEST_NAMES.health,
+  TEST_NAMES.signIn,
+  TEST_NAMES.upload,
+  TEST_NAMES.extraction,
+  TEST_NAMES.generation,
+  TEST_NAMES.exportPdf,
+  TEST_NAMES.adminHealth,
+  TEST_NAMES.signOut,
+]);
+
+const TEST_INDEX_BY_NAME = new Map(TEST_SEQUENCE.map((name, index) => [name, index + 1]));
+
+const BASELINE_TEST_DURATIONS_MS = Object.freeze({
+  [TEST_NAMES.health]: 500,
+  [TEST_NAMES.signIn]: 1_000,
+  [TEST_NAMES.upload]: 3_000,
+  [TEST_NAMES.extraction]: 20_000,
+  [TEST_NAMES.generation]: 90_000,
+  [TEST_NAMES.exportPdf]: 5_000,
+  [TEST_NAMES.adminHealth]: 1_000,
+  [TEST_NAMES.signOut]: 500,
+});
+
 const qaRunRateLimit = new Map();
+let currentQaProgress = null;
 
 function normalizeTarget(value) {
   const target = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -69,6 +94,141 @@ function createResult(name, status, message, durationMs = 0) {
     status,
     message,
     durationMs: Math.max(0, Math.round(durationMs)),
+  };
+}
+
+function getTestOrder(testName) {
+  return TEST_INDEX_BY_NAME.get(testName) || TEST_SEQUENCE.length;
+}
+
+function getSkippedCount(results) {
+  return results.filter((result) => result.status === "skip").length;
+}
+
+function serializeQaRun(qaRun) {
+  return {
+    id: qaRun.id,
+    target: qaRun.target,
+    ranAt: qaRun.ranAt,
+    totalDurationMs: qaRun.totalDurationMs,
+    passed: qaRun.passed,
+    failed: qaRun.failed,
+    skipped: qaRun.skipped,
+    estimatedCostUsd: qaRun.estimatedCostUsd,
+    triggeredBy: qaRun.triggeredBy,
+    results: (qaRun.results || [])
+      .slice()
+      .sort((left, right) => left.order - right.order)
+      .map((result) => ({
+        id: result.id,
+        qaRunId: result.qaRunId,
+        name: result.testName,
+        testName: result.testName,
+        status: result.status,
+        message: result.message,
+        durationMs: result.durationMs,
+        order: result.order,
+      })),
+  };
+}
+
+async function getQaDurationEstimates(prisma) {
+  const estimates = { ...BASELINE_TEST_DURATIONS_MS };
+
+  try {
+    const groups = await prisma.qaRunResult.groupBy({
+      by: ["testName"],
+      _avg: { durationMs: true },
+    });
+
+    for (const group of groups) {
+      const average = Number(group._avg?.durationMs);
+      if (TEST_INDEX_BY_NAME.has(group.testName) && Number.isFinite(average) && average > 0) {
+        estimates[group.testName] = Math.round(average);
+      }
+    }
+  } catch (error) {
+    console.error("[qa] Failed to load QA duration estimates:", error);
+  }
+
+  return estimates;
+}
+
+function beginQaProgress({ target, triggeredBy, estimates }) {
+  currentQaProgress = {
+    inProgress: true,
+    target,
+    triggeredBy,
+    startedAtMs: Date.now(),
+    currentTest: "",
+    currentTestIndex: 0,
+    currentTestStartedAtMs: null,
+    completedResults: [],
+    estimates,
+  };
+}
+
+function setCurrentQaTest(testName) {
+  if (!currentQaProgress?.inProgress) return;
+
+  currentQaProgress.currentTest = testName;
+  currentQaProgress.currentTestIndex = getTestOrder(testName);
+  currentQaProgress.currentTestStartedAtMs = Date.now();
+}
+
+function recordQaProgressResult(result) {
+  if (!currentQaProgress?.inProgress) return;
+
+  currentQaProgress.completedResults.push({
+    name: result.name,
+    status: result.status,
+    durationMs: result.durationMs,
+  });
+}
+
+function clearQaProgress() {
+  currentQaProgress = null;
+}
+
+function getProgressSnapshot() {
+  if (!currentQaProgress?.inProgress) {
+    return { inProgress: false };
+  }
+
+  const now = Date.now();
+  const totalTests = TEST_SEQUENCE.length;
+  const elapsedMs = elapsedSince(currentQaProgress.startedAtMs);
+  const estimates = currentQaProgress.estimates || BASELINE_TEST_DURATIONS_MS;
+  const currentTestIndex = currentQaProgress.currentTestIndex || Math.min(currentQaProgress.completedResults.length + 1, totalTests);
+  const currentTest = currentQaProgress.currentTest || TEST_SEQUENCE[currentTestIndex - 1] || "";
+  const currentTestStartedAtMs = currentQaProgress.currentTestStartedAtMs || now;
+  const currentTestElapsedMs = Math.max(0, now - currentTestStartedAtMs);
+  const currentEstimateMs = estimates[currentTest] || BASELINE_TEST_DURATIONS_MS[currentTest] || 1_000;
+  const completedEstimateMs = currentQaProgress.completedResults.reduce((sum, result) => {
+    return sum + (estimates[result.name] || BASELINE_TEST_DURATIONS_MS[result.name] || result.durationMs || 0);
+  }, 0);
+  const currentProgressMs = currentTest
+    ? Math.min(currentTestElapsedMs, currentEstimateMs)
+    : 0;
+  const totalEstimatedMs = TEST_SEQUENCE.reduce((sum, name) => {
+    return sum + (estimates[name] || BASELINE_TEST_DURATIONS_MS[name] || 0);
+  }, 0);
+  const remainingAfterCurrentMs = TEST_SEQUENCE
+    .slice(Math.max(currentTestIndex, 0))
+    .reduce((sum, name) => sum + (estimates[name] || BASELINE_TEST_DURATIONS_MS[name] || 0), 0);
+  const estimatedRemainingMs = Math.max(0, currentEstimateMs - currentTestElapsedMs) + remainingAfterCurrentMs;
+  const percentComplete = totalEstimatedMs > 0
+    ? Math.max(0, Math.min(99, Math.round(((completedEstimateMs + currentProgressMs) / totalEstimatedMs) * 100)))
+    : 0;
+
+  return {
+    inProgress: true,
+    currentTest,
+    currentTestIndex,
+    totalTests,
+    elapsedMs,
+    estimatedRemainingMs,
+    percentComplete,
   };
 }
 
@@ -483,31 +643,131 @@ async function calculateEstimatedCost(prisma, state, runStartedAt) {
   }
 }
 
+async function getTriggeredBy(prisma, req) {
+  const sessionEmail = req.session?.user?.email;
+  if (typeof sessionEmail === "string" && sessionEmail.trim()) {
+    return sessionEmail.trim().toLowerCase();
+  }
+
+  const userId = req.session?.user?.id;
+  if (!userId) {
+    return "unknown";
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    return user?.email || userId;
+  } catch (error) {
+    console.error("[qa] Failed to resolve admin trigger email:", error);
+    return userId;
+  }
+}
+
+async function saveQaRun(prisma, {
+  target,
+  ranAt,
+  totalDurationMs,
+  passed,
+  failed,
+  skipped,
+  estimatedCostUsd,
+  triggeredBy,
+  results,
+}) {
+  try {
+    return await prisma.qaRun.create({
+      data: {
+        target,
+        ranAt,
+        totalDurationMs,
+        passed,
+        failed,
+        skipped,
+        estimatedCostUsd,
+        triggeredBy,
+        results: {
+          create: results.map((result, index) => ({
+            testName: result.name,
+            status: result.status,
+            message: result.message,
+            durationMs: result.durationMs,
+            order: getTestOrder(result.name) || index + 1,
+          })),
+        },
+      },
+      include: {
+        results: {
+          orderBy: { order: "asc" },
+        },
+      },
+    });
+  } catch (error) {
+    console.error("[qa] Failed to save QA run history:", error);
+    return null;
+  }
+}
+
 async function runStep(results, name, fn) {
   const startedAt = Date.now();
+  setCurrentQaTest(name);
 
   try {
     const message = await fn();
-    results.push(createResult(name, "pass", message || `${name} passed`, elapsedSince(startedAt)));
+    const result = createResult(name, "pass", message || `${name} passed`, elapsedSince(startedAt));
+    results.push(result);
+    recordQaProgressResult(result);
     return true;
   } catch (error) {
     const message = error?.message || `${name} failed`;
-    results.push(createResult(name, "fail", message, elapsedSince(startedAt)));
+    const result = createResult(name, "fail", message, elapsedSince(startedAt));
+    results.push(result);
+    recordQaProgressResult(result);
     return false;
   }
 }
 
 function skipStep(results, name, message) {
-  results.push(createResult(name, "skip", message));
+  const result = createResult(name, "skip", message);
+  results.push(result);
+  recordQaProgressResult(result);
 }
 
 export const createQaRouter = ({ prisma, auth }) => {
   const router = express.Router();
 
+  router.get("/history", async (_req, res) => {
+    try {
+      const runs = await prisma.qaRun.findMany({
+        orderBy: { ranAt: "desc" },
+        include: {
+          results: {
+            orderBy: { order: "asc" },
+          },
+        },
+      });
+
+      return res.json({ runs: runs.map(serializeQaRun) });
+    } catch (error) {
+      console.error("[qa] Failed to fetch QA history:", error);
+      return res.status(500).json({ error: "Failed to fetch QA history" });
+    }
+  });
+
+  router.get("/progress", (_req, res) => {
+    return res.json(getProgressSnapshot());
+  });
+
   router.post("/run", async (req, res) => {
     const target = normalizeTarget(req.body?.target);
     if (!target) {
       return res.status(400).json({ error: "target must be staging or production" });
+    }
+
+    if (currentQaProgress?.inProgress) {
+      return res.status(409).json({ error: "A QA run is already in progress" });
     }
 
     const rateLimitState = getRateLimitState(req);
@@ -524,6 +784,8 @@ export const createQaRouter = ({ prisma, auth }) => {
     const runStartedAt = new Date();
     const runStartedMs = Date.now();
     const results = [];
+    const triggeredBy = await getTriggeredBy(prisma, req);
+    const durationEstimates = await getQaDurationEstimates(prisma);
     const state = {
       baseUrl: getTargetBaseUrl(target),
       qaCookieHeader: "",
@@ -532,6 +794,14 @@ export const createQaRouter = ({ prisma, auth }) => {
       jobId: "",
       generationJobIds: [],
     };
+
+    beginQaProgress({ target, triggeredBy, estimates: durationEstimates });
+    const progressStartedAtMs = currentQaProgress?.startedAtMs;
+    res.on("finish", () => {
+      if (currentQaProgress?.startedAtMs === progressStartedAtMs) {
+        clearQaProgress();
+      }
+    });
 
     let shouldContinue = true;
 
@@ -644,15 +914,30 @@ export const createQaRouter = ({ prisma, auth }) => {
     const totalDurationMs = elapsedSince(runStartedMs);
     const passed = results.filter((result) => result.status === "pass").length;
     const failed = results.filter((result) => result.status === "fail").length;
+    const skipped = getSkippedCount(results);
+    const savedRun = await saveQaRun(prisma, {
+      target,
+      ranAt: runStartedAt,
+      totalDurationMs,
+      passed,
+      failed,
+      skipped,
+      estimatedCostUsd,
+      triggeredBy,
+      results,
+    });
 
     return res.json({
+      id: savedRun?.id || null,
       target,
       ranAt: runStartedAt.toISOString(),
       totalDurationMs,
       passed,
       failed,
+      skipped,
       results,
       estimatedCostUsd,
+      triggeredBy,
     });
   });
 
