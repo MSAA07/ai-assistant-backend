@@ -693,8 +693,7 @@ async function requestPdfExport(baseUrl, cookieHeader, documentId) {
   }
 }
 
-async function checkAdminEndpoints(baseUrl, req) {
-  const adminCookieHeader = req.headers.cookie || "";
+async function checkAdminEndpoints(baseUrl, adminCookieHeader) {
   const adminHeaders = buildCookieHeaders(adminCookieHeader);
   const endpoints = ["/api/admin/users", "/api/admin/jobs", "/api/admin/usage"];
 
@@ -1045,6 +1044,9 @@ export const createQaRouter = ({ prisma, auth }) => {
       });
     }
 
+    const adminCookieHeader = req.headers.cookie || "";
+
+    void (async () => {
     const runStartedAt = new Date();
     const runStartedMs = Date.now();
     const results = [];
@@ -1062,11 +1064,6 @@ export const createQaRouter = ({ prisma, auth }) => {
 
     beginQaProgress({ target, triggeredBy, estimates: durationEstimates });
     const progressStartedAtMs = currentQaProgress?.startedAtMs;
-    res.on("finish", () => {
-      if (currentQaProgress?.startedAtMs === progressStartedAtMs) {
-        clearQaProgress();
-      }
-    });
 
     let canRunAuthenticatedTests = true;
 
@@ -1233,7 +1230,7 @@ export const createQaRouter = ({ prisma, auth }) => {
       });
 
       await runStep(results, TEST_NAMES.adminHealth, async () => {
-        await checkAdminEndpoints(state.baseUrl, req);
+        await checkAdminEndpoints(state.baseUrl, adminCookieHeader);
         return "Users, jobs, and usage admin endpoints returned 200";
       });
     }
@@ -1264,7 +1261,7 @@ export const createQaRouter = ({ prisma, auth }) => {
       results,
     });
 
-    return res.json({
+    const finalResult = {
       id: savedRun?.id || null,
       target,
       ranAt: runStartedAt.toISOString(),
@@ -1275,6 +1272,29 @@ export const createQaRouter = ({ prisma, auth }) => {
       results,
       estimatedCostUsd,
       triggeredBy,
+    };
+
+    console.info("[qa] QA run completed", {
+      id: finalResult.id,
+      target,
+      passed,
+      failed,
+      skipped,
+      totalDurationMs,
+    });
+
+    if (currentQaProgress?.startedAtMs === progressStartedAtMs) {
+      clearQaProgress();
+    }
+    })().catch((error) => {
+      console.error("[qa] QA run failed unexpectedly:", error);
+      clearQaProgress();
+    });
+
+    return res.status(202).json({
+      started: true,
+      target,
+      totalTests: TEST_SEQUENCE.length,
     });
   });
 
