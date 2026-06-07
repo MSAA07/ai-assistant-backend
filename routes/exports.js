@@ -5,36 +5,7 @@ import path from "path";
 import { captureSentryException } from "../utils/sentry.js";
 import { downloadFileToTmp, safeUnlink } from "../utils/storage.js";
 import { serializeExportArtifact } from "../utils/phase2Exports.js";
-
-function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-
-  return Math.min(Math.max(parsed, min), max);
-}
-
-async function getOwnedExamRecord(prisma, examId, userId) {
-  const examRecord = await prisma.examRecord.findUnique({
-    where: { id: examId },
-    include: {
-      document: {
-        select: { userId: true },
-      },
-    },
-  });
-
-  if (!examRecord) {
-    return { status: 404, error: "Exam not found" };
-  }
-
-  if (examRecord.document.userId !== userId) {
-    return { status: 403, error: "Access denied" };
-  }
-
-  return { examRecord };
-}
+import { normalizePositiveInteger, getOwnedExamRecord } from "../utils/routeHelpers.js";
 
 async function getOwnedAttempt(prisma, attemptId, userId) {
   const attempt = await prisma.examAttempt.findUnique({

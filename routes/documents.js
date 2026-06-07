@@ -34,6 +34,7 @@ import {
   normalizeUploadedFilename,
 } from "../utils/filenames.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
+import { normalizePositiveInteger } from "../utils/routeHelpers.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -151,15 +152,6 @@ function jsonError(res, error, fallbackMessage) {
   });
 }
 
-function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-
-  return Math.min(Math.max(parsed, min), max);
-}
-
 async function queueGenerationJob(tx, { documentId, userId, generationType, options, regenerate }) {
   await tx.$queryRaw`
     SELECT "id"
@@ -272,13 +264,6 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       const file = req.file;
       const user = req.session.user;
       const originalName = normalizeUploadedFilename(file?.originalname);
-
-      console.log("Upload request received:", {
-        userId: user?.id,
-        fileName: originalName,
-        fileType: file?.mimetype,
-        fileSize: file?.size,
-      });
 
       if (!file) {
         return res.status(400).json({ error: "No file uploaded" });

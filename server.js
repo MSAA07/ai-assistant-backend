@@ -25,10 +25,6 @@ import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "
 
 dotenv.config();
 
-// Debugging for Railway deployment
-console.log('OPENAI_API_KEY exists:', !!process.env.OPENAI_API_KEY);
-console.log('OPENAI_API_KEY length:', process.env.OPENAI_API_KEY?.length || 0);
-
 initSentry({ serviceName: "backend" });
 
 const app = express();
