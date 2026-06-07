@@ -10,10 +10,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const QA_TESTS_DIR = path.resolve(__dirname, "../tests");
-const QA_RATE_LIMIT_MS = 5 * 60 * 1000;
 const QA_EMAIL = "qa@studymaxing.com";
 const QA_PASSWORD = "tester123";
 const QA_SCHEDULE_FREQUENCIES = new Set([30, 60, 180, 360, 720, 1440]);
+const QA_RATE_LIMITS_MS = Object.freeze({
+  health: 1 * 60 * 1000,
+  pipeline: 3 * 60 * 1000,
+  full: 5 * 60 * 1000,
+});
 
 const QA_ACCOUNT = Object.freeze({
   email: QA_EMAIL,
@@ -482,24 +486,37 @@ function getAdminSessionKey(req) {
 
 function pruneRateLimits(now = Date.now()) {
   for (const [key, timestamp] of qaRunRateLimit.entries()) {
-    if (now - timestamp > QA_RATE_LIMIT_MS) {
+    if (now - timestamp > Math.max(...Object.values(QA_RATE_LIMITS_MS))) {
       qaRunRateLimit.delete(key);
     }
   }
 }
 
-function getRateLimitState(req) {
+function getRateLimitTier(tier) {
+  return tier === "optimized" ? "full" : tier;
+}
+
+function getRateLimitLabel(tier) {
+  const rateLimitTier = getRateLimitTier(tier);
+  if (rateLimitTier === "health") return "Health check";
+  if (rateLimitTier === "pipeline") return "Pipeline check";
+  return "Full QA";
+}
+
+function getRateLimitState(req, tier) {
   const now = Date.now();
   pruneRateLimits(now);
-  const key = getAdminSessionKey(req);
+  const rateLimitTier = getRateLimitTier(tier);
+  const cooldownMs = QA_RATE_LIMITS_MS[rateLimitTier] || QA_RATE_LIMITS_MS.full;
+  const key = `${getAdminSessionKey(req)}:${rateLimitTier}`;
   const lastRunAt = qaRunRateLimit.get(key) || 0;
   const elapsedMs = now - lastRunAt;
 
-  if (lastRunAt && elapsedMs < QA_RATE_LIMIT_MS) {
+  if (lastRunAt && elapsedMs < cooldownMs) {
     return {
       limited: true,
       key,
-      retryAfterMs: QA_RATE_LIMIT_MS - elapsedMs,
+      retryAfterMs: cooldownMs - elapsedMs,
     };
   }
 
@@ -1789,18 +1806,18 @@ export async function initializeQaScheduler({ prisma, auth }) {
   }
 }
 
-function ensureRunCanStart(req, res) {
+function ensureRunCanStart(req, res, tier) {
   if (currentQaProgress?.inProgress) {
     res.status(409).json({ error: "A QA run is already in progress" });
     return false;
   }
 
-  const rateLimitState = getRateLimitState(req);
+  const rateLimitState = getRateLimitState(req, tier);
   if (rateLimitState.limited) {
     const retryAfterSeconds = Math.max(1, Math.ceil(rateLimitState.retryAfterMs / 1000));
     res.setHeader("Retry-After", String(retryAfterSeconds));
     res.status(429).json({
-      error: "QA was run recently",
+      error: `${getRateLimitLabel(tier)} was run recently. Please wait ${Math.max(1, Math.ceil(retryAfterSeconds / 60))} minutes before running again.`,
       retryAfterSeconds,
       retryAfterMinutes: Math.max(1, Math.ceil(retryAfterSeconds / 60)),
     });
@@ -1862,7 +1879,7 @@ export const createQaRouter = ({ prisma, auth }) => {
       return res.status(400).json({ error: "target must be staging or production" });
     }
 
-    if (!ensureRunCanStart(req, res)) {
+    if (!ensureRunCanStart(req, res, tier)) {
       return null;
     }
 
