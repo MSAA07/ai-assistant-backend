@@ -20,26 +20,21 @@ import {
 } from "../utils/documentGeneration.js";
 import { reconcileDocumentProcessingState, serializeDocument } from "../utils/documentStatus.js";
 import { isFeatureEnabledIfConfigured } from "../utils/featureFlags.js";
-import {
-  assertCanStartGeneration,
-  assertCanUploadDocument,
-} from "../utils/limits.js";
+import { getMonthlyLimit } from "../utils/limits.js";
 import { captureSentryException } from "../utils/sentry.js";
 import {
   buildStudyPdfBuffer,
   buildStudyPdfFileName,
   hasStudyExportContent,
   normalizeStudyExportFeature,
-  STUDY_PDF_LAYOUT_VERSION,
 } from "../utils/studyPdf.js";
 import {
   getStorageFileExtension,
   normalizeDocumentName,
   normalizeUploadedFilename,
 } from "../utils/filenames.js";
-import { buildAttachmentContentDisposition } from "../utils/httpHeaders.js";
-import { startJobStage } from "../utils/jobStageEvents.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
+import { normalizePositiveInteger } from "../utils/routeHelpers.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -54,9 +49,7 @@ const storage = multer.diskStorage({
     cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
-    file.rawOriginalName = typeof file.originalname === "string" ? file.originalname : "";
-    const normalizedOriginalName = normalizeUploadedFilename(file.rawOriginalName);
-    file.safeDisplayName = normalizeDocumentName(file.rawOriginalName) || normalizedOriginalName;
+    const normalizedOriginalName = normalizeUploadedFilename(file.originalname);
     file.originalname = normalizedOriginalName;
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
     cb(null, `${uniqueSuffix}${getStorageFileExtension(normalizedOriginalName)}`);
@@ -106,27 +99,6 @@ const documentDetailsInclude = {
   },
 };
 
-function serializeLatestExamAttempt(attempt) {
-  if (!attempt) return null;
-
-  const score = Number(attempt.score);
-  const totalQuestions = Number(attempt.totalQuestions);
-  const safeScore = Number.isFinite(score) ? score : 0;
-  const safeTotal = Number.isFinite(totalQuestions) && totalQuestions > 0 ? totalQuestions : 0;
-
-  return {
-    id: attempt.id,
-    documentId: attempt.documentId,
-    examRecordId: attempt.examRecordId,
-    score: safeScore,
-    totalQuestions: safeTotal,
-    scorePercent: safeTotal > 0 ? Math.round((safeScore / safeTotal) * 100) : null,
-    status: attempt.status,
-    submittedAt: attempt.submittedAt,
-    completedAt: attempt.completedAt,
-  };
-}
-
 const resetMonthlyUsageIfNeeded = async (prisma, user) => {
   const now = new Date();
   const lastReset = new Date(user.lastReset);
@@ -175,25 +147,9 @@ async function getAuthorizedDocument(prisma, documentId, user, queryOptions = {}
 
 function jsonError(res, error, fallbackMessage) {
   const statusCode = error?.statusCode || 500;
-  const payload = {
+  return res.status(statusCode).json({
     error: error?.message || fallbackMessage,
-  };
-  if (error?.code) {
-    payload.code = error.code;
-  }
-  if (error?.allowance) {
-    payload.allowance = error.allowance;
-  }
-  return res.status(statusCode).json(payload);
-}
-
-function normalizePositiveInteger(value, fallback, { min = 1, max = 100 } = {}) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-
-  return Math.min(Math.max(parsed, min), max);
+  });
 }
 
 async function queueGenerationJob(tx, { documentId, userId, generationType, options, regenerate }) {
@@ -247,8 +203,6 @@ async function queueGenerationJob(tx, { documentId, userId, generationType, opti
     };
   }
 
-  await assertCanStartGeneration(tx, userId);
-
   if (latestGeneration) {
     await tx.documentGeneration.update({
       where: { id: latestGeneration.id },
@@ -281,12 +235,6 @@ async function queueGenerationJob(tx, { documentId, userId, generationType, opti
       },
     },
   });
-  await startJobStage(tx, {
-    jobId: job.id,
-    stageName: "queued",
-    attemptNumber: 1,
-    startedAt: job.queuedAt,
-  });
 
   const linkedGeneration = await tx.documentGeneration.update({
     where: { id: generation.id },
@@ -317,11 +265,6 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       const user = req.session.user;
       const originalName = normalizeUploadedFilename(file?.originalname);
 
-      console.log("[upload] file received", {
-        sizeBytes: file?.size,
-        mimeType: file?.mimetype,
-      });
-
       if (!file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
@@ -342,11 +285,15 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         dbUser.storageUsed = BigInt(0);
       }
 
-      try {
-        await assertCanUploadDocument(prisma, user.id);
-      } catch (limitError) {
+      const monthlyLimit = getMonthlyLimit(dbUser);
+      if (!isAdminUser(dbUser) && dbUser.documentsUsed >= monthlyLimit) {
         await fs.unlink(file.path).catch(() => {});
-        throw limitError;
+        return res.status(403).json({
+          error: "Monthly upload limit reached",
+          details: dbUser.plan === "premium" || dbUser.role === "admin"
+            ? "Upgrade for more"
+            : "Free limit reached",
+        });
       }
 
       const { key } = await uploadFile(file.path, user.id, originalName, file.mimetype);
@@ -357,8 +304,6 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
       try {
         const persisted = await prisma.$transaction(async (tx) => {
-          await assertCanUploadDocument(tx, user.id);
-
           const createdDocument = await tx.document.create({
             data: {
               userId: user.id,
@@ -397,12 +342,6 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
               payload: jobPayload,
               status: "queued",
             },
-          });
-          await startJobStage(tx, {
-            jobId: createdJob.id,
-            stageName: "queued",
-            attemptNumber: 1,
-            startedAt: createdJob.queuedAt,
           });
 
           const linkedDocument = await tx.document.update({
@@ -453,12 +392,9 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         tags: { route: "documents", action: "upload" },
         user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
       });
-      const statusCode = error?.statusCode || 500;
-      res.status(statusCode).json({
-        error: statusCode === 500 ? "Failed to process document" : error.message,
+      res.status(500).json({
+        error: "Failed to process document",
         details: error.message,
-        code: error?.code,
-        allowance: error?.allowance,
       });
     }
   });
@@ -561,36 +497,11 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
   router.get("/document/:id", requireAuth, async (req, res) => {
     try {
       const document = await getAuthorizedDocument(prisma, req.params.id, req.session.user, documentDetailsInclude);
-      const latestExamAttempt = await prisma.examAttempt.findFirst({
-        where: {
-          documentId: document.id,
-          userId: req.session.user.id,
-          status: "submitted",
-        },
-        select: {
-          id: true,
-          documentId: true,
-          examRecordId: true,
-          score: true,
-          totalQuestions: true,
-          status: true,
-          submittedAt: true,
-          completedAt: true,
-        },
-        orderBy: [
-          { submittedAt: "desc" },
-          { completedAt: "desc" },
-          { startedAt: "desc" },
-        ],
-      });
 
       res.json({
-        document: {
-          ...serializeDocument(document, {
-            excerptCount: document._count?.excerpts ?? 0,
-          }),
-          latestExamAttempt: serializeLatestExamAttempt(latestExamAttempt),
-        },
+        document: serializeDocument(document, {
+          excerptCount: document._count?.excerpts ?? 0,
+        }),
       });
     } catch (error) {
       console.error("Error fetching document:", error);
@@ -626,9 +537,8 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       const fileName = buildStudyPdfFileName(serializedDocument, feature);
 
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", buildAttachmentContentDisposition(fileName, `${feature}.pdf`));
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
       res.setHeader("Content-Length", pdfBuffer.length);
-      res.setHeader("X-Study-Pdf-Layout-Version", STUDY_PDF_LAYOUT_VERSION);
       return res.send(pdfBuffer);
     } catch (error) {
       console.error("Error exporting study PDF:", error);

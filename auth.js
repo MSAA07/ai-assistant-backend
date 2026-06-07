@@ -18,7 +18,6 @@ import {
 import { sendTransactionalEmail } from "./utils/email.js";
 import { captureSentryException } from "./utils/sentry.js";
 import { maskEmailAddress, recordAuthEvent, recordAuthFailure } from "./utils/authTelemetry.js";
-import { sendTelegramAdminNotification } from "./utils/telegramNotify.js";
 
 const prisma = new PrismaClient();
 
@@ -71,36 +70,10 @@ async function sendAuthEmail(sendPromise, context, metadata = {}) {
   }
 }
 
-function notifyNewUserSignup(user) {
-  if (!user?.id && !user?.email) {
-    return;
-  }
-
-  void sendTelegramAdminNotification({
-    eventType: "new_user_signup",
-    user: {
-      id: user.id,
-      email: user.email,
-    },
-    timestamp: new Date(user.createdAt || Date.now()).toISOString(),
-  }).catch((error) => {
-    console.error("[auth] Telegram signup notification failed:", error);
-  });
-}
-
 export const auth = betterAuth({
   database: prismaAdapter(prisma, {
     provider: "postgresql", 
   }),
-  databaseHooks: {
-    user: {
-      create: {
-        async after(user) {
-          notifyNewUserSignup(user);
-        },
-      },
-    },
-  },
   baseURL: resolvedBetterAuthBaseURL,
   emailAndPassword: {
     enabled: true,

@@ -5,21 +5,16 @@ const LOCAL_FRONTEND_ORIGINS = [
   "http://127.0.0.1:5174",
 ];
 
-const PRODUCTION_FRONTEND_ORIGINS = [
+const isProduction = process.env.NODE_ENV === "production";
+
+const DEPLOYED_FRONTEND_ORIGINS = [
+  "https://my-ai-assistant-ypzx.vercel.app",
+  "https://my-ai-assistant-taupe.vercel.app",
+  "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
   "https://my-ai-assistant-git-production-mohammed-abushayiqahs-projects.vercel.app",
   "https://my-ai-assistant.vercel.app",
   "https://studymaxing.com",
   "https://www.studymaxing.com",
-];
-
-const STAGING_FRONTEND_ORIGINS = [
-  "https://my-ai-assistant-git-stage-mohammed-abushayiqahs-projects.vercel.app",
-];
-
-const PREVIEW_FRONTEND_ORIGINS = [
-  "https://my-ai-assistant-ypzx.vercel.app",
-  "https://my-ai-assistant-taupe.vercel.app",
-  ...STAGING_FRONTEND_ORIGINS,
 ];
 
 const REMOVED_FRONTEND_ORIGINS = new Set([
@@ -39,7 +34,7 @@ function parseOriginList(raw = "") {
 }
 
 export function isAllowedVercelPreviewOrigin(origin = "") {
-  if (process.env.NODE_ENV === "production") {
+  if (isProduction) {
     return false;
   }
 
@@ -53,19 +48,16 @@ export function isAllowedVercelPreviewOrigin(origin = "") {
 }
 
 export function getAllowedFrontendOrigins() {
-  const environmentOrigins = parseOriginList(process.env.FRONTEND_ORIGINS || "");
-  const developmentOrigins = process.env.NODE_ENV === "development"
-    ? [
-        ...LOCAL_FRONTEND_ORIGINS,
-        ...PREVIEW_FRONTEND_ORIGINS,
-      ]
-    : [];
+  const deployedOrigins = isProduction
+    ? DEPLOYED_FRONTEND_ORIGINS.filter((origin) =>
+      origin === "https://studymaxing.com"
+      || origin === "https://www.studymaxing.com")
+    : DEPLOYED_FRONTEND_ORIGINS;
 
   return [
-    ...PRODUCTION_FRONTEND_ORIGINS,
-    ...STAGING_FRONTEND_ORIGINS,
-    ...environmentOrigins,
-    ...developmentOrigins,
+    ...(isProduction ? [] : LOCAL_FRONTEND_ORIGINS),
+    ...deployedOrigins,
+    ...parseOriginList(process.env.FRONTEND_ORIGINS || ""),
   ].filter((origin) => !REMOVED_FRONTEND_ORIGINS.has(origin));
 }
 
