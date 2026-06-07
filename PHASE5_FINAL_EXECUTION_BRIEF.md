@@ -10,6 +10,10 @@ Current runtime truth now lives in:
 - `PROJECT_STRUCTURE.md`
 - `README.md`
 
+## Current State Note
+
+As of June 7, 2026, this remains the historical execution brief for the prompt/routing rollout. The live backend has added admin QA tiers, persisted QA history, automatic health monitoring, Telegram delivery, Mistral OCR fallback, and auth email templates after this brief; use the current docs above for those runtime details.
+
 ## Objective
 
 Implement the final AI prompt-engineering and routing rollout for study generation end to end within the existing backend architecture. Preserve current API contracts unless a change is clearly required. Preserve lifecycle ownership: `Document.processingStatus` for document processing, `Job.status` with `progressPct` for execution lifecycle, and `DocumentGeneration` for generation lifecycle. Preserve canonical flashcard and exam records. Keep regeneration compatible with `options.regenerationGuidance`. Call out any persisted contract or Prisma model change as a migration before release. Mention legacy compatibility routes only if they are touched.

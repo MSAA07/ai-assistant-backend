@@ -10,6 +10,7 @@ Backend API and worker stack for the AI Study Assistant.
 - worker-driven extraction and generation
 - canonical study records and compatibility mirrors
 - Mistral OCR fallback for scanned/image-based PDFs via `@mistralai/mistralai` SDK
+- admin QA runner, QA history, and automatic health monitoring
 - Railway deployment configuration
 
 ## Quick Orientation
@@ -24,6 +25,7 @@ Backend API and worker stack for the AI Study Assistant.
 - `GENERATION_PIPELINE_V2` enables the summary study-guide pipeline: extract signals, analyze a global chapter map, synthesize once, optimize for exams, and enforce format
 - prompt versions, routing metadata, rollout metadata, and benchmark linkage are persisted in existing internal metadata surfaces
 - free, pro, and premium generation behavior is policy-based inside the same backend path
+- admin QA supports independent health, pipeline, and full tiers with persisted run history
 - server entry is `server.js`
 - worker entry is `worker.js`
 
@@ -38,6 +40,9 @@ npm run db:push
 npm run db:studio
 npm run seed
 npm run phase2:backfill
+npm run auth:check-config
+npm run telegram:setup-webhook
+npm run telegram:test-alert
 ```
 
 Required environment variables:
@@ -68,6 +73,9 @@ Optional environment variables:
 - auth email callback targets are backend-owned `/auth/verify-email` and `/auth/reset-password` bridge URLs; the final frontend destination can still be controlled by frontend env overrides or `AUTH_EMAIL_APP_URL`
 - `ADMIN_EMAILS`
 - `FRONTEND_ORIGINS` (comma-separated extra allowed frontend origins when needed)
+- `QA_STAGING_API_BASE_URL`
+- `QA_PRODUCTION_API_BASE_URL`
+- `QA_API_BASE_URL` (fallback for both QA targets)
 - `R2_ENDPOINT`
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
@@ -99,6 +107,7 @@ Production frontend origins expected by auth/CORS:
 - `SYSTEM_OVERVIEW.md`: lifecycle, runtime, routes, and architecture
 - `PROJECT_STRUCTURE.md`: file and folder ownership
 - `agent.md` / `AGENTS.md`: contributor operating instructions
+- `docs/PDF_LAYOUT_SPEC.md`: current PDF export layout contract used by `utils/studyPdf.js`
 - `PHASE1_PROMPT_ENGINEERING.md`, `PHASE3_MODEL_ROUTING_BENCHMARK.md`, `PHASE4_ROLLOUT_VALIDATION.md`, `PHASE5_FINAL_EXECUTION_BRIEF.md`: archival rollout records, not the live runtime source of truth
 
 ## Auth Config Check
@@ -111,4 +120,4 @@ npm run auth:check-config
 
 It prints the resolved Better Auth base URL plus the frontend origins allowed by both Better Auth and Express CORS.
 
-Last Updated: June 6, 2026
+Last Updated: June 7, 2026

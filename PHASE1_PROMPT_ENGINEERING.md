@@ -10,6 +10,10 @@ Current runtime truth now lives in:
 - `PROJECT_STRUCTURE.md`
 - `README.md`
 
+## Current State Note
+
+As of June 7, 2026, this remains an archival prompt-engineering record. The live backend also includes the admin QA runner, persisted QA run history, health-monitor scheduling, Mistral OCR fallback, Telegram delivery, auth email templates, and current generation/runtime details documented in the live docs above.
+
 ## Scope
 - Applies to backend generation for `summary`, `flashcards`, and `exam`.
 - Does not change lifecycle ownership, Prisma schema, public API contracts, model routing, or pricing-tier behavior.

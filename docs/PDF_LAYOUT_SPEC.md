@@ -108,3 +108,9 @@ Sentence text must not render with empty-line breaks inside a sentence.
 - summary paragraphs are readable and normalized
 - no broken lines exist inside sentences
 - no typography or spacing drift outside the approved scale
+
+## Current State
+
+As of June 7, 2026, this spec still maps to `utils/studyPdf.js`. PDF export remains available through `POST /api/exports/exams`, `GET /api/exports/:id`, and `GET /api/exports/:id/download`; admin QA exercises PDF export in the pipeline and full tiers.
+
+Last Updated: June 7, 2026

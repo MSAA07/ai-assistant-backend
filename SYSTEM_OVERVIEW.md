@@ -47,10 +47,11 @@ API server:
 
 - `server.js`
 - mounts Better Auth under `/api/auth/*`
-- mounts REST routes under `/api/*` (user profile/export at `/api/user`, documents at `/api`, study-data sub-routers at `/api/flashcard`, `/api/exam`, `/api/exports`, Telegram delivery at `/api/telegram` and `/api/document/:id/telegram/*`, admin at `/api/admin`)
+- mounts REST routes under `/api/*` (user profile/export at `/api/user`, documents at `/api`, study-data sub-routers at `/api/flashcard`, `/api/exam`, `/api/exports`, Telegram delivery at `/api/telegram` and `/api/document/:id/telegram/*`, admin at `/api/admin`, admin QA at `/api/admin/qa`)
 - runs schema and document-state reconciliation on startup
+- starts the in-memory admin QA scheduler after the API listener is live
 - uses one shared allowed-origin source for Better Auth trusted origins and Express CORS
-- Better Auth email/password verification emails are sent through the configured transactional email provider
+- Better Auth email/password verification emails are sent through the configured transactional email provider using `utils/authEmailTemplates.js`
 
 Worker:
 
@@ -147,6 +148,23 @@ Behavior:
 - send routes read canonical `FlashcardSet` / `FlashcardCard` and `ExamRecord` / `ExamQuestion`; they do not queue generation, mutate `DocumentGeneration`, or create exam attempts
 - delivery usage is stored in `TelegramDeliveryLog` for admin visibility only; Telegram answers/results are not saved
 
+Admin QA pipeline:
+
+`POST /api/admin/qa/{health|pipeline|full} -> in-memory runner -> target backend -> QaRun/QaRunResult history`
+
+Behavior:
+
+- all QA routes require an authenticated admin session
+- `POST /api/admin/qa/health` runs eight no-AI checks for backend, database, R2 storage, OpenAI, Mistral, Resend, auth, and admin endpoint reachability
+- `POST /api/admin/qa/pipeline` signs in as `qa@studymaxing.com`, uploads `qa-pipeline-test.pdf`, waits for extraction/generation, exports a PDF, deletes the QA document, and signs out
+- `POST /api/admin/qa/full` supports `mode=optimized` and `mode=full`; both run the full file-type and edge-case suite across PDF, DOCX, PPTX, Arabic OCR paths, oversized rejection, corrupt-file handling, PDF export, and admin health
+- health, pipeline, and full tiers have independent in-memory cooldowns of 1 minute, 3 minutes, and 5 minutes respectively; optimized full QA shares the full tier cooldown
+- only one QA run can execute at a time, and `GET /api/admin/qa/progress` returns the active tier label, elapsed time, estimated remaining time, and per-test progress
+- `GET /api/admin/qa/history` returns persisted run history with per-test speed verdicts, thresholds, duration, cost, trigger source, and failure reports
+- `GET /api/admin/qa/schedule` and `POST /api/admin/qa/schedule` read/write `QaScheduleConfig`; the current automatic monitor runs health checks only
+- scheduled health failures can send a raw Telegram admin alert through `TELEGRAM_ADMIN_CHAT_ID`
+- QA fixture generation lives in `scripts/generate-qa-files.js` and `scripts/generate-qa-pdf.js`
+
 ## API Surface
 
 Core Study Hub APIs:
@@ -207,6 +225,7 @@ Admin coverage:
 - feature flags and flag audit
 - benchmark/evaluation annotation for completed generation jobs
 - read-only Telegram connection and delivery usage indicators
+- QA history, active progress, per-tier run endpoints, and automatic health monitor configuration
 
 ## Current Prisma Model Set
 
@@ -242,6 +261,9 @@ Current schema models:
 - `TelegramConnection`
 - `TelegramLinkToken`
 - `TelegramDeliveryLog`
+- `QaRun`
+- `QaRunResult`
+- `QaScheduleConfig`
 
 Current migration folders:
 
@@ -256,6 +278,8 @@ Current migration folders:
 - `20260427030000_phase5_admin_email_alerts`
 - `20260427040000_phase6_admin_controls`
 - `20260511000000_add_telegram_delivery`
+- `20260606000000_add_qa_run_history`
+- `20260607000000_add_qa_tier`
 
 ## Environment Variables
 
@@ -265,11 +289,16 @@ Required:
 - `BETTER_AUTH_SECRET`
 - `BETTER_AUTH_BASE_URL` or `BETTER_AUTH_URL`
 - `OPENAI_API_KEY`
+- `RESEND_API_KEY`
+- `MISTRAL_API_KEY`
 
 Optional core operations:
 
 - `ADMIN_EMAILS`
 - `FRONTEND_ORIGINS`
+- `QA_STAGING_API_BASE_URL`
+- `QA_PRODUCTION_API_BASE_URL`
+- `QA_API_BASE_URL`
 - `R2_ENDPOINT`
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
@@ -283,7 +312,6 @@ Optional auth email and callbacks:
 - `AUTH_EMAIL_REPLY_TO`
 - `AUTH_EMAIL_SUPPORT_EMAIL`
 - `AUTH_EMAIL_APP_URL`
-- `RESEND_API_KEY`
 
 Optional alerting:
 
@@ -304,9 +332,9 @@ Optional Telegram integration:
 - `TELEGRAM_WEBHOOK_URL`
 - `TELEGRAM_ADMIN_CHAT_ID` (admin alerts only; not used for user study delivery)
 
-Optional OCR:
+OCR:
 
-- `MISTRAL_API_KEY` (required on BOTH backend and worker Railway services for scanned PDF OCR fallback)
+- `MISTRAL_API_KEY` must be set on BOTH backend and worker Railway services for scanned PDF OCR fallback
 
 Auth email callback targets are backend-owned `/auth/verify-email` and `/auth/reset-password` bridge URLs. The final frontend destination can still be controlled by frontend env overrides or `AUTH_EMAIL_APP_URL`.
 
@@ -324,5 +352,6 @@ Update this file when any of these change:
 - final execution brief or locked implementation decisions
 - prompt-version persistence or weak-reference resolution behavior
 - Telegram linking, webhook, delivery, or admin usage contracts
+- admin QA tiers, cooldowns, scheduler behavior, persisted QA history, or QA fixtures
 
-Last Updated: June 6, 2026
+Last Updated: June 7, 2026

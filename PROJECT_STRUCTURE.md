@@ -26,11 +26,12 @@ ai-assistant-backend/
 |-- auth.js
 |-- backfill-storage.js
 |-- reset-db.js
-|-- test-extraction.mjs
+|-- docs/
 |-- middleware/
 |-- prisma/
 |-- routes/
 |-- scripts/
+|-- tests/
 `-- utils/
     |-- extractionPipeline.js
     `-- mistralOcr.js
@@ -40,7 +41,7 @@ ai-assistant-backend/
 
 - `server.js`: API entry point and startup reconciliation
 - `worker.js`: extraction/generation worker, retries, heartbeats, stale-job recovery
-- `auth.js`: Better Auth configuration
+- `auth.js`: Better Auth configuration and email-template wiring
 - `backfill-storage.js`: recompute `User.storageUsed`
 - `reset-db.js`: destructive non-production reset helper
 
@@ -54,6 +55,7 @@ ai-assistant-backend/
 - `routes/exports.js`: export artifact routes
 - `routes/telegram.js`: Telegram account linking, webhook handling, and study-material delivery routes
 - `routes/admin.js`: admin APIs for users, files, sessions, analytics, usage, costs, limits, anomalies, feature flags, and generation evaluation annotation
+- `routes/qa.js`: admin-only QA tiers, active progress, persisted history, per-tier cooldowns, and automatic health-monitor scheduling
 
 ## Middleware
 
@@ -94,6 +96,7 @@ Operational support:
 - `utils/frontendOrigins.js`
 - `utils/featureFlags.js`
 - `utils/costGuard.js`
+- `utils/authEmailTemplates.js`
 - `utils/auditLog.js`
 - `utils/sentry.js`
 - `utils/serializers.js`
@@ -118,6 +121,8 @@ Current migration folders:
 - `20260427030000_phase5_admin_email_alerts`
 - `20260427040000_phase6_admin_controls`
 - `20260511000000_add_telegram_delivery`
+- `20260606000000_add_qa_run_history`
+- `20260607000000_add_qa_tier`
 
 ## Scripts
 
@@ -127,7 +132,10 @@ Current migration folders:
 - `scripts/print-auth-config.js`: prints Better Auth base URL and shared allowed-origin config
 - `scripts/diagnose_unicode.js`: unicode diagnostics helper for extracted text issues
 - `scripts/setup-telegram-webhook.js`: registers the Telegram webhook using `TELEGRAM_WEBHOOK_URL` and `TELEGRAM_WEBHOOK_SECRET`
-- `test-extraction.mjs`: standalone local QA tester — runs extraction on files in `test-files/` folder and produces `extraction-report.html` with pass/warn/fail verdicts per file, zero API cost
+- `scripts/send-telegram-test-alert.js`: sends a Telegram admin-alert test message
+- `scripts/send-daily-admin-digest.js`: sends or dry-runs the admin digest
+- `scripts/generate-qa-files.js`: creates deterministic QA fixtures used by admin QA
+- `scripts/generate-qa-pdf.js`: creates the pipeline PDF fixture used by admin QA
 
 ## Structure Notes
 
@@ -137,6 +145,7 @@ Current migration folders:
 - `utils/extractionPipeline.js` sanitizes extracted excerpt content before `DocumentExcerpt` persistence so invalid UTF-8 control bytes do not reach PostgreSQL.
 - Prompt/version, rollout, and benchmark traceability reuse existing JSON metadata surfaces and do not add new Prisma models.
 - Telegram user study delivery is linked per user through `TelegramConnection` and logged through `TelegramDeliveryLog`; `TELEGRAM_ADMIN_CHAT_ID` remains admin-alert-only.
+- Admin QA run history is persisted in `QaRun` and `QaRunResult`; automatic health monitor state is persisted in `QaScheduleConfig`, while active progress and cooldowns remain in-memory per API process.
 - Backend phase markdown files in the repo root are archival rollout records. Use `SYSTEM_OVERVIEW.md` and `PROJECT_STRUCTURE.md` for live runtime truth.
 
-Last Updated: June 6, 2026
+Last Updated: June 7, 2026

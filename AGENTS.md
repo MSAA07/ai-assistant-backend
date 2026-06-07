@@ -22,6 +22,9 @@ Use these source-of-truth docs instead:
 - `npm run db:studio`
 - `npm run seed`
 - `npm run phase2:backfill`
+- `npm run auth:check-config`
+- `npm run telegram:setup-webhook`
+- `npm run telegram:test-alert`
 
 ## Documentation Triggers
 
@@ -30,6 +33,7 @@ Update docs when:
 - runtime truth changes: `SYSTEM_OVERVIEW.md`
 - structure changes: `PROJECT_STRUCTURE.md`
 - onboarding/setup changes: `README.md`
+- admin QA tiers, cooldowns, scheduler, or persisted QA history changes: `SYSTEM_OVERVIEW.md`, `PROJECT_STRUCTURE.md`, and `README.md`
 - agent workflow changes: `AGENTS.md` / `agent.md`
 
-Last Updated: March 28, 2026
+Last Updated: June 7, 2026

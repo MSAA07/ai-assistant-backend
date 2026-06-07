@@ -10,6 +10,10 @@ Current runtime truth now lives in:
 - `PROJECT_STRUCTURE.md`
 - `README.md`
 
+## Current State Note
+
+As of June 7, 2026, this remains the historical benchmark definition for routing decisions. The live codebase additionally contains the admin QA runner and persisted QA history used for operational validation, but this archival benchmark matrix is not the live route or schema source of truth.
+
 This benchmark definition is the fixed evaluation rule for model-routing decisions in Phase 3.
 
 ## Benchmark set

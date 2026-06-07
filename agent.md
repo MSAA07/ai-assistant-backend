@@ -24,6 +24,7 @@ For rollout history:
 - Keep lifecycle ownership explicit in code and docs.
 - Use transactions for coupled updates.
 - Use serializer helpers instead of hand-rolling document/generation responses.
+- Keep admin QA tier behavior, persisted QA history, and scheduler behavior documented when changed.
 - Update docs when route contracts, Prisma ownership, or lifecycle behavior changes.
 
 ## Commands
@@ -35,6 +36,9 @@ For rollout history:
 - `npm run db:studio`
 - `npm run seed`
 - `npm run phase2:backfill`
+- `npm run auth:check-config`
+- `npm run telegram:setup-webhook`
+- `npm run telegram:test-alert`
 
 ## Environment
 
@@ -52,13 +56,17 @@ Optional:
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
 - `R2_BUCKET_NAME`
-- `MISTRAL_API_KEY` (Mistral OCR fallback — must be set on both backend and worker Railway services)
+- `MISTRAL_API_KEY` (Mistral OCR fallback - must be set on both backend and worker Railway services)
+- `RESEND_API_KEY`
+- `QA_STAGING_API_BASE_URL`
+- `QA_PRODUCTION_API_BASE_URL`
 
 ## Documentation Triggers
 
 - runtime or lifecycle truth: update `SYSTEM_OVERVIEW.md`
 - file ownership: update `PROJECT_STRUCTURE.md`
 - onboarding/setup: update `README.md`
+- admin QA tiers, cooldowns, scheduler, or persisted QA history: update `SYSTEM_OVERVIEW.md`, `PROJECT_STRUCTURE.md`, and `README.md`
 - agent workflow rules: update `agent.md` / `AGENTS.md`
 
-Last Updated: June 6, 2026
+Last Updated: June 7, 2026

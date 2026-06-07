@@ -10,6 +10,10 @@ Current runtime truth now lives in:
 - `PROJECT_STRUCTURE.md`
 - `README.md`
 
+## Current State Note
+
+As of June 7, 2026, this remains an archival rollout-validation plan. The live backend has since added persisted QA history, tiered admin QA endpoints, automatic health-monitor scheduling, Telegram study delivery, and auth email templates; those live behaviors are documented in the current source-of-truth docs above.
+
 ## Objective
 
 Introduce the prompt-layer improvements and model-routing policy safely without changing current lifecycle ownership or fragmenting the generation architecture. Preserve current API contracts unless an explicit implementation later requires a contract change. Keep `Document.processingStatus`, `Job.status` with `progressPct`, and `DocumentGeneration` as the lifecycle owners. Keep canonical flashcard and exam record behavior intact. If any persisted contract or Prisma model changes are introduced later, they must be called out as migrations before release.
