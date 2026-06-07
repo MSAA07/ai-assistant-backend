@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
 } from '@aws-sdk/client-s3'
 import fs from 'fs'
 import fsPromises from 'fs/promises'
@@ -121,6 +122,21 @@ export async function downloadFileToTmp(key) {
   const tmpPath = path.join(os.tmpdir(), `${Date.now()}-${filename}`)
   await streamToFile(response.Body, tmpPath)
   return tmpPath
+}
+
+export async function listFiles(prefix = '', maxKeys = 1) {
+  if (!r2) {
+    assertStorageConfiguredForRuntime()
+    throw new Error('R2 storage is not configured')
+  }
+
+  const response = await r2.send(new ListObjectsV2Command({
+    Bucket: BUCKET,
+    Prefix: prefix,
+    MaxKeys: maxKeys,
+  }))
+
+  return response.Contents || []
 }
 
 export async function safeUnlink(filePath) {

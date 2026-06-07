@@ -15,7 +15,7 @@ import { createFlashcardsRouter, createFlashcardSetsRouter } from "./routes/flas
 import { createExamsRouter, createCanonicalExamsRouter } from "./routes/exams.js";
 import { createExportsRouter } from "./routes/exports.js";
 import { createAdminRouter } from "./routes/admin.js";
-import { createQaRouter } from "./routes/qa.js";
+import { createQaRouter, initializeQaScheduler } from "./routes/qa.js";
 import { createJobsRouter } from "./routes/jobs.js";
 import { createTelegramRouter } from "./routes/telegram.js";
 import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
@@ -196,6 +196,9 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`AI Study Assistant API running on port ${PORT}`);
     console.log("Database connected");
+    void initializeQaScheduler({ prisma, auth }).catch((error) => {
+      console.error("Failed to start QA scheduler:", error);
+    });
   });
 }
 

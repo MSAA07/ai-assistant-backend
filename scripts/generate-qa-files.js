@@ -18,6 +18,7 @@ const __dirname = path.dirname(__filename);
 const testsDir = path.resolve(__dirname, "../tests");
 
 const docxPath = path.join(testsDir, "qa-test-english.docx");
+const pipelinePdfPath = path.join(testsDir, "qa-pipeline-test.pdf");
 const oversizedPdfPath = path.join(testsDir, "qa-test-oversized.pdf");
 const corruptPdfPath = path.join(testsDir, "qa-test-corrupt.pdf");
 
@@ -69,6 +70,12 @@ const biologySections = [
 const oversizedParagraphs = [
   "Human physiology examines how cells, tissues, and organs maintain internal stability while responding to changing conditions. Each system contributes to homeostasis through feedback loops that detect variation, compare it with a useful range, and activate responses that restore balance. These principles apply to temperature regulation, fluid balance, glucose control, oxygen delivery, and many other processes essential for life.",
   "Academic study of biology also depends on evidence, measurement, and clear explanation. A concept becomes useful when it can connect molecular mechanisms to observable outcomes in the whole organism. For example, the movement of ions across membranes can explain nerve impulses, muscle contraction, and the regulation of heartbeat. Repeated observations across levels of organization help students build durable scientific understanding.",
+];
+
+const photosynthesisParagraphs = [
+  "Photosynthesis is the process plants use to convert light energy into chemical energy. In green leaves, chlorophyll captures sunlight and helps power reactions that turn carbon dioxide and water into glucose.",
+  "The light-dependent reactions happen in the thylakoid membranes of chloroplasts. These reactions split water molecules, release oxygen, and store energy in molecules that can support the next stage.",
+  "The Calvin cycle uses stored chemical energy to build sugars from carbon dioxide. The sugars can be used for growth, stored as starch, or moved through the plant to support cells that do not photosynthesize.",
 ];
 
 function countWords(text) {
@@ -157,6 +164,35 @@ async function generateDocx() {
   console.log(`Generated ${path.relative(process.cwd(), docxPath)} (${wordCount} words)`);
 }
 
+async function generatePipelinePdf() {
+  await new Promise((resolve, reject) => {
+    const pdf = new PDFDocument({
+      size: "LETTER",
+      margins: { top: 72, right: 72, bottom: 72, left: 72 },
+    });
+    const stream = createWriteStream(pipelinePdfPath);
+    pdf.pipe(stream);
+
+    pdf.fontSize(18).text("Photosynthesis Overview", { align: "center" });
+    pdf.moveDown(1.5);
+
+    for (const paragraph of photosynthesisParagraphs) {
+      pdf.fontSize(12).text(paragraph, {
+        align: "left",
+        lineGap: 5,
+      });
+      pdf.moveDown(0.8);
+    }
+
+    pdf.end();
+    stream.on("finish", resolve);
+    stream.on("error", reject);
+    pdf.on("error", reject);
+  });
+
+  console.log(`Generated ${path.relative(process.cwd(), pipelinePdfPath)} (1 page)`);
+}
+
 async function generateOversizedPdf() {
   await new Promise((resolve, reject) => {
     const pdf = new PDFDocument({
@@ -210,5 +246,6 @@ async function generateCorruptPdf() {
 
 await fs.mkdir(testsDir, { recursive: true });
 await generateDocx();
+await generatePipelinePdf();
 await generateOversizedPdf();
 await generateCorruptPdf();

@@ -598,6 +598,7 @@ model TelegramDeliveryLog {
 model QaRun {
   id               String        @id @default(cuid())
   target           String
+  tier             String        @default("full")
   ranAt            DateTime      @default(now())
   totalDurationMs  Int
   passed           Int
@@ -605,18 +606,32 @@ model QaRun {
   skipped          Int
   estimatedCostUsd Float
   triggeredBy      String
+  failureReport    String?       @db.Text
   results          QaRunResult[]
+
+  @@index([tier, ranAt])
+  @@index([triggeredBy, ranAt])
 }
 
 model QaRunResult {
-  id         String @id @default(cuid())
-  qaRunId    String
-  qaRun      QaRun  @relation(fields: [qaRunId], references: [id], onDelete: Cascade)
-  testName   String
-  status     String
-  message    String
-  durationMs Int
-  order      Int
+  id           String @id @default(cuid())
+  qaRunId      String
+  qaRun        QaRun  @relation(fields: [qaRunId], references: [id], onDelete: Cascade)
+  testName     String
+  status       String
+  message      String
+  durationMs   Int
+  thresholdMs  Int    @default(1000)
+  speedVerdict String @default("fast")
+  order        Int
+}
+
+model QaScheduleConfig {
+  id            String   @id @default(cuid())
+  enabled       Boolean  @default(false)
+  frequencyMins Int      @default(60)
+  tier          String   @default("health")
+  updatedAt     DateTime @updatedAt
 }
 
 enum FeatureEntityType {

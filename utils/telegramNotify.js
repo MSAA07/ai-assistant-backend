@@ -267,6 +267,63 @@ export async function sendTelegramAdminNotification({
   }
 }
 
+export async function sendTelegramRawNotification({
+  text,
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const botToken = env.TELEGRAM_BOT_TOKEN;
+  const chatId = env.TELEGRAM_ADMIN_CHAT_ID;
+  const safeText = String(text || "").trim();
+
+  if (!botToken || !chatId) {
+    return { status: "disabled" };
+  }
+
+  if (!safeText) {
+    return { status: "skipped" };
+  }
+
+  if (typeof fetchImpl !== "function") {
+    console.error("[telegramNotify] fetch is unavailable; skipping Telegram notification");
+    return { status: "failed" };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TELEGRAM_SEND_TIMEOUT_MS);
+
+  try {
+    const response = await fetchImpl(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: safeText,
+        disable_web_page_preview: true,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const body = typeof response.text === "function" ? await response.text() : "";
+      console.error("[telegramNotify] Telegram sendMessage failed:", {
+        status: response.status,
+        body: redactTelegramText(body),
+      });
+      return { status: "failed" };
+    }
+
+    return { status: "sent" };
+  } catch (telegramError) {
+    console.error("[telegramNotify] Telegram notification error:", {
+      error: getErrorSummary(telegramError),
+    });
+    return { status: "failed" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function sendTelegramTestAlert(options = {}) {
   return sendTelegramAdminNotification({
     ...options,
