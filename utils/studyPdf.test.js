@@ -356,6 +356,13 @@ test("paragraph normalization preserves hyphenated compounds while cleaning stra
   );
 });
 
+test("paragraph normalization formats common formula notation", () => {
+  assert.equal(
+    __studyPdfTestables.normalizeParagraphText("8 cm H2O and CO2"),
+    "8 cm H₂O and CO₂",
+  );
+});
+
 test("summary parsing isolates Example Case into its own paragraph block", () => {
   const blocks = __studyPdfTestables.parseSummaryBlocks(
     "Leadership expectations. Example Case: The candidate explains a product outage clearly. Next, they propose a response plan.",

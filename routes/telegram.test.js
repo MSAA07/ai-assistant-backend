@@ -338,7 +338,7 @@ test("flashcard Telegram send validates connection, ownership, readiness, and lo
   assert.equal(sent.data.type, "flashcards");
   assert.equal(sent.data.itemCount, 2);
   assert.equal(prisma.state.telegramDeliveryLogs.at(-1).status, "sent");
-  assert.equal(fetchImpl.calls.some((call) => String(call.text || "").includes("Basic unit of life.")), true);
+  assert.equal(fetchImpl.calls.some((call) => String(call.text || "").includes("Basic unit of life\\.")), true);
 });
 
 test("exam Telegram send validates connection, ownership, readiness, and sends quiz polls", async () => {

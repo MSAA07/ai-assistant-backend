@@ -1,5 +1,6 @@
 import crypto from "crypto";
 
+import { formatStudyText } from "./studyTextFormat.js";
 import { redactTelegramText } from "./telegramNotify.js";
 
 export const TELEGRAM_DELIVERY_TYPES = Object.freeze({
@@ -217,7 +218,7 @@ async function sendLongMessage(chatId, text, options = {}) {
 }
 
 function normalizeComparableAnswer(value, questionType) {
-  const normalized = normalizeString(value).toLowerCase();
+  const normalized = normalizeString(formatStudyText(value)).toLowerCase();
   if (questionType === "true_false") {
     if (normalized === "true" || normalized === "t") return "true";
     if (normalized === "false" || normalized === "f") return "false";
@@ -234,7 +235,7 @@ function getQuestionType(question) {
 function getQuestionOptions(question) {
   const type = getQuestionType(question);
   const options = Array.isArray(question?.options)
-    ? question.options.map(normalizeString).filter(Boolean)
+    ? question.options.map((option) => normalizeString(formatStudyText(option))).filter(Boolean)
     : [];
 
   if (type === "true_false" && options.length === 0) {
@@ -272,8 +273,8 @@ function formatDocumentTitle(document) {
 }
 
 function formatFlashcardMessage({ card, index, total }) {
-  const question = normalizeString(card?.question ?? card?.front);
-  const answer = normalizeString(card?.answer ?? card?.back);
+  const question = normalizeString(formatStudyText(card?.question ?? card?.front));
+  const answer = normalizeString(formatStudyText(card?.answer ?? card?.back));
   const parts = [
     `Card ${index + 1} of ${total}`,
     "",
@@ -284,7 +285,7 @@ function formatFlashcardMessage({ card, index, total }) {
     `||${escapeTelegramMarkdownV2(answer)}||`,
   ];
 
-  const explanation = normalizeString(card?.explanation);
+  const explanation = normalizeString(formatStudyText(card?.explanation));
   if (explanation) {
     parts.push("", "Explanation:", escapeTelegramMarkdownV2(explanation));
   }
@@ -301,19 +302,19 @@ function formatExamQuestionMessage({ documentTitle, question, index, total, opti
     "",
     `Question ${index + 1} of ${total}`,
     "",
-    normalizeString(question?.question),
+    normalizeString(formatStudyText(question?.question)),
   ];
 
   if (optionLines.length) {
     parts.push("", "Options:", ...optionLines);
   }
 
-  const correctAnswer = normalizeString(question?.correctAnswer);
+  const correctAnswer = normalizeString(formatStudyText(question?.correctAnswer));
   if (correctAnswer) {
     parts.push("", `Correct answer: ${correctAnswer}`);
   }
 
-  const explanation = normalizeString(question?.explanation);
+  const explanation = normalizeString(formatStudyText(question?.explanation));
   if (explanation) {
     parts.push("", "Explanation:", explanation);
   }
@@ -389,12 +390,12 @@ export async function sendExamToTelegram({
     if (canSendQuestionAsQuizPoll(question, pollOptions, correctOptionIndex)) {
       await callTelegramApi("sendPoll", {
         chat_id: resolvedChatId,
-        question: normalizeString(question.question),
+        question: normalizeString(formatStudyText(question.question)),
         options: pollOptions,
         type: "quiz",
         correct_option_id: correctOptionIndex,
         is_anonymous: true,
-        explanation: truncateTelegramField(question.explanation, TELEGRAM_POLL_EXPLANATION_LIMIT) || undefined,
+        explanation: truncateTelegramField(formatStudyText(question.explanation), TELEGRAM_POLL_EXPLANATION_LIMIT) || undefined,
       }, options);
     } else {
       await sendLongMessage(

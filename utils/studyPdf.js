@@ -11,6 +11,7 @@ import {
   normalizeGenerationType,
 } from "./documentGeneration.js";
 import { normalizeDocumentName, sanitizeDownloadFilename } from "./filenames.js";
+import { formatStudyText } from "./studyTextFormat.js";
 
 const bidi = bidiFactory();
 export const STUDY_PDF_LAYOUT_VERSION = "2026-04-20-exam-compact-v7";
@@ -82,7 +83,7 @@ const COLORS = Object.freeze({
 
 const FLASHCARD_PDF = Object.freeze({
   padding: 9,
-  gapBetweenCards: 6,
+  gapBetweenCards: PDF_SYSTEM.components.flashcard.gapBetweenCards,
   sectionGap: 4,
   labelGap: 2,
   labelFontSize: 7.2,
@@ -259,7 +260,7 @@ function shouldMergeParagraphFragments(previous, next) {
 }
 
 function normalizeParagraphText(value) {
-  const fragments = splitNormalizedParagraphFragments(value);
+  const fragments = splitNormalizedParagraphFragments(formatStudyText(value));
   if (fragments.length === 0) {
     return "";
   }

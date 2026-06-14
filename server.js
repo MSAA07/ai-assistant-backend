@@ -15,6 +15,7 @@ import { createExamsRouter, createCanonicalExamsRouter } from "./routes/exams.js
 import { createExportsRouter } from "./routes/exports.js";
 import { createAdminRouter } from "./routes/admin.js";
 import { createJobsRouter } from "./routes/jobs.js";
+import { createTelegramRouter } from "./routes/telegram.js";
 import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { createCorsOriginValidator } from "./utils/frontendOrigins.js";
@@ -114,6 +115,7 @@ app.use("/api", createFlashcardSetsRouter({ prisma, requireAuth }));
 app.use("/api", createCanonicalExamsRouter({ prisma, requireAuth }));
 app.use("/api/exports", createExportsRouter({ prisma, requireAuth }));
 app.use("/api/jobs", createJobsRouter({ prisma, requireAuth }));
+app.use("/api", createTelegramRouter({ prisma, requireAuth }));
 app.use(
   "/api/admin",
   createAdminRouter({ prisma, requireAuth, requireAdmin, auth }),

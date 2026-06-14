@@ -45,3 +45,17 @@ test("Telegram quiz poll eligibility enforces Telegram limits and answer mapping
   const longQuestion = { ...question, question: "x".repeat(301) };
   assert.equal(__telegramDeliveryTestables.canSendQuestionAsQuizPoll(longQuestion, options, correctIndex), false);
 });
+
+test("Telegram formatting preserves answer mapping for formula options", () => {
+  const question = {
+    questionType: "mcq",
+    question: "Which formula is water?",
+    options: ["CO2", "H2O", "O2"],
+    correctAnswer: "H2O",
+  };
+  const options = __telegramDeliveryTestables.getQuestionOptions(question);
+  const correctIndex = __telegramDeliveryTestables.getCorrectOptionIndex(question, options);
+
+  assert.deepEqual(options, ["CO₂", "H₂O", "O₂"]);
+  assert.equal(correctIndex, 1);
+});
