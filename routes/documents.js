@@ -99,6 +99,77 @@ const documentDetailsInclude = {
   },
 };
 
+function countWords(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized ? normalized.split(/\s+/u).length : 0;
+}
+
+async function buildStudyMaterialStats(prisma, document, userId) {
+  const [latestFlashcardSet, latestExamRecord, submittedAttempts] = await Promise.all([
+    prisma.flashcardSet.findFirst({
+      where: { documentId: document.id, isLatest: true },
+      orderBy: { createdAt: "desc" },
+      select: {
+        cards: {
+          where: { isDeleted: false },
+          select: {
+            states: {
+              where: { userId },
+              select: { isDeletedForUser: true, lastResult: true, lastReviewedAt: true },
+              take: 1,
+            },
+          },
+        },
+      },
+    }),
+    prisma.examRecord.findFirst({
+      where: { documentId: document.id, isLatest: true },
+      orderBy: { createdAt: "desc" },
+      select: { questions: { select: { questionType: true } } },
+    }),
+    prisma.examAttempt.findMany({
+      where: { documentId: document.id, userId, status: "submitted" },
+      orderBy: [{ submittedAt: "desc" }, { startedAt: "desc" }],
+      select: { score: true, totalQuestions: true },
+    }),
+  ]);
+
+  const flashcardStates = (latestFlashcardSet?.cards ?? [])
+    .map((card) => card.states?.[0] ?? null)
+    .filter((state) => !state?.isDeletedForUser);
+  const completedCount = flashcardStates.filter((state) => (
+    Boolean(state?.lastReviewedAt)
+    || state?.lastResult === "correct"
+    || state?.lastResult === "incorrect"
+  )).length;
+  const flashcardTotalCount = latestFlashcardSet
+    ? flashcardStates.length
+    : Array.isArray(document.flashcards) ? document.flashcards.length : 0;
+  const questionTypes = latestExamRecord
+    ? latestExamRecord.questions.map((question) => question.questionType)
+    : (Array.isArray(document.examQuestions) ? document.examQuestions : [])
+      .map((question) => question?.questionType ?? question?.type ?? "");
+  const latestAttempt = submittedAttempts[0] ?? null;
+  const latestScorePercent = latestAttempt && latestAttempt.totalQuestions > 0
+    ? Math.round((latestAttempt.score / latestAttempt.totalQuestions) * 100)
+    : null;
+
+  return {
+    summary: { wordCount: countWords(document.summary) },
+    flashcards: {
+      totalCount: flashcardTotalCount,
+      completedCount,
+    },
+    exam: {
+      questionCount: questionTypes.length,
+      multipleChoiceCount: questionTypes.filter((type) => type === "mcq" || type === "multiple_choice").length,
+      trueFalseCount: questionTypes.filter((type) => type === "true_false" || type === "truefalse").length,
+      attemptCount: submittedAttempts.length,
+      latestScorePercent,
+    },
+  };
+}
+
 const resetMonthlyUsageIfNeeded = async (prisma, user) => {
   const now = new Date();
   const lastReset = new Date(user.lastReset);
@@ -497,11 +568,13 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
   router.get("/document/:id", requireAuth, async (req, res) => {
     try {
       const document = await getAuthorizedDocument(prisma, req.params.id, req.session.user, documentDetailsInclude);
+      const serializedDocument = serializeDocument(document, {
+        excerptCount: document._count?.excerpts ?? 0,
+      });
+      const studyMaterialStats = await buildStudyMaterialStats(prisma, serializedDocument, req.session.user.id);
 
       res.json({
-        document: serializeDocument(document, {
-          excerptCount: document._count?.excerpts ?? 0,
-        }),
+        document: { ...serializedDocument, studyMaterialStats },
       });
     } catch (error) {
       console.error("Error fetching document:", error);
