@@ -26,6 +26,24 @@ const getIpAddress = (req) => {
   return req.ip || "unknown";
 };
 
+async function collectUserStorageKeys(prisma, userId) {
+  const [documents, exportArtifacts] = await Promise.all([
+    prisma.document.findMany({
+      where: { userId },
+      select: { storageKey: true },
+    }),
+    prisma.exportArtifact.findMany({
+      where: { userId },
+      select: { storageKey: true },
+    }),
+  ]);
+
+  return Array.from(new Set([
+    ...documents.map((document) => document.storageKey),
+    ...exportArtifacts.map((artifact) => artifact.storageKey),
+  ].filter(Boolean)));
+}
+
 const parseNumber = (value, fallback) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -1139,13 +1157,16 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
         return res.status(404).json({ error: "User not found" });
       }
 
+      const storageKeys = await collectUserStorageKeys(prisma, id);
+
       await prisma.user.delete({ where: { id } });
+      await Promise.all(storageKeys.map((key) => deleteFile(key)));
 
       await logAdminAction(prisma, {
         adminId: req.session.user.id,
         action: "DELETE_USER",
         targetId: id,
-        details: { email: user.email },
+        details: { email: user.email, storageObjectsDeleted: storageKeys.length },
         ipAddress: getIpAddress(req),
       });
 
