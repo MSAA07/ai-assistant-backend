@@ -19,16 +19,10 @@ import {
   validateTelegramEnv,
 } from "../utils/telegramDelivery.js";
 import { redactTelegramText } from "../utils/telegramNotify.js";
+import { createHttpError } from "../utils/routeHelpers.js";
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function createHttpError(statusCode, message, code) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  if (code) error.code = code;
-  return error;
 }
 
 function jsonError(res, error, fallbackMessage) {

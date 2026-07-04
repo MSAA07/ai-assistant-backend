@@ -58,7 +58,7 @@ async function sendAuthEmail(sendPromise, context, metadata = {}) {
     });
     return result;
   } catch (error) {
-    console.error(`[auth-email] ${context} failed:`, error);
+    console.error(`[auth-email] ${context} failed:`, error instanceof Error ? error.message : String(error));
     recordAuthFailure(`auth.email.${context}.failure`, error, {
       context,
       email: maskEmailAddress(metadata.email),

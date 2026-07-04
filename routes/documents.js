@@ -34,7 +34,7 @@ import {
   normalizeUploadedFilename,
 } from "../utils/filenames.js";
 import { uploadFile, deleteFile } from "../utils/storage.js";
-import { normalizePositiveInteger } from "../utils/routeHelpers.js";
+import { createHttpError, normalizePositiveInteger } from "../utils/routeHelpers.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -187,15 +187,6 @@ const resetMonthlyUsageIfNeeded = async (prisma, user) => {
 
 function isAdminUser(user) {
   return user?.role === "admin";
-}
-
-function createHttpError(statusCode, message, code) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  if (code) {
-    error.code = code;
-  }
-  return error;
 }
 
 async function getAuthorizedDocument(prisma, documentId, user, queryOptions = {}) {
@@ -452,10 +443,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         message: "Document uploaded and extraction queued",
       });
     } catch (error) {
-      console.error("Upload error:", error);
-      if (error?.stack) {
-        console.error(error.stack);
-      }
+      console.error("Upload error:", error instanceof Error ? error.message : String(error));
       if (req.file) {
         await fs.unlink(req.file.path).catch(() => {});
       }

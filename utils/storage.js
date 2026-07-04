@@ -85,7 +85,7 @@ export async function uploadFile(localPath, userId, originalFilename, mimeType) 
     }))
     return { key, url: `${process.env.R2_ENDPOINT}/${BUCKET}/${key}` }
   } catch (error) {
-      console.error('[storage] Failed to upload to R2:', error)
+      console.error('[storage] Failed to upload to R2:', error instanceof Error ? error.message : String(error))
       throw error
   }
 }
@@ -98,7 +98,7 @@ export async function deleteFile(key) {
   try {
     await r2.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
   } catch (error) {
-    console.error('[storage] Failed to delete from R2:', error)
+    console.error('[storage] Failed to delete from R2:', error instanceof Error ? error.message : String(error))
     captureSentryException(error, {
       tags: { storage_phase: 'delete_r2_file' },
       extra: { key },
