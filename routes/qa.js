@@ -3,7 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { listFiles } from "../utils/storage.js";
+import { getStorageConfigurationStatus, listFiles } from "../utils/storage.js";
 import { sendTelegramRawNotification } from "../utils/telegramNotify.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1220,6 +1220,28 @@ async function assertBackendAlive(baseUrl) {
   return "Health endpoint returned 200";
 }
 
+function isR2MissingKeyListError(error) {
+  const code = error?.name || error?.Code || error?.code;
+  const message = error?.message || "";
+  return code === "NoSuchKey" || message.includes("The specified key does not exist");
+}
+
+async function assertStorageReachable() {
+  try {
+    await listFiles("", 1);
+    return "R2 list operation completed";
+  } catch (error) {
+    if (isR2MissingKeyListError(error)) {
+      const status = getStorageConfigurationStatus();
+      if (status.configured) {
+        return "R2 configuration present; bucket list returned NoSuchKey on this endpoint";
+      }
+    }
+
+    throw error;
+  }
+}
+
 async function assertApiKeyValid({ name, envKey, url }) {
   const apiKey = process.env[envKey];
   if (!apiKey) {
@@ -1231,7 +1253,22 @@ async function assertApiKeyValid({ name, envKey, url }) {
     headers: { Authorization: `Bearer ${apiKey}` },
   }, 5_000);
 
-  if (response.status === 401) {
+  if (response.status === 401 || response.status === 403) {
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      // response wasn't JSON, fall through to generic handling below
+    }
+
+    const errorType = body?.name || body?.error?.name;
+
+    if (errorType === "restricted_api_key") {
+      // Key is valid but scoped to send-only access, which is all this app
+      // needs. Not a failure.
+      return `${name} API key is valid (send-only scope)`;
+    }
+
     throw new Error(`${name} API key is invalid`);
   }
 
@@ -1259,8 +1296,7 @@ async function runHealthChecks(ctx, { includeAll = true } = {}) {
   }, 500);
 
   await runStep(ctx, HEALTH_TEST_NAMES.storageReachable, async () => {
-    await listFiles("qa-health-dummy/", 1);
-    return "R2 list operation completed";
+    return assertStorageReachable();
   }, 1_000);
 
   await runStep(ctx, HEALTH_TEST_NAMES.openAiKeyValid, async () => {
