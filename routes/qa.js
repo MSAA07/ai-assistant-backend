@@ -3,7 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { getStorageConfigurationStatus, listFiles } from "../utils/storage.js";
+import { listFiles } from "../utils/storage.js";
 import { sendTelegramRawNotification } from "../utils/telegramNotify.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1220,26 +1220,9 @@ async function assertBackendAlive(baseUrl) {
   return "Health endpoint returned 200";
 }
 
-function isR2MissingKeyListError(error) {
-  const code = error?.name || error?.Code || error?.code;
-  const message = error?.message || "";
-  return code === "NoSuchKey" || message.includes("The specified key does not exist");
-}
-
 async function assertStorageReachable() {
-  try {
-    await listFiles("", 1);
-    return "R2 list operation completed";
-  } catch (error) {
-    if (isR2MissingKeyListError(error)) {
-      const status = getStorageConfigurationStatus();
-      if (status.configured) {
-        return "R2 configuration present; bucket list returned NoSuchKey on this endpoint";
-      }
-    }
-
-    throw error;
-  }
+  await listFiles("", 1);
+  return "R2 list operation completed";
 }
 
 async function assertApiKeyValid({ name, envKey, url }) {
