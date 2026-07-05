@@ -10,8 +10,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const QA_TESTS_DIR = path.resolve(__dirname, "../tests");
-const QA_EMAIL = "qa@studymaxing.com";
-const QA_PASSWORD = "tester123";
+const QA_EMAIL = process.env.QA_ACCOUNT_EMAIL || "qa@studymaxing.com";
+const QA_PASSWORD = process.env.QA_ACCOUNT_PASSWORD || "tester123";
 const QA_SCHEDULE_FREQUENCIES = new Set([30, 60, 180, 360, 720, 1440]);
 const QA_RATE_LIMITS_MS = Object.freeze({
   health: 1 * 60 * 1000,
@@ -25,8 +25,8 @@ const QA_ACCOUNT = Object.freeze({
 });
 
 const DEFAULT_TARGETS = Object.freeze({
-  staging: "https://ai-assistant-backend-staging.up.railway.app",
-  production: "https://ai-assistant-backend-production-ddf0.up.railway.app",
+  staging: process.env.QA_STAGING_TARGET_URL || "https://ai-assistant-backend-staging.up.railway.app",
+  production: process.env.QA_PRODUCTION_TARGET_URL || "https://ai-assistant-backend-production-ddf0.up.railway.app",
 });
 
 const HEALTH_TEST_NAMES = Object.freeze({
