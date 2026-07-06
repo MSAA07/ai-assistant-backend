@@ -20,6 +20,14 @@ const EXTRACTED_TEXT_CHUNK_CHAR_LIMIT = 3_000;
 const EXTRACTED_TEXT_CHUNK_MIN_SPLIT = 1_800;
 const MAX_DOCUMENT_PAGE_COUNT = 200;
 const DOCUMENT_TOO_LONG_MESSAGE = "This document has too many pages. Please upload a document with 200 pages or fewer.";
+// DOCX/PPTX are ZIP-based. These caps reject archive bombs before Mammoth/python-pptx inflate entries.
+const MAX_OOXML_ZIP_UNCOMPRESSED_BYTES = 500 * 1024 * 1024;
+const MAX_OOXML_ZIP_ENTRIES = 200;
+const ZIP_EOCD_SIGNATURE = 0x06054b50;
+const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
+const ZIP64_SENTINEL_16 = 0xffff;
+const ZIP64_SENTINEL_32 = 0xffffffff;
+const ZIP_BOMB_MESSAGE = "This document is too large to safely process. Please upload a smaller PDF, DOCX, or PPTX file.";
 
 function buildExtractionResult(documentId, excerptCount, excerptSource) {
   return {
@@ -36,9 +44,82 @@ function createDocumentTooLongError() {
   return error;
 }
 
+function createZipBombError() {
+  const error = new Error(ZIP_BOMB_MESSAGE);
+  error.code = "archive_too_large";
+  return error;
+}
+
 function assertDocumentPageLimit(pageCount) {
   if (pageCount > MAX_DOCUMENT_PAGE_COUNT) {
     throw createDocumentTooLongError();
+  }
+}
+
+function findZipEndOfCentralDirectory(buffer) {
+  const maxCommentLength = 0xffff;
+  const minOffset = Math.max(0, buffer.length - maxCommentLength - 22);
+
+  for (let offset = buffer.length - 22; offset >= minOffset; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === ZIP_EOCD_SIGNATURE) {
+      return offset;
+    }
+  }
+
+  return -1;
+}
+
+export function assertOoxmlZipLimits(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  const eocdOffset = findZipEndOfCentralDirectory(buffer);
+  if (eocdOffset < 0) {
+    throw new Error("Invalid Office document archive");
+  }
+
+  const totalEntries = buffer.readUInt16LE(eocdOffset + 10);
+  const centralDirectorySize = buffer.readUInt32LE(eocdOffset + 12);
+  const centralDirectoryOffset = buffer.readUInt32LE(eocdOffset + 16);
+
+  if (
+    totalEntries === ZIP64_SENTINEL_16
+    || centralDirectorySize === ZIP64_SENTINEL_32
+    || centralDirectoryOffset === ZIP64_SENTINEL_32
+  ) {
+    throw createZipBombError();
+  }
+
+  if (totalEntries > MAX_OOXML_ZIP_ENTRIES) {
+    throw createZipBombError();
+  }
+
+  const centralDirectoryEnd = centralDirectoryOffset + centralDirectorySize;
+  if (centralDirectoryOffset < 0 || centralDirectoryEnd > buffer.length) {
+    throw new Error("Invalid Office document archive");
+  }
+
+  let offset = centralDirectoryOffset;
+  let totalUncompressedSize = 0;
+
+  for (let entryIndex = 0; entryIndex < totalEntries; entryIndex += 1) {
+    if (offset + 46 > centralDirectoryEnd || buffer.readUInt32LE(offset) !== ZIP_CENTRAL_DIRECTORY_SIGNATURE) {
+      throw new Error("Invalid Office document archive");
+    }
+
+    const uncompressedSize = buffer.readUInt32LE(offset + 24);
+    const fileNameLength = buffer.readUInt16LE(offset + 28);
+    const extraFieldLength = buffer.readUInt16LE(offset + 30);
+    const fileCommentLength = buffer.readUInt16LE(offset + 32);
+
+    if (uncompressedSize === ZIP64_SENTINEL_32 || uncompressedSize > MAX_OOXML_ZIP_UNCOMPRESSED_BYTES) {
+      throw createZipBombError();
+    }
+
+    totalUncompressedSize += uncompressedSize;
+    if (totalUncompressedSize > MAX_OOXML_ZIP_UNCOMPRESSED_BYTES) {
+      throw createZipBombError();
+    }
+
+    offset += 46 + fileNameLength + extraFieldLength + fileCommentLength;
   }
 }
 
@@ -473,6 +554,7 @@ async function extractPdf(filePath) {
 }
 
 async function extractDocx(filePath) {
+  assertOoxmlZipLimits(filePath);
   const result = await mammoth.extractRawText({ path: filePath });
   const paragraphs = result.value.split("\n").filter((paragraph) => paragraph.trim().length > 0);
   const chunks = [];
@@ -510,6 +592,7 @@ async function extractDocx(filePath) {
 }
 
 async function extractPptx(filePath) {
+  assertOoxmlZipLimits(filePath);
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(process.cwd(), "scripts", "extract_pptx.py");
     const child = spawn("python3", [scriptPath, filePath], {
