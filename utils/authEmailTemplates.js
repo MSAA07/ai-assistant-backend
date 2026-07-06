@@ -71,17 +71,17 @@ export function buildVerificationEmail({ name, verificationUrl, supportEmail }) 
 export function buildExistingUserSignUpEmail({ supportEmail }) {
   const subject = "Studymaxing sign-up attempt";
   const body = [
-    "Someone tried to create a Studymaxing account using this email address.",
-    "If that was you, sign in instead and verify your email if prompted.",
-    "If that was not you, you can safely ignore this email.",
+    "Someone attempted to create a Studymaxing account using this email address.",
+    "If this was not you, no action is needed.",
+    "If you forgot you already have an account, use forgot password to regain access.",
   ];
 
   return {
     subject,
     text: [
-      "Someone tried to create a Studymaxing account using this email address.",
-      "If that was you, sign in instead and verify your email if prompted.",
-      "If that was not you, you can safely ignore this email.",
+      "Someone attempted to create a Studymaxing account using this email address.",
+      "If this was not you, no action is needed.",
+      "If you forgot you already have an account, use forgot password to regain access.",
       supportEmail ? `Need help? Contact ${supportEmail}.` : "",
     ]
       .filter(Boolean)

@@ -1,4 +1,4 @@
-import { betterAuth } from "better-auth";
+import { betterAuth, generateId } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { PrismaClient } from "@prisma/client";
 import { admin } from "better-auth/plugins";
@@ -48,6 +48,37 @@ const supportEmail = process.env.AUTH_EMAIL_SUPPORT_EMAIL?.trim()
   || "";
 export const resolvedBetterAuthBaseURL = resolveBetterAuthBaseUrl();
 
+function normalizeEmailAddress(value = "") {
+  return String(value).trim().toLowerCase();
+}
+
+function buildGenericSignUpResponseUser({ email, name, image }) {
+  const now = new Date().toISOString();
+  return {
+    name: typeof name === "string" ? name.trim() : "",
+    email: normalizeEmailAddress(email),
+    emailVerified: false,
+    image: typeof image === "string" && image.trim() ? image.trim() : null,
+    createdAt: now,
+    updatedAt: now,
+    role: "user",
+    banned: false,
+    banReason: null,
+    banExpires: null,
+    plan: "free",
+    documentsUsed: 0,
+    monthlyLimit: 5,
+    id: generateId(32),
+  };
+}
+
+function buildGenericSignUpResponseBody(body = {}) {
+  return {
+    token: null,
+    user: buildGenericSignUpResponseUser(body),
+  };
+}
+
 async function sendAuthEmail(sendPromise, context, metadata = {}) {
   try {
     const result = await sendPromise;
@@ -70,9 +101,96 @@ async function sendAuthEmail(sendPromise, context, metadata = {}) {
   }
 }
 
+async function sendExistingUserSignUpNotification(user) {
+  const message = buildExistingUserSignUpEmail({ supportEmail });
+  await sendAuthEmail(
+    sendTransactionalEmail({
+      to: user.email,
+      subject: message.subject,
+      html: message.html,
+      text: message.text,
+      context: "existing-user-signup",
+    }),
+    "existing-user-signup",
+    { email: user.email },
+  );
+}
+
+function createExistingUserSignUpEnumerationPlugin() {
+  return {
+    id: "existing-user-signup-enumeration",
+    async onRequest(request) {
+      if (request.method !== "POST") {
+        return undefined;
+      }
+
+      const pathname = new URL(request.url).pathname.replace(/\/+$/, "");
+      if (!pathname.endsWith("/sign-up/email")) {
+        return undefined;
+      }
+
+      const origin = request.headers.get("origin") || "";
+      if (!isAllowedFrontendOrigin(origin)) {
+        return undefined;
+      }
+
+      let body;
+      try {
+        body = await request.clone().json();
+      } catch {
+        return undefined;
+      }
+
+      const email = normalizeEmailAddress(body?.email || "");
+      if (!email || !email.includes("@")) {
+        return undefined;
+      }
+
+      const existingUser = await prisma.user.findUnique({
+        where: { email },
+        select: {
+          id: true,
+          email: true,
+          emailVerified: true,
+        },
+      });
+
+      if (!existingUser) {
+        return undefined;
+      }
+
+      recordAuthEvent("auth.sign_up.existing_user.generic_response", {
+        outcome: "success",
+        email: maskEmailAddress(existingUser.email),
+        emailVerified: Boolean(existingUser.emailVerified),
+      });
+
+      if (existingUser.emailVerified) {
+        try {
+          await sendExistingUserSignUpNotification(existingUser);
+        } catch (error) {
+          console.error(
+            "[auth-email] existing-user signup notification failed:",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+
+      return {
+        response: new Response(JSON.stringify(buildGenericSignUpResponseBody(body)), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }),
+      };
+    },
+  };
+}
+
 export const auth = betterAuth({
   database: prismaAdapter(prisma, {
-    provider: "postgresql", 
+    provider: "postgresql",
   }),
   baseURL: resolvedBetterAuthBaseURL,
   emailAndPassword: {
@@ -109,18 +227,7 @@ export const auth = betterAuth({
       id,
     }),
     onExistingUserSignUp: async ({ user }) => {
-      const message = buildExistingUserSignUpEmail({ supportEmail });
-      await sendAuthEmail(
-        sendTransactionalEmail({
-          to: user.email,
-          subject: message.subject,
-          html: message.html,
-          text: message.text,
-          context: "existing-user-signup",
-        }),
-        "existing-user-signup",
-        { email: user.email },
-      );
+      await sendExistingUserSignUpNotification(user);
     },
   },
   emailVerification: {
@@ -159,6 +266,7 @@ export const auth = betterAuth({
     return getAllowedFrontendOrigins();
   },
   plugins: [
+    createExistingUserSignUpEnumerationPlugin(),
     admin()
   ],
   user: {
