@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import { mkdirSync } from "fs";
 import dotenv from "dotenv";
+import { fileTypeFromFile } from "file-type";
 
 import { createRateLimiter } from "../middleware/rateLimit.js";
 import {
@@ -44,6 +45,14 @@ dotenv.config();
 const uploadsDir = "/tmp/uploads";
 mkdirSync(uploadsDir, { recursive: true });
 
+const ALLOWED_UPLOAD_MIME_TYPES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+]);
+
+const UNSUPPORTED_FILE_TYPE_MESSAGE = "Unsupported file type. Please upload a valid PDF, DOCX, or PPTX file.";
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadsDir);
@@ -60,22 +69,28 @@ const upload = multer({
   storage,
   limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      "application/pdf",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ];
-    if (allowedTypes.includes(file.mimetype)) {
+    if (ALLOWED_UPLOAD_MIME_TYPES.has(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(
-        new Error(
-          "Invalid file type. Only PDF, DOCX, and PPTX files are allowed.",
-        ),
-      );
+      const error = new Error(UNSUPPORTED_FILE_TYPE_MESSAGE);
+      error.statusCode = 400;
+      cb(error);
     }
   },
 });
+
+async function validateUploadedFileType(file) {
+  const detectedType = await fileTypeFromFile(file.path);
+  if (!detectedType || !ALLOWED_UPLOAD_MIME_TYPES.has(detectedType.mime)) {
+    throw createHttpError(400, UNSUPPORTED_FILE_TYPE_MESSAGE, "unsupported_file_type");
+  }
+
+  if (detectedType.mime !== file.mimetype) {
+    throw createHttpError(400, UNSUPPORTED_FILE_TYPE_MESSAGE, "file_type_mismatch");
+  }
+
+  return detectedType;
+}
 
 const generationRateLimiter = createRateLimiter({
   windowMs: 60_000,
@@ -331,6 +346,8 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
         return res.status(400).json({ error: "No file uploaded" });
       }
 
+      await validateUploadedFileType(file);
+
       let dbUser = await prisma.user.findUnique({ where: { id: user.id } });
       if (!dbUser) {
         await fs.unlink(file.path).catch(() => {});
@@ -447,12 +464,16 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       if (req.file) {
         await fs.unlink(req.file.path).catch(() => {});
       }
-      captureSentryException(error, {
-        tags: { route: "documents", action: "upload" },
-        user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
-      });
-      res.status(500).json({
-        error: "Failed to process document",
+      const statusCode = error?.statusCode || 500;
+      if (statusCode >= 500) {
+        captureSentryException(error, {
+          tags: { route: "documents", action: "upload" },
+          user: req.session?.user?.id ? { id: req.session.user.id } : undefined,
+        });
+      }
+
+      res.status(statusCode).json({
+        error: statusCode >= 500 ? "Failed to process document" : error.message,
         details: error.message,
       });
     }
