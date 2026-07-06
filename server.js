@@ -100,11 +100,6 @@ app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
     message: "AI Study Assistant API is running",
-    authEmail: getAuthEmailDiagnostics(),
-    authCallbacks: getAuthCallbackDiagnostics(),
-    authTelemetry: getAuthTelemetrySnapshot(),
-    authSecurity: getAuthSecurityDiagnostics(),
-    betterAuthBaseURL: resolvedBetterAuthBaseURL,
   });
 });
 
@@ -120,7 +115,19 @@ app.use("/api", createTelegramRouter({ prisma, requireAuth }));
 app.use("/api/admin/qa", requireAuth, requireAdmin, createQaRouter({ prisma, auth }));
 app.use(
   "/api/admin",
-  createAdminRouter({ prisma, requireAuth, requireAdmin, auth }),
+  createAdminRouter({
+    prisma,
+    requireAuth,
+    requireAdmin,
+    auth,
+    healthDiagnostics: {
+      getAuthEmailDiagnostics,
+      getAuthCallbackDiagnostics,
+      getAuthTelemetrySnapshot,
+      getAuthSecurityDiagnostics,
+      resolvedBetterAuthBaseURL,
+    },
+  }),
 );
 
 setupSentryExpressErrorHandler(app);

@@ -813,7 +813,13 @@ const unwrapAuthResult = async (result) => {
   return result;
 };
 
-export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) => {
+export const createAdminRouter = ({
+  prisma,
+  requireAuth,
+  requireAdmin,
+  auth,
+  healthDiagnostics,
+}) => {
   const router = express.Router();
   const limiter = createRateLimiter({
     windowMs: 60000,
@@ -824,6 +830,18 @@ export const createAdminRouter = ({ prisma, requireAuth, requireAdmin, auth }) =
   router.use(requireAuth);
   router.use(requireAdmin);
   router.use(limiter);
+
+  router.get("/health-diagnostics", (req, res) => {
+    res.json({
+      status: "ok",
+      message: "AI Study Assistant API is running",
+      authEmail: healthDiagnostics.getAuthEmailDiagnostics(),
+      authCallbacks: healthDiagnostics.getAuthCallbackDiagnostics(),
+      authTelemetry: healthDiagnostics.getAuthTelemetrySnapshot(),
+      authSecurity: healthDiagnostics.getAuthSecurityDiagnostics(),
+      betterAuthBaseURL: healthDiagnostics.resolvedBetterAuthBaseURL,
+    });
+  });
 
   router.get("/users", async (req, res) => {
     try {
