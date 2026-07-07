@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { toNodeHandler } from "better-auth/node";
@@ -32,6 +33,7 @@ initSentry({ serviceName: "backend" });
 const app = express();
 const prisma = new PrismaClient();
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 
 function buildBetterAuthRedirectUrl(pathname, query = {}) {
   const baseUrl = resolvedBetterAuthBaseURL?.trim();
@@ -68,6 +70,18 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "User-Agent"],
+  }),
+);
+app.use(
+  helmet({
+    frameguard: { action: "deny" },
+    hsts: {
+      maxAge: 63_072_000,
+      includeSubDomains: true,
+    },
+    referrerPolicy: {
+      policy: "strict-origin-when-cross-origin",
+    },
   }),
 );
 app.use(express.json());
