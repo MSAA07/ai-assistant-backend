@@ -28,6 +28,48 @@ test("summary cleanup normalizes headings, bullets, separators, and spacing", ()
   ].join("\n"));
 });
 
+test("summary diagnostics capture empty GPT response metadata without requiring raw source text", () => {
+  const response = {
+    model: "gpt-5.5",
+    choices: [
+      {
+        finish_reason: "length",
+        message: {
+          role: "assistant",
+          content: "",
+        },
+      },
+    ],
+    usage: {
+      prompt_tokens: 5100,
+      completion_tokens: 7000,
+      total_tokens: 12100,
+      completion_tokens_details: {
+        reasoning_tokens: 7000,
+      },
+    },
+  };
+
+  const error = __studyMaterialsTestables.createEmptySummaryOutputError(response, "");
+
+  assert.equal(error.code, "empty_summary_output");
+  assert.equal(error.diagnostics.model, "gpt-5.5");
+  assert.equal(error.diagnostics.finishReason, "length");
+  assert.equal(error.diagnostics.contentLength, 0);
+  assert.equal(error.diagnostics.usage.reasoningTokens, 7000);
+});
+
+test("summary response content reader supports array-style chat message content", () => {
+  const text = __studyMaterialsTestables.getChatMessageTextContent({
+    content: [
+      { type: "text", text: "Big Picture" },
+      { type: "text", text: "Core Concepts" },
+    ],
+  });
+
+  assert.equal(text, "Big Picture\nCore Concepts");
+});
+
 test("flashcard target counts match exam-ready coverage bands", () => {
   assert.equal(__studyMaterialsTestables.getFlashcardTargetCount("short"), 16);
   assert.equal(__studyMaterialsTestables.getFlashcardTargetCount("medium"), 30);

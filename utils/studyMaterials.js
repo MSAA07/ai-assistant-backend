@@ -26,7 +26,8 @@ const ESTIMATED_CHARS_PER_TOKEN = 4;
 const SUMMARY_SIGNAL_CHUNK_TOKEN_LIMIT = 2_500;
 const SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT = 2_200;
 const SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT = 3_600;
-const GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT = 4_500;
+const GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT = 7_000;
+const GPT55_SUMMARY_REASONING_EFFORT = "low";
 const SUMMARY_ANALYSIS_CACHE_TTL_MS = 30 * 60 * 1000;
 const SUMMARY_ANALYSIS_CACHE_MAX_ENTRIES = 50;
 const INPUT_TOKEN_LIMITS = {
@@ -240,6 +241,69 @@ async function createChatCompletion(openai, params, usageLedgerContext) {
       requestedModel: params?.model,
     },
   });
+}
+
+function getChatMessageTextContent(message) {
+  const content = message?.content;
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        if (typeof part?.text === "string") {
+          return part.text;
+        }
+        if (typeof part?.content === "string") {
+          return part.content;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return "";
+}
+
+function previewForDiagnostics(value, maxChars = 240) {
+  return normalizeString(value)
+    .replace(/\s+/g, " ")
+    .slice(0, maxChars);
+}
+
+function buildSummaryResponseDiagnostics(response, rawContent) {
+  const choice = response?.choices?.[0] ?? null;
+  const message = choice?.message ?? null;
+  const usage = response?.usage ?? {};
+  const completionDetails = usage?.completion_tokens_details ?? {};
+
+  return {
+    model: response?.model ?? null,
+    finishReason: choice?.finish_reason ?? null,
+    contentLength: rawContent.length,
+    contentPreview: previewForDiagnostics(rawContent),
+    messageKeys: message ? Object.keys(message) : [],
+    hasRefusal: Boolean(message?.refusal),
+    refusalPreview: previewForDiagnostics(message?.refusal ?? ""),
+    usage: {
+      promptTokens: Number(usage?.prompt_tokens ?? 0),
+      completionTokens: Number(usage?.completion_tokens ?? 0),
+      totalTokens: Number(usage?.total_tokens ?? 0),
+      reasoningTokens: Number(completionDetails?.reasoning_tokens ?? 0),
+    },
+  };
+}
+
+function createEmptySummaryOutputError(response, rawContent) {
+  const error = new Error("GPT-5.5 summary returned no usable visible content");
+  error.code = "empty_summary_output";
+  error.diagnostics = buildSummaryResponseDiagnostics(response, rawContent);
+  return error;
 }
 
 function normalizeString(value) {
@@ -1946,23 +2010,36 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
     messages.push({ role: "user", content: regenerationGuidancePrompt });
   }
   messages.push({ role: "user", content: sourceMaterial.text });
-
-  const openai = getClient();
-  const response = await createChatCompletion(openai, {
+  const usesGpt55Summary = model.startsWith("gpt-5");
+  const summaryParams = {
     model,
     max_completion_tokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
     messages,
-  }, withUsageLedgerCallContext(usageLedgerContext, {
+  };
+  if (usesGpt55Summary) {
+    summaryParams.reasoning_effort = GPT55_SUMMARY_REASONING_EFFORT;
+  }
+
+  const openai = getClient();
+  const response = await createChatCompletion(openai, summaryParams, withUsageLedgerCallContext(usageLedgerContext, {
     aiPhase: "generate_clean_summary",
     callKey: "summary:clean",
     metadata: {
       maxCompletionTokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
+      reasoningEffort: usesGpt55Summary ? GPT55_SUMMARY_REASONING_EFFORT : null,
       selectedExcerptCount: sourceMaterial.selectedExcerptCount,
       totalExcerptCount: sourceMaterial.totalExcerptCount,
     },
   }));
 
-  const text = cleanSummaryText(response.choices?.[0]?.message?.content);
+  const rawContent = getChatMessageTextContent(response.choices?.[0]?.message);
+  const text = cleanSummaryText(rawContent);
+  if (!text) {
+    const emptyOutputError = createEmptySummaryOutputError(response, rawContent);
+    console.warn("[summary] GPT-5.5 returned no usable visible content", emptyOutputError.diagnostics);
+    throw emptyOutputError;
+  }
+
   const output = { text };
   assertNonEmptyGenerationOutput(generationType, output);
 
@@ -2003,6 +2080,26 @@ export async function generateStudyMaterialFromExcerpts({
           generationType,
         },
       });
+      if (error?.code === "empty_summary_output") {
+        console.warn("[summary] Falling back to structured summary pipeline after empty GPT-5.5 output", {
+          diagnostics: error.diagnostics ?? null,
+        });
+        const fallbackResult = await generateSummaryStudyGuideFromExcerptsV2({
+          generationType,
+          excerpts,
+          language,
+          options: normalizedOptions,
+          usageLedgerContext,
+        });
+        return {
+          ...fallbackResult,
+          effectiveOptions: {
+            ...fallbackResult.effectiveOptions,
+            summaryPipeline: "structured_fallback",
+            fallbackReason: "gpt55_empty_output",
+          },
+        };
+      }
       throw error;
     }
   }
@@ -2104,10 +2201,13 @@ export async function generateStudyMaterialFromExcerpts({
 
 export const __studyMaterialsTestables = {
   cleanSummaryText,
+  buildSummaryResponseDiagnostics,
   buildFlashcardsPrompt,
   buildFlashcardQaPrompt,
   buildExamPrompt,
   buildExamQaPrompt,
+  createEmptySummaryOutputError,
+  getChatMessageTextContent,
   getExamTargetCount,
   getFlashcardTargetCount,
   normalizeFlashcardsOutput,
