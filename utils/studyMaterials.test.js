@@ -70,6 +70,16 @@ test("summary response content reader supports array-style chat message content"
   assert.equal(text, "Big Picture\nCore Concepts");
 });
 
+test("structured summary fallback adds a title when format enforcement omits it", () => {
+  const text = __studyMaterialsTestables.ensureSummaryStudyGuideTitle("## Big Picture\nDense reference material");
+
+  assert.equal(text, "## Title\nStudy Guide\n\n## Big Picture\nDense reference material");
+  assert.equal(
+    __studyMaterialsTestables.ensureSummaryStudyGuideTitle("## Title\nPhysics deck"),
+    "## Title\nPhysics deck",
+  );
+});
+
 test("flashcard target counts match exam-ready coverage bands", () => {
   assert.equal(__studyMaterialsTestables.getFlashcardTargetCount("short"), 16);
   assert.equal(__studyMaterialsTestables.getFlashcardTargetCount("medium"), 30);

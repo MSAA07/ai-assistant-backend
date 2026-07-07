@@ -1497,6 +1497,19 @@ function assertSummaryStudyGuideStructure(text) {
   }
 }
 
+function ensureSummaryStudyGuideTitle(text) {
+  const normalizedText = normalizeString(text);
+  if (!normalizedText) {
+    return "";
+  }
+
+  if (/^#{1,6}\s+title\b/im.test(normalizedText)) {
+    return normalizedText;
+  }
+
+  return `## Title\nStudy Guide\n\n${normalizedText}`;
+}
+
 function normalizeSummaryHeading(line) {
   const trimmed = normalizeString(line);
   if (!trimmed) {
@@ -1898,6 +1911,7 @@ async function enforceStudyGuideFormat({
   });
 
   const output = normalizeSummaryOutput(result.parsed);
+  output.text = ensureSummaryStudyGuideTitle(output.text);
   assertNonEmptyGenerationOutput(generationType, output);
   assertSummaryStudyGuideStructure(output.text);
 
@@ -2207,6 +2221,7 @@ export const __studyMaterialsTestables = {
   buildExamPrompt,
   buildExamQaPrompt,
   createEmptySummaryOutputError,
+  ensureSummaryStudyGuideTitle,
   getChatMessageTextContent,
   getExamTargetCount,
   getFlashcardTargetCount,
