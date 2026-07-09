@@ -447,6 +447,20 @@ model UsageCapConfig {
   updatedAt   DateTime @updatedAt
 }
 
+model ModelRoutingConfig {
+  id               String   @id @default(uuid())
+  feature          String
+  plan             String
+  model            String
+  reasoningEffort  String?
+  updatedByAdminId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([feature, plan])
+  @@map("model_routing_config")
+}
+
 model CostAnomalyAlert {
   id           String   @id @default(cuid())
   userId       String
