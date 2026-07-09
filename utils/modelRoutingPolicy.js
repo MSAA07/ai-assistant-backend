@@ -1,10 +1,11 @@
+import { PrismaClient } from "@prisma/client";
+
 import { DOCUMENT_GENERATION_TYPES } from "./documentGeneration.js";
+import { captureSentryException } from "./sentry.js";
 
 export const DEFAULT_GENERATION_MODEL = "gpt-4o-mini";
-export const GPT55_SUMMARY_MODEL = "gpt-5.5";
 export const FLASHCARD_GENERATION_MODEL = "gpt-4o";
 export const EXAM_GENERATION_MODEL = "gpt-4o";
-export const USE_GPT55_SUMMARY_FLAG = "USE_GPT55_SUMMARY";
 export const ALLOWED_MODELS = [
   { id: "gpt-4o-mini", label: "GPT-4o mini", supportsReasoningEffort: false },
   { id: "gpt-4o", label: "GPT-4o", supportsReasoningEffort: false },
@@ -20,26 +21,13 @@ export const VALID_FEATURES = ["summary", "flashcards", "exam"];
 export const VALID_PLANS = ["free", "premium"];
 export const VALID_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh"];
 
-function normalizeFlagValue(value) {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
+const prisma = new PrismaClient();
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
-export function isGpt55SummaryEnabledForEnvironment() {
-  const value = normalizeFlagValue(process.env[USE_GPT55_SUMMARY_FLAG]);
-  return !["0", "false", "off", "disabled", "no"].includes(value);
-}
+let routingCache = null;
+let cacheLoadedAt = 0;
 
-export function shouldUseGpt55Summary({ generationType, useGpt55Summary = true } = {}) {
-  return generationType === DOCUMENT_GENERATION_TYPES.summary
-    && useGpt55Summary
-    && isGpt55SummaryEnabledForEnvironment();
-}
-
-export function resolveModelForGeneration({ generationType, useGpt55Summary = true } = {}) {
-  if (shouldUseGpt55Summary({ generationType, useGpt55Summary })) {
-    return GPT55_SUMMARY_MODEL;
-  }
-
+function getFallbackModelForGeneration(generationType) {
   if (generationType === DOCUMENT_GENERATION_TYPES.flashcards) {
     return FLASHCARD_GENERATION_MODEL;
   }
@@ -49,4 +37,79 @@ export function resolveModelForGeneration({ generationType, useGpt55Summary = tr
   }
 
   return DEFAULT_GENERATION_MODEL;
+}
+
+function getFallbackRoutingResult(generationType) {
+  return {
+    model: getFallbackModelForGeneration(generationType),
+    reasoningEffort: null,
+  };
+}
+
+async function loadRoutingCache() {
+  try {
+    const rows = await prisma.modelRoutingConfig.findMany({
+      select: {
+        feature: true,
+        plan: true,
+        model: true,
+        reasoningEffort: true,
+      },
+    });
+    const nextCache = {};
+    for (const row of rows) {
+      nextCache[`${row.feature}:${row.plan}`] = {
+        model: row.model,
+        reasoningEffort: row.reasoningEffort,
+      };
+    }
+    routingCache = nextCache;
+    cacheLoadedAt = Date.now();
+  } catch (error) {
+    console.warn("[modelRoutingPolicy] failed to load routing config; using stale cache or hardcoded fallback");
+    captureSentryException(error, {
+      level: "warning",
+      tags: { util: "model_routing_policy", phase: "load_cache" },
+    });
+  }
+}
+
+export async function invalidateRoutingCache() {
+  routingCache = null;
+  cacheLoadedAt = 0;
+}
+
+export async function resolveModelForGeneration({ generationType, plan } = {}) {
+  const now = Date.now();
+  if (!routingCache || now - cacheLoadedAt > CACHE_TTL_MS) {
+    await loadRoutingCache();
+  }
+
+  const key = `${generationType}:${plan}`;
+  const configured = routingCache?.[key];
+  if (configured?.model) {
+    return {
+      model: configured.model,
+      reasoningEffort: configured.reasoningEffort ?? null,
+    };
+  }
+
+  const fallback = getFallbackRoutingResult(generationType);
+  const fallbackError = new Error("Model routing config missing; using hardcoded fallback");
+  console.warn("[modelRoutingPolicy] missing routing config; using hardcoded fallback", {
+    generationType,
+    plan,
+    fallbackModel: fallback.model,
+  });
+  captureSentryException(fallbackError, {
+    level: "warning",
+    tags: { util: "model_routing_policy", phase: "fallback" },
+    extra: {
+      generationType,
+      plan,
+      fallbackModel: fallback.model,
+    },
+  });
+
+  return fallback;
 }

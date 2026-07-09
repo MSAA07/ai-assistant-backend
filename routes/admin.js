@@ -16,6 +16,7 @@ import {
   VALID_FEATURES,
   VALID_PLANS,
   VALID_REASONING_EFFORTS,
+  invalidateRoutingCache,
 } from "../utils/modelRoutingPolicy.js";
 import { sendTelegramAdminNotification } from "../utils/telegramNotify.js";
 import {
@@ -962,6 +963,7 @@ export const createAdminRouter = ({
           updatedByAdminId: req.session.user.id,
         },
       });
+      await invalidateRoutingCache();
 
       await logAdminAction(prisma, {
         adminId: req.session.user.id,

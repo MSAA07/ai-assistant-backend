@@ -27,7 +27,6 @@ const SUMMARY_SIGNAL_CHUNK_TOKEN_LIMIT = 2_500;
 const SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT = 2_200;
 const SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT = 3_600;
 const GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT = 7_000;
-const GPT55_SUMMARY_REASONING_EFFORT = "low";
 const SUMMARY_ANALYSIS_CACHE_TTL_MS = 30 * 60 * 1000;
 const SUMMARY_ANALYSIS_CACHE_MAX_ENTRIES = 50;
 const INPUT_TOKEN_LIMITS = {
@@ -2011,11 +2010,12 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
   generationType,
   excerpts,
   options,
-  useGpt55Summary = true,
+  plan,
   usageLedgerContext = null,
 }) {
   const sourceMaterial = prepareGpt55SummarySourceMaterial(excerpts);
-  const model = resolveModelForGeneration({ generationType, useGpt55Summary });
+  const routing = await resolveModelForGeneration({ generationType, plan });
+  const { model, reasoningEffort } = routing;
   const regenerationGuidancePrompt = buildRegenerationGuidancePrompt(options);
   const messages = [
     { role: "user", content: SUMMARY_GENERATION_PROMPT },
@@ -2024,14 +2024,13 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
     messages.push({ role: "user", content: regenerationGuidancePrompt });
   }
   messages.push({ role: "user", content: sourceMaterial.text });
-  const usesGpt55Summary = model.startsWith("gpt-5");
   const summaryParams = {
     model,
     max_completion_tokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
     messages,
   };
-  if (usesGpt55Summary) {
-    summaryParams.reasoning_effort = GPT55_SUMMARY_REASONING_EFFORT;
+  if (reasoningEffort) {
+    summaryParams.reasoning_effort = reasoningEffort;
   }
 
   const openai = getClient();
@@ -2040,7 +2039,7 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
     callKey: "summary:clean",
     metadata: {
       maxCompletionTokens: GPT55_SUMMARY_OUTPUT_TOKEN_LIMIT,
-      reasoningEffort: usesGpt55Summary ? GPT55_SUMMARY_REASONING_EFFORT : null,
+      reasoningEffort,
       selectedExcerptCount: sourceMaterial.selectedExcerptCount,
       totalExcerptCount: sourceMaterial.totalExcerptCount,
     },
@@ -2050,7 +2049,7 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
   const text = cleanSummaryText(rawContent);
   if (!text) {
     const emptyOutputError = createEmptySummaryOutputError(response, rawContent);
-    console.warn("[summary] GPT-5.5 returned no usable visible content", emptyOutputError.diagnostics);
+    console.warn("[summary] model returned no usable visible content", emptyOutputError.diagnostics);
     throw emptyOutputError;
   }
 
@@ -2069,22 +2068,53 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
   };
 }
 
+async function resolveGenerationPlan({ plan, usageLedgerContext }) {
+  if (typeof plan === "string" && plan.trim()) {
+    return plan.trim().toLowerCase();
+  }
+
+  const prisma = usageLedgerContext?.prisma;
+  const userId = usageLedgerContext?.userId;
+  if (!prisma?.user || !userId) {
+    return "free";
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true },
+    });
+    return user?.plan || "free";
+  } catch (error) {
+    captureSentryException(error, {
+      level: "warning",
+      tags: {
+        util: "study_materials",
+        phase: "resolve_generation_plan",
+      },
+      user: { id: userId },
+    });
+    return "free";
+  }
+}
+
 export async function generateStudyMaterialFromExcerpts({
   generationType,
   excerpts,
   language = "english",
   options = {},
-  useGpt55Summary = true,
+  plan,
   usageLedgerContext = null,
 }) {
   const normalizedOptions = normalizeGenerationOptions(generationType, options);
+  const generationPlan = await resolveGenerationPlan({ plan, usageLedgerContext });
   if (generationType === DOCUMENT_GENERATION_TYPES.summary) {
     try {
       return await generateSummaryFromExcerptsWithCleanPrompt({
         generationType,
         excerpts,
         options: normalizedOptions,
-        useGpt55Summary,
+        plan: generationPlan,
         usageLedgerContext,
       });
     } catch (error) {
@@ -2095,7 +2125,7 @@ export async function generateStudyMaterialFromExcerpts({
         },
       });
       if (error?.code === "empty_summary_output") {
-        console.warn("[summary] Falling back to structured summary pipeline after empty GPT-5.5 output", {
+        console.warn("[summary] Falling back to structured summary pipeline after empty summary output", {
           diagnostics: error.diagnostics ?? null,
         });
         const fallbackResult = await generateSummaryStudyGuideFromExcerptsV2({
@@ -2128,19 +2158,26 @@ export async function generateStudyMaterialFromExcerpts({
     sourceTier,
     sampled: sourceMaterial.sampled,
   });
-  const model = resolveModelForGeneration({ generationType, useGpt55Summary });
+  const routing = await resolveModelForGeneration({ generationType, plan: generationPlan });
+  const { model, reasoningEffort } = routing;
+  const completionParams = {
+    model,
+    messages: [
+      { role: "system", content: buildSystemPrompt(generationType) },
+      { role: "user", content: prompt },
+    ],
+  };
+  if (reasoningEffort) {
+    completionParams.reasoning_effort = reasoningEffort;
+    completionParams.max_completion_tokens = OUTPUT_TOKEN_LIMITS[generationType];
+  } else {
+    completionParams.temperature = 0.3;
+    completionParams.max_tokens = OUTPUT_TOKEN_LIMITS[generationType];
+  }
 
   try {
     const openai = getClient();
-    const response = await createChatCompletion(openai, {
-      model,
-      temperature: 0.3,
-      max_tokens: OUTPUT_TOKEN_LIMITS[generationType],
-      messages: [
-        { role: "system", content: buildSystemPrompt(generationType) },
-        { role: "user", content: prompt },
-      ],
-    }, withUsageLedgerCallContext(usageLedgerContext, {
+    const response = await createChatCompletion(openai, completionParams, withUsageLedgerCallContext(usageLedgerContext, {
       aiPhase: `${generationType}_initial_generation`,
       callKey: `${generationType}:initial`,
       metadata: {
@@ -2149,7 +2186,8 @@ export async function generateStudyMaterialFromExcerpts({
         selectedExcerptCount: sourceMaterial.selectedExcerptCount,
         totalExcerptCount: sourceMaterial.totalExcerptCount,
         maxTokens: OUTPUT_TOKEN_LIMITS[generationType],
-        temperature: 0.3,
+        temperature: reasoningEffort ? null : 0.3,
+        reasoningEffort,
       },
     }));
 
