@@ -11,6 +11,12 @@ import {
   getUserAllowance,
 } from "../utils/limits.js";
 import { getUsdToSarRate } from "../utils/modelPricing.js";
+import {
+  ALLOWED_MODELS,
+  VALID_FEATURES,
+  VALID_PLANS,
+  VALID_REASONING_EFFORTS,
+} from "../utils/modelRoutingPolicy.js";
 import { sendTelegramAdminNotification } from "../utils/telegramNotify.js";
 import {
   TELEGRAM_DELIVERY_STATUS,
@@ -353,6 +359,46 @@ const serializeUsageCapConfig = (config) => ({
   createdAt: config.createdAt,
   updatedAt: config.updatedAt,
 });
+
+const serializeModelRoutingConfig = (config) => ({
+  id: config.id,
+  feature: config.feature,
+  plan: config.plan,
+  model: config.model,
+  reasoningEffort: config.reasoningEffort,
+  updatedByAdminId: config.updatedByAdminId,
+  createdAt: config.createdAt,
+  updatedAt: config.updatedAt,
+});
+
+const getAllowedModel = (modelId) => (
+  ALLOWED_MODELS.find((allowedModel) => allowedModel.id === modelId)
+);
+
+const validateModelRoutingUpdate = ({ feature, plan, model, reasoningEffort }) => {
+  if (!VALID_FEATURES.includes(feature)) {
+    return { error: "feature must be one of: summary, flashcards, exam" };
+  }
+
+  if (!VALID_PLANS.includes(plan)) {
+    return { error: "plan must be one of: free, premium" };
+  }
+
+  const allowedModel = getAllowedModel(model);
+  if (!allowedModel) {
+    return { error: "model must be one of the allowed model ids" };
+  }
+
+  if (reasoningEffort !== null && !VALID_REASONING_EFFORTS.includes(reasoningEffort)) {
+    return { error: "reasoningEffort must be null or one of: none, low, medium, high, xhigh" };
+  }
+
+  if (reasoningEffort !== null && !allowedModel.supportsReasoningEffort) {
+    return { error: "reasoningEffort is only supported for models with reasoning effort enabled" };
+  }
+
+  return { allowedModel };
+};
 
 async function buildUsageCapImpact(prisma, plan, proposedCaps) {
   const normalizedPlan = plan === "premium" ? "premium" : "free";
@@ -841,6 +887,105 @@ export const createAdminRouter = ({
       authSecurity: healthDiagnostics.getAuthSecurityDiagnostics(),
       betterAuthBaseURL: healthDiagnostics.resolvedBetterAuthBaseURL,
     });
+  });
+
+  router.get("/model-routing", async (req, res) => {
+    try {
+      const configs = await prisma.modelRoutingConfig.findMany({
+        orderBy: [
+          { feature: "asc" },
+          { plan: "asc" },
+        ],
+      });
+
+      res.json({
+        configs: configs.map(serializeModelRoutingConfig),
+        allowedModels: ALLOWED_MODELS,
+      });
+    } catch (error) {
+      console.error("Error fetching model routing config:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to fetch model routing config" });
+    }
+  });
+
+  router.patch("/model-routing/:feature/:plan", async (req, res) => {
+    try {
+      const feature = typeof req.params.feature === "string"
+        ? req.params.feature.trim().toLowerCase()
+        : "";
+      const plan = typeof req.params.plan === "string"
+        ? req.params.plan.trim().toLowerCase()
+        : "";
+      const model = typeof req.body?.model === "string"
+        ? req.body.model.trim()
+        : req.body?.model;
+      const reasoningEffort = req.body?.reasoningEffort === null
+        ? null
+        : typeof req.body?.reasoningEffort === "string"
+          ? req.body.reasoningEffort.trim()
+          : req.body?.reasoningEffort;
+      const validation = validateModelRoutingUpdate({
+        feature,
+        plan,
+        model,
+        reasoningEffort,
+      });
+
+      if (validation.error) {
+        return res.status(400).json({ error: validation.error });
+      }
+
+      const before = await prisma.modelRoutingConfig.findUnique({
+        where: {
+          feature_plan: {
+            feature,
+            plan,
+          },
+        },
+      });
+
+      if (!before) {
+        return res.status(404).json({ error: "Model routing config row not found" });
+      }
+
+      const updated = await prisma.modelRoutingConfig.update({
+        where: {
+          feature_plan: {
+            feature,
+            plan,
+          },
+        },
+        data: {
+          model,
+          reasoningEffort,
+          updatedByAdminId: req.session.user.id,
+        },
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "model_routing.update",
+        targetId: `${feature}:${plan}`,
+        details: {
+          before: {
+            model: before.model,
+            reasoningEffort: before.reasoningEffort,
+          },
+          after: {
+            model: updated.model,
+            reasoningEffort: updated.reasoningEffort,
+          },
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(serializeModelRoutingConfig(updated));
+    } catch (error) {
+      console.error("Error updating model routing config:", error);
+      captureSentryException(error, { tags: { route: "admin" } });
+      res.status(500).json({ error: "Failed to update model routing config" });
+    }
   });
 
   router.get("/users", async (req, res) => {

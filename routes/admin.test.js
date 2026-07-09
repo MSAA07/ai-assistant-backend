@@ -41,6 +41,7 @@ function createMockDependencies() {
   const calls = {
     createUserBodies: [],
     userLimitUpserts: [],
+    auditLogCreates: [],
   };
   const createdUser = {
     id: "user_1",
@@ -82,7 +83,65 @@ function createMockDependencies() {
         },
       },
       auditLog: {
-        async create() {},
+        async create(args) {
+          calls.auditLogCreates.push(args);
+        },
+      },
+    },
+  };
+}
+
+function createModelRoutingDeps() {
+  const calls = {
+    auditLogCreates: [],
+    updates: [],
+  };
+  const configs = [
+    { feature: "summary", plan: "free", model: "gpt-4o-mini", reasoningEffort: null },
+    { feature: "summary", plan: "premium", model: "gpt-4o-mini", reasoningEffort: null },
+    { feature: "flashcards", plan: "free", model: "gpt-4o", reasoningEffort: null },
+    { feature: "flashcards", plan: "premium", model: "gpt-4o", reasoningEffort: null },
+    { feature: "exam", plan: "free", model: "gpt-4o", reasoningEffort: null },
+    { feature: "exam", plan: "premium", model: "gpt-4o", reasoningEffort: null },
+  ].map((config, index) => ({
+    id: `config_${index + 1}`,
+    updatedByAdminId: null,
+    createdAt: new Date("2026-07-09T00:00:00.000Z"),
+    updatedAt: new Date("2026-07-09T00:00:00.000Z"),
+    ...config,
+  }));
+
+  const findConfig = ({ feature, plan }) => (
+    configs.find((config) => config.feature === feature && config.plan === plan) ?? null
+  );
+  const cloneConfig = (config) => (config ? { ...config } : null);
+
+  return {
+    calls,
+    auth: {},
+    prisma: {
+      modelRoutingConfig: {
+        async findMany() {
+          return configs.map(cloneConfig).sort((a, b) => (
+            a.feature.localeCompare(b.feature) || a.plan.localeCompare(b.plan)
+          ));
+        },
+        async findUnique({ where }) {
+          return cloneConfig(findConfig(where.feature_plan));
+        },
+        async update({ where, data }) {
+          calls.updates.push({ where, data });
+          const config = findConfig(where.feature_plan);
+          Object.assign(config, data, {
+            updatedAt: new Date("2026-07-09T01:00:00.000Z"),
+          });
+          return cloneConfig(config);
+        },
+      },
+      auditLog: {
+        async create(args) {
+          calls.auditLogCreates.push(args);
+        },
       },
     },
   };
@@ -264,4 +323,77 @@ test("admin users include read-only Telegram usage indicators", async () => {
   assert.equal(response.data.users[0].telegram.flashcardSendCount, 2);
   assert.equal(response.data.users[0].telegram.examSendCount, 1);
   assert.equal(response.data.users[0].telegram.lastTelegramSendAt, "2026-05-11T02:00:00.000Z");
+});
+
+test("admin model routing list returns configs and allowed models", async () => {
+  const deps = createModelRoutingDeps();
+  const app = createTestApp(deps);
+
+  const response = await request(app, "/api/admin/model-routing", null, { method: "GET" });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.data.configs.length, 6);
+  assert.equal(response.data.allowedModels.length, 9);
+});
+
+test("admin model routing update writes row and audit log", async () => {
+  const deps = createModelRoutingDeps();
+  const app = createTestApp(deps);
+
+  const response = await request(app, "/api/admin/model-routing/summary/free", {
+    model: "gpt-5.5",
+    reasoningEffort: "medium",
+  }, { method: "PATCH" });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.data.model, "gpt-5.5");
+  assert.equal(response.data.reasoningEffort, "medium");
+  assert.equal(response.data.updatedByAdminId, "admin_1");
+  assert.deepEqual(deps.calls.updates[0], {
+    where: { feature_plan: { feature: "summary", plan: "free" } },
+    data: {
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      updatedByAdminId: "admin_1",
+    },
+  });
+  assert.equal(deps.calls.auditLogCreates.length, 1);
+  assert.deepEqual(deps.calls.auditLogCreates[0].data, {
+    adminId: "admin_1",
+    action: "model_routing.update",
+    targetId: "summary:free",
+    details: {
+      before: { model: "gpt-4o-mini", reasoningEffort: null },
+      after: { model: "gpt-5.5", reasoningEffort: "medium" },
+    },
+    ipAddress: "::ffff:127.0.0.1",
+  });
+});
+
+test("admin model routing update rejects invalid model", async () => {
+  const deps = createModelRoutingDeps();
+  const app = createTestApp(deps);
+
+  const response = await request(app, "/api/admin/model-routing/summary/free", {
+    model: "gpt-3.5-turbo",
+    reasoningEffort: "medium",
+  }, { method: "PATCH" });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.data.error, "model must be one of the allowed model ids");
+  assert.equal(deps.calls.updates.length, 0);
+});
+
+test("admin model routing update rejects reasoning effort for non-reasoning model", async () => {
+  const deps = createModelRoutingDeps();
+  const app = createTestApp(deps);
+
+  const response = await request(app, "/api/admin/model-routing/summary/free", {
+    model: "gpt-4o",
+    reasoningEffort: "medium",
+  }, { method: "PATCH" });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.data.error, "reasoningEffort is only supported for models with reasoning effort enabled");
+  assert.equal(deps.calls.updates.length, 0);
 });
