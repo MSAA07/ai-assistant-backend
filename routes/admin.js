@@ -23,6 +23,7 @@ import {
   TELEGRAM_DELIVERY_STATUS,
   TELEGRAM_DELIVERY_TYPES,
 } from "../utils/telegramDelivery.js";
+import { getIssuesFeed } from "../utils/issuesFeed.js";
 
 const getIpAddress = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -399,6 +400,53 @@ const validateModelRoutingUpdate = ({ feature, plan, model, reasoningEffort }) =
   }
 
   return { allowedModel };
+};
+
+const buildIssuesFeedFilters = (query) => {
+  const type = getQueryValue(query.type);
+  const severity = getQueryValue(query.severity);
+  const resolvedValue = getQueryValue(query.resolved);
+  const startDateValue = getQueryValue(query.startDate);
+  const endDateValue = getQueryValue(query.endDate);
+  const startDate = parseDateInput(startDateValue);
+  const endDate = parseDateInput(endDateValue, { endOfDay: true });
+
+  if (startDateValue && !startDate) return { error: "Invalid startDate" };
+  if (endDateValue && !endDate) return { error: "Invalid endDate" };
+  if (startDate && endDate && startDate > endDate) {
+    return { error: "startDate must be before or equal to endDate" };
+  }
+  if (resolvedValue && resolvedValue !== "true" && resolvedValue !== "false") {
+    return { error: "resolved must be true or false" };
+  }
+
+  return {
+    filters: {
+      types: type && type !== "all" ? type : undefined,
+      severity: severity && severity !== "all" ? severity : undefined,
+      resolved: resolvedValue === "true" ? true : resolvedValue === "false" ? false : undefined,
+      startDate,
+      endDate,
+    },
+  };
+};
+
+const escapeCsvField = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+
+const issuesToCsv = (items) => {
+  const header = ["id", "type", "severity", "title", "message", "createdAt", "resolved", "relatedId"];
+  const rows = items.map((issue) => [
+    issue.id,
+    issue.type,
+    issue.severity,
+    issue.title,
+    issue.message,
+    issue.createdAt.toISOString(),
+    issue.resolved,
+    issue.relatedId,
+  ].map(escapeCsvField).join(","));
+
+  return [header.join(","), ...rows].join("\r\n");
 };
 
 async function buildUsageCapImpact(prisma, plan, proposedCaps) {
@@ -2958,6 +3006,100 @@ export const createAdminRouter = ({
       console.error("Error resolving anomaly alert:", error);
       captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to resolve anomaly alert" });
+    }
+  });
+
+  router.get("/issues", async (req, res) => {
+    try {
+      const pagination = buildPagination(req.query);
+      if (pagination.error) {
+        return res.status(400).json({ error: pagination.error });
+      }
+
+      const parsedFilters = buildIssuesFeedFilters(req.query);
+      if (parsedFilters.error) {
+        return res.status(400).json({ error: parsedFilters.error });
+      }
+
+      const feed = await getIssuesFeed({
+        ...parsedFilters.filters,
+        page: pagination.page,
+        limit: pagination.limit,
+      });
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "VIEW_ISSUES_FEED",
+        details: {
+          page: feed.page,
+          limit: feed.limit,
+          type: parsedFilters.filters.types || null,
+          severity: parsedFilters.filters.severity || null,
+          resolved: parsedFilters.filters.resolved ?? null,
+          startDate: parsedFilters.filters.startDate?.toISOString() || null,
+          endDate: parsedFilters.filters.endDate?.toISOString() || null,
+          total: feed.total,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json(feed);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return res.status(400).json({ error: error.message });
+      }
+
+      console.error("Error fetching issues feed:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "issues" } });
+      res.status(500).json({ error: "Failed to fetch issues feed" });
+    }
+  });
+
+  router.get("/issues/export", async (req, res) => {
+    try {
+      const parsedFilters = buildIssuesFeedFilters(req.query);
+      if (parsedFilters.error) {
+        return res.status(400).json({ error: parsedFilters.error });
+      }
+
+      const feed = await getIssuesFeed({
+        ...parsedFilters.filters,
+        page: 1,
+        limit: 5000,
+      });
+      if (feed.total > 5000) {
+        return res.status(400).json({
+          error: "Export exceeds 5000 rows; narrow the filters and try again",
+        });
+      }
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "EXPORT_ISSUES_FEED",
+        details: {
+          type: parsedFilters.filters.types || null,
+          severity: parsedFilters.filters.severity || null,
+          resolved: parsedFilters.filters.resolved ?? null,
+          startDate: parsedFilters.filters.startDate?.toISOString() || null,
+          endDate: parsedFilters.filters.endDate?.toISOString() || null,
+          total: feed.total,
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res
+        .status(200)
+        .type("text/csv")
+        .set("Content-Disposition", 'attachment; filename="issues-feed.csv"')
+        .send(issuesToCsv(feed.items));
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return res.status(400).json({ error: error.message });
+      }
+
+      console.error("Error exporting issues feed:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "issues_export" } });
+      res.status(500).json({ error: "Failed to export issues feed" });
     }
   });
 
