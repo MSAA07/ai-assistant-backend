@@ -193,6 +193,7 @@ export const auth = betterAuth({
     provider: "postgresql",
   }),
   baseURL: resolvedBetterAuthBaseURL,
+  basePath: "/api/auth",
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: true,

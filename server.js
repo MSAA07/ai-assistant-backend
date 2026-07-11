@@ -22,6 +22,7 @@ import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { createCorsOriginValidator } from "./utils/frontendOrigins.js";
 import { getAuthEmailDiagnostics } from "./utils/email.js";
+import { buildBetterAuthVerificationRedirectParams } from "./utils/authBridgeUrls.js";
 import { getAuthCallbackDiagnostics } from "./utils/authCallbackUrls.js";
 import { getAuthTelemetrySnapshot } from "./utils/authTelemetry.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
@@ -86,6 +87,21 @@ app.use(
 );
 app.use(express.json());
 app.use("/api/auth", createAuthHardeningMiddleware({ auth, prisma }));
+
+app.get("/auth/verify-email", (req, res) => {
+  const redirectUrl = buildBetterAuthRedirectUrl(
+    "/verify-email",
+    buildBetterAuthVerificationRedirectParams({
+      nextUrl: req.query.next,
+      token: req.query.token,
+    }),
+  );
+  if (!redirectUrl) {
+    return res.status(500).send("Better Auth base URL is not configured");
+  }
+
+  return res.redirect(302, redirectUrl);
+});
 
 app.get("/verify-email", (req, res) => {
   const redirectUrl = buildBetterAuthRedirectUrl("/verify-email", req.query);

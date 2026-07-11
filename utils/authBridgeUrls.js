@@ -79,3 +79,18 @@ export function buildRelativeAuthBridgeCallbackPath({
   const params = new URLSearchParams({ next: targetUrl });
   return `${pathname}?${params.toString()}`;
 }
+
+export function buildBetterAuthVerificationRedirectParams({
+  nextUrl = "",
+  token = "",
+  env = process.env,
+} = {}) {
+  return {
+    token: String(getFirstQueryValue(token) || ""),
+    callbackURL: buildFrontendAuthActionUrl({
+      nextUrl: getFirstQueryValue(nextUrl),
+      action: "verify-email",
+      env,
+    }),
+  };
+}
