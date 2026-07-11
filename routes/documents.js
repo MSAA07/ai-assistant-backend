@@ -22,6 +22,7 @@ import {
 import { reconcileDocumentProcessingState, serializeDocument } from "../utils/documentStatus.js";
 import { isFeatureEnabledIfConfigured } from "../utils/featureFlags.js";
 import { getMonthlyLimit } from "../utils/limits.js";
+import { parsePdfWithinPageLimit } from "../utils/extractionPipeline.js";
 import { captureSentryException } from "../utils/sentry.js";
 import {
   buildStudyPdfBuffer,
@@ -348,6 +349,10 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
 
       await validateUploadedFileType(file);
 
+      if (file.mimetype === "application/pdf") {
+        await parsePdfWithinPageLimit(file.path);
+      }
+
       let dbUser = await prisma.user.findUnique({ where: { id: user.id } });
       if (!dbUser) {
         await fs.unlink(file.path).catch(() => {});
@@ -475,6 +480,7 @@ export const createDocumentsRouter = ({ prisma, requireAuth }) => {
       res.status(statusCode).json({
         error: statusCode >= 500 ? "Failed to process document" : error.message,
         details: error.message,
+        ...(error?.code ? { code: error.code } : {}),
       });
     }
   });

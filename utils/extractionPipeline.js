@@ -41,6 +41,7 @@ function buildExtractionResult(documentId, excerptCount, excerptSource) {
 function createDocumentTooLongError() {
   const error = new Error(DOCUMENT_TOO_LONG_MESSAGE);
   error.code = "document_too_long";
+  error.statusCode = 422;
   return error;
 }
 
@@ -54,6 +55,13 @@ function assertDocumentPageLimit(pageCount) {
   if (pageCount > MAX_DOCUMENT_PAGE_COUNT) {
     throw createDocumentTooLongError();
   }
+}
+
+export async function parsePdfWithinPageLimit(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  const data = await pdfParse(buffer);
+  assertDocumentPageLimit(data.numpages);
+  return data;
 }
 
 function findZipEndOfCentralDirectory(buffer) {
@@ -521,9 +529,7 @@ export async function processExtraction(prisma, job, workerId) {
 }
 
 async function extractPdf(filePath) {
-  const buffer = fs.readFileSync(filePath);
-  const data = await pdfParse(buffer);
-  assertDocumentPageLimit(data.numpages);
+  const data = await parsePdfWithinPageLimit(filePath);
   const pages = data.text.split("\f");
   const totalCharactersExtracted = pages.reduce((total, pageText) => total + pageText.trim().length, 0);
 

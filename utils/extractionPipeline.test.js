@@ -4,8 +4,12 @@ import assert from "node:assert/strict";
 import {
   chunkExtractedTextForExcerpts,
   detectDocumentLanguage,
+  parsePdfWithinPageLimit,
   sanitizeExtractedText,
 } from "./extractionPipeline.js";
+
+const oversizedPdfFixture = new URL("../tests/qa-test-oversized.pdf", import.meta.url);
+const normalPdfFixture = new URL("../tests/arabic.pdf", import.meta.url);
 
 function createExcerpt(content) {
   return {
@@ -63,4 +67,19 @@ test("sanitizeExtractedText repairs mojibake arabic text", () => {
   const mojibake = Buffer.from(rawArabic, "utf8").toString("latin1");
 
   assert.equal(sanitizeExtractedText(mojibake), rawArabic);
+});
+
+test("parsePdfWithinPageLimit rejects PDFs above 200 pages with an upload-safe error", async () => {
+  await assert.rejects(
+    parsePdfWithinPageLimit(oversizedPdfFixture),
+    (error) => error?.code === "document_too_long"
+      && error?.statusCode === 422
+      && /200 pages or fewer/.test(error.message),
+  );
+});
+
+test("parsePdfWithinPageLimit accepts a normal PDF", async () => {
+  const data = await parsePdfWithinPageLimit(normalPdfFixture);
+
+  assert.equal(data.numpages, 140);
 });
