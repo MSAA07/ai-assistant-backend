@@ -52,6 +52,7 @@ API server:
 - starts the in-memory admin QA scheduler after the API listener is live
 - uses one shared allowed-origin source for Better Auth trusted origins and Express CORS
 - Better Auth email/password verification emails are sent through the configured transactional email provider using `utils/authEmailTemplates.js`
+- `/auth/verify-email` hands verification to Better Auth before the frontend redirect; `/auth/reset-password` redirects the unconsumed reset token directly to the allowed frontend action URL so the user can submit a new password
 
 Worker:
 

@@ -30,6 +30,28 @@ test("buildFrontendAuthActionUrl rejects untrusted redirect destinations", () =>
   );
 });
 
+test("buildFrontendAuthActionUrl redirects a stage reset bridge with its token intact", () => {
+  const previousOrigins = process.env.FRONTEND_ORIGINS;
+  process.env.FRONTEND_ORIGINS = "https://stage.studymaxing.com";
+
+  try {
+    assert.equal(
+      buildFrontendAuthActionUrl({
+        nextUrl: "https://stage.studymaxing.com/?auth_action=reset-password",
+        action: "reset-password",
+        token: "reset-token-123",
+      }),
+      "https://stage.studymaxing.com/?auth_action=reset-password&token=reset-token-123",
+    );
+  } finally {
+    if (previousOrigins == null) {
+      delete process.env.FRONTEND_ORIGINS;
+    } else {
+      process.env.FRONTEND_ORIGINS = previousOrigins;
+    }
+  }
+});
+
 test("buildRelativeAuthBridgeCallbackPath creates a backend-relative Better Auth callback", () => {
   assert.equal(
     buildRelativeAuthBridgeCallbackPath({

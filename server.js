@@ -22,7 +22,10 @@ import { ensureDocumentGenerationSchema } from "./utils/documentGeneration.js";
 import { backfillDocumentProcessingState } from "./utils/documentStatus.js";
 import { createCorsOriginValidator } from "./utils/frontendOrigins.js";
 import { getAuthEmailDiagnostics } from "./utils/email.js";
-import { buildBetterAuthVerificationRedirectParams } from "./utils/authBridgeUrls.js";
+import {
+  buildBetterAuthVerificationRedirectParams,
+  buildFrontendAuthActionUrl,
+} from "./utils/authBridgeUrls.js";
 import { getAuthCallbackDiagnostics } from "./utils/authCallbackUrls.js";
 import { getAuthTelemetrySnapshot } from "./utils/authTelemetry.js";
 import { getErrorStatusCode, initSentry, setupSentryExpressErrorHandler } from "./utils/sentry.js";
@@ -99,6 +102,16 @@ app.get("/auth/verify-email", (req, res) => {
   if (!redirectUrl) {
     return res.status(500).send("Better Auth base URL is not configured");
   }
+
+  return res.redirect(302, redirectUrl);
+});
+
+app.get("/auth/reset-password", (req, res) => {
+  const redirectUrl = buildFrontendAuthActionUrl({
+    nextUrl: req.query.next,
+    action: "reset-password",
+    token: req.query.token,
+  });
 
   return res.redirect(302, redirectUrl);
 });
