@@ -7,10 +7,7 @@ if (!target || (target !== "server" && target !== "worker")) {
   process.exit(1);
 }
 
-const isProduction = process.env.NODE_ENV === "production";
-const prismaArgs = isProduction
-  ? ["prisma", "migrate", "deploy"]
-  : ["prisma", "db", "push"];
+const prismaArgs = ["prisma", "migrate", "deploy"];
 
 const targetFile = target === "worker" ? "worker.js" : "server.js";
 
@@ -37,7 +34,7 @@ function runCommand(command, args) {
 
 async function main() {
   console.log(
-    `[startup] prisma strategy=${isProduction ? "migrate deploy" : "db push"} target=${target}`,
+    `[startup] prisma strategy=migrate deploy target=${target}`,
   );
 
   await runCommand("npx", prismaArgs);
