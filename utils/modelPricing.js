@@ -1,14 +1,18 @@
-export const MODEL_PRICING_VERSION = "openai-text-pricing-2026-04-27-v1";
+export const MODEL_PRICING_VERSION = "openai-text-pricing-2026-08-23-v2";
 export const DEFAULT_USD_TO_SAR_RATE = 3.75;
 
 // USD per 1M text tokens. Keep ledger costs in USD; SAR conversion belongs to display code.
 export const MODEL_TOKEN_PRICING_USD_PER_1M = Object.freeze({
+  "gpt-4.1-nano": Object.freeze({ input: 0.1, output: 0.4 }),
+  "gpt-4.1-mini": Object.freeze({ input: 0.4, output: 1.6 }),
+  "gpt-4.1": Object.freeze({ input: 2.0, output: 8.0 }),
   "gpt-4o-mini": Object.freeze({ input: 0.15, output: 0.6 }),
   "gpt-4o": Object.freeze({ input: 2.5, output: 10.0 }),
+  "gpt-5.4-nano": Object.freeze({ input: 0.2, output: 1.25 }),
+  "gpt-5.4-mini": Object.freeze({ input: 0.75, output: 4.5 }),
+  "gpt-5.4": Object.freeze({ input: 2.5, output: 15.0 }),
   "gpt-5.5": Object.freeze({ input: 5.0, output: 30.0 }),
 });
-
-const DEFAULT_PRICING_MODEL = "gpt-4o-mini";
 
 function normalizeModelName(modelName) {
   return typeof modelName === "string" ? modelName.trim() : "";
@@ -20,23 +24,26 @@ export function resolvePricingModelKey(modelName) {
     return normalized;
   }
 
-  if (normalized.startsWith("gpt-4o-mini")) {
-    return "gpt-4o-mini";
-  }
-
-  if (normalized.startsWith("gpt-4o")) {
-    return "gpt-4o";
-  }
-
-  if (normalized.startsWith("gpt-5.5")) {
-    return "gpt-5.5";
-  }
-
-  return DEFAULT_PRICING_MODEL;
+  return Object.keys(MODEL_TOKEN_PRICING_USD_PER_1M)
+    .sort((left, right) => right.length - left.length)
+    .find((pricingKey) => normalized.startsWith(`${pricingKey}-`))
+    ?? null;
 }
 
 export function getModelPricing(modelName) {
-  return MODEL_TOKEN_PRICING_USD_PER_1M[resolvePricingModelKey(modelName)];
+  const pricingKey = resolvePricingModelKey(modelName);
+  if (!pricingKey) {
+    const normalized = normalizeModelName(modelName) || "<missing>";
+    console.error("[modelPricing] no pricing configured for model", {
+      model: normalized,
+      pricingVersion: MODEL_PRICING_VERSION,
+    });
+    const error = new Error(`No pricing configured for model: ${normalized}`);
+    error.code = "model_pricing_missing";
+    throw error;
+  }
+
+  return MODEL_TOKEN_PRICING_USD_PER_1M[pricingKey];
 }
 
 export function estimateCost(modelName, inputTokens = 0, outputTokens = 0) {

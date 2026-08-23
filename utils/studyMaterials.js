@@ -10,7 +10,6 @@ import {
   isUsableGenerationExcerpt,
 } from "./documentGeneration.js";
 import {
-  DEFAULT_GENERATION_MODEL,
   resolveModelForGeneration,
 } from "./modelRoutingPolicy.js";
 import { createTrackedChatCompletion } from "./modelUsageLedger.js";
@@ -20,7 +19,9 @@ import { captureSentryException } from "./sentry.js";
 let client;
 const summaryStudyGuideAnalysisCache = new Map();
 
-export const MODEL_NAME = DEFAULT_GENERATION_MODEL;
+function setOpenAiClientForTests(nextClient) {
+  client = nextClient;
+}
 
 const ESTIMATED_CHARS_PER_TOKEN = 4;
 const SUMMARY_SIGNAL_CHUNK_TOKEN_LIMIT = 2_500;
@@ -186,15 +187,17 @@ const SUMMARY_SECTION_TITLE_MAP = new Map(
 );
 
 function getClient() {
+  if (client) {
+    return client;
+  }
+
   if (!process.env.OPENAI_API_KEY) {
     const error = new Error("OPENAI_API_KEY is required for study material generation");
     error.code = "generation_config_missing";
     throw error;
   }
 
-  if (!client) {
-    client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  }
+  client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
   return client;
 }
@@ -1376,8 +1379,6 @@ function buildExamQaPrompt(questions, language, sourceText, targetCount) {
 
   return `You are performing strict QA validation for a mock exam in ${languageName}.
 
-Use model: gpt-4o.
-
 MOCK EXAM JSON:
 ${qaInput}
 
@@ -1431,7 +1432,8 @@ function parseJsonResponse(raw) {
 
 async function createJsonCompletion({
   aiPhase,
-  model = MODEL_NAME,
+  model,
+  reasoningEffort = null,
   systemPrompt,
   userPrompt,
   maxTokens,
@@ -1439,20 +1441,23 @@ async function createJsonCompletion({
   usageLedgerContext = null,
 }) {
   const openai = getClient();
-  const response = await createChatCompletion(openai, {
+  const params = buildModelCompletionParams({
     model,
+    reasoningEffort,
+    maxTokens,
     temperature,
-    max_tokens: maxTokens,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-  }, withUsageLedgerCallContext(usageLedgerContext, {
+  });
+  const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
     aiPhase,
     callKey: usageLedgerContext?.callKey ?? aiPhase,
     metadata: {
       maxTokens,
-      temperature,
+      temperature: reasoningEffort ? null : temperature,
+      reasoningEffort,
     },
   }));
 
@@ -1488,7 +1493,7 @@ function assertSummaryStudyGuideStructure(text) {
   }
 
   const takeawaysMatch = normalizedText.match(/exam-level takeaways[\s\S]*?(common pitfalls|what to memorize)/i);
-  const takeawayCount = (takeawaysMatch?.[0]?.match(/^\s*[-*]\s+/gm) || []).length;
+  const takeawayCount = (takeawaysMatch?.[0]?.match(/^\s*[-*•]\s+/gm) || []).length;
   if (takeawayCount < 3) {
     const error = new Error("Summary study guide must include at least 3 exam-level takeaways");
     error.code = "invalid_generation_output";
@@ -1647,22 +1652,42 @@ function combineUsage(...usageRecords) {
   }), {});
 }
 
+function buildModelCompletionParams({
+  model,
+  messages,
+  maxTokens,
+  temperature,
+  reasoningEffort = null,
+}) {
+  const params = { model, messages };
+  if (reasoningEffort) {
+    params.reasoning_effort = reasoningEffort;
+    params.max_completion_tokens = maxTokens;
+  } else {
+    params.temperature = temperature;
+    params.max_tokens = maxTokens;
+  }
+  return params;
+}
+
 async function validateAndImproveFlashcards({
   cards,
   language,
   sourceText,
   targetCount,
   model,
+  reasoningEffort = null,
   usageLedgerContext = null,
 }) {
   const output = { cards };
   assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, output);
 
   const openai = getClient();
-  const response = await createChatCompletion(openai, {
+  const params = buildModelCompletionParams({
     model,
+    reasoningEffort,
     temperature: 0.15,
-    max_tokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
+    maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
     messages: [
       {
         role: "system",
@@ -1673,13 +1698,15 @@ async function validateAndImproveFlashcards({
         content: buildFlashcardQaPrompt(cards, language, sourceText, targetCount),
       },
     ],
-  }, withUsageLedgerCallContext(usageLedgerContext, {
+  });
+  const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
     aiPhase: "flashcards_qa",
     callKey: "flashcards:qa",
     metadata: {
       targetCount,
       maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
-      temperature: 0.15,
+      temperature: reasoningEffort ? null : 0.15,
+      reasoningEffort,
     },
   }));
 
@@ -1704,16 +1731,18 @@ async function validateAndImproveExam({
   sourceText,
   targetCount,
   model,
+  reasoningEffort = null,
   usageLedgerContext = null,
 }) {
   const output = { questions };
   assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.exam, output);
 
   const openai = getClient();
-  const response = await createChatCompletion(openai, {
+  const params = buildModelCompletionParams({
     model,
+    reasoningEffort,
     temperature: 0.15,
-    max_tokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
+    maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
     messages: [
       {
         role: "system",
@@ -1724,13 +1753,15 @@ async function validateAndImproveExam({
         content: buildExamQaPrompt(questions, language, sourceText, targetCount),
       },
     ],
-  }, withUsageLedgerCallContext(usageLedgerContext, {
+  });
+  const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
     aiPhase: "exam_qa",
     callKey: "exam:qa",
     metadata: {
       targetCount,
       maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
-      temperature: 0.15,
+      temperature: reasoningEffort ? null : 0.15,
+      reasoningEffort,
     },
   }));
 
@@ -1777,14 +1808,22 @@ function buildPromptForGeneration({ generationType, language, options, sourceTex
   };
 }
 
-async function extractStudyGuideSignals({ chunks, language, usageLedgerContext = null }) {
+async function extractStudyGuideSignals({
+  chunks,
+  language,
+  model,
+  reasoningEffort,
+  usageLedgerContext = null,
+}) {
   const signalMaps = [];
   let usage = null;
-  let modelUsed = MODEL_NAME;
+  let modelUsed = model;
 
   for (let index = 0; index < chunks.length; index += 1) {
     const result = await createJsonCompletion({
       aiPhase: "summary_signal_extraction",
+      model,
+      reasoningEffort,
       systemPrompt: "You extract structured exam-study signals as strict JSON. Return valid JSON only.",
       userPrompt: buildStudyGuideSignalExtractionPrompt(chunks[index], language, index, chunks.length),
       maxTokens: 1_400,
@@ -1811,9 +1850,17 @@ async function extractStudyGuideSignals({ chunks, language, usageLedgerContext =
   };
 }
 
-async function analyzeStudyGuideChapterMap({ signalMap, language, usageLedgerContext = null }) {
+async function analyzeStudyGuideChapterMap({
+  signalMap,
+  language,
+  model,
+  reasoningEffort,
+  usageLedgerContext = null,
+}) {
   const result = await createJsonCompletion({
     aiPhase: "summary_chapter_map_analysis",
+    model,
+    reasoningEffort,
     systemPrompt: "You produce global chapter maps for exam study guides as strict JSON. Return valid JSON only.",
     userPrompt: buildChapterMapPrompt(signalMap, language),
     maxTokens: SUMMARY_ANALYSIS_OUTPUT_TOKEN_LIMIT,
@@ -1837,10 +1884,14 @@ async function synthesizeStudyGuideDraft({
   options,
   sourceTier,
   generationType,
+  model,
+  reasoningEffort,
   usageLedgerContext = null,
 }) {
   const result = await createJsonCompletion({
     aiPhase: "summary_structured_synthesis",
+    model,
+    reasoningEffort,
     systemPrompt: "You generate exam study guides as strict JSON. Return valid JSON only.",
     userPrompt: buildStudyGuideSynthesisPrompt(chapterMap, language, options, sourceTier),
     maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
@@ -1867,10 +1918,14 @@ async function optimizeStudyGuideForExams({
   chapterMap,
   language,
   generationType,
+  model,
+  reasoningEffort,
   usageLedgerContext = null,
 }) {
   const result = await createJsonCompletion({
     aiPhase: "summary_exam_optimization",
+    model,
+    reasoningEffort,
     systemPrompt: "You optimize exam study guides as strict JSON. Return valid JSON only.",
     userPrompt: buildStudyGuideOptimizationPrompt(draftText, chapterMap, language),
     maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
@@ -1895,10 +1950,14 @@ async function enforceStudyGuideFormat({
   optimizedText,
   language,
   generationType,
+  model,
+  reasoningEffort,
   usageLedgerContext = null,
 }) {
   const result = await createJsonCompletion({
     aiPhase: "summary_format_enforcement",
+    model,
+    reasoningEffort,
     systemPrompt: "You enforce markdown format for exam study guides as strict JSON. Return valid JSON only.",
     userPrompt: buildStudyGuideFormatPrompt(optimizedText, language),
     maxTokens: SUMMARY_STUDY_GUIDE_OUTPUT_TOKEN_LIMIT,
@@ -1926,6 +1985,8 @@ async function generateSummaryStudyGuideFromExcerptsV2({
   excerpts,
   language,
   options,
+  model,
+  reasoningEffort,
   usageLedgerContext = null,
 }) {
   const sourceMaterial = buildStudyGuideAnalysisChunks(excerpts);
@@ -1937,7 +1998,7 @@ async function generateSummaryStudyGuideFromExcerptsV2({
 
   const sourceTier = getSourceSizeTier(sourceMaterial.estimatedInputTokens);
   let usage = null;
-  let modelUsed = MODEL_NAME;
+  let modelUsed = model;
   const analysisCacheKey = getSummaryStudyGuideAnalysisCacheKey(excerpts);
   const cachedChapterMap = options.regenerationGuidance
     ? getCachedSummaryStudyGuideAnalysis(analysisCacheKey)
@@ -1948,6 +2009,8 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     const extractedSignals = await extractStudyGuideSignals({
       chunks: sourceMaterial.chunks,
       language,
+      model,
+      reasoningEffort,
       usageLedgerContext,
     });
     usage = mergeTokenUsage(usage, extractedSignals.usage);
@@ -1956,6 +2019,8 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     const analysis = await analyzeStudyGuideChapterMap({
       signalMap: extractedSignals.signalMap,
       language,
+      model,
+      reasoningEffort,
       usageLedgerContext,
     });
     usage = mergeTokenUsage(usage, analysis.usage);
@@ -1970,6 +2035,8 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     options,
     sourceTier,
     generationType,
+    model,
+    reasoningEffort,
     usageLedgerContext,
   });
   usage = mergeTokenUsage(usage, draft.usage);
@@ -1980,6 +2047,8 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     chapterMap,
     language,
     generationType,
+    model,
+    reasoningEffort,
     usageLedgerContext,
   });
   usage = mergeTokenUsage(usage, optimized.usage);
@@ -1989,6 +2058,8 @@ async function generateSummaryStudyGuideFromExcerptsV2({
     optimizedText: optimized.text,
     language,
     generationType,
+    model,
+    reasoningEffort,
     usageLedgerContext,
   });
   usage = mergeTokenUsage(usage, formatted.usage);
@@ -2010,12 +2081,11 @@ async function generateSummaryFromExcerptsWithCleanPrompt({
   generationType,
   excerpts,
   options,
-  plan,
+  model,
+  reasoningEffort,
   usageLedgerContext = null,
 }) {
   const sourceMaterial = prepareGpt55SummarySourceMaterial(excerpts);
-  const routing = await resolveModelForGeneration({ generationType, plan });
-  const { model, reasoningEffort } = routing;
   const regenerationGuidancePrompt = buildRegenerationGuidancePrompt(options);
   const messages = [
     { role: "user", content: SUMMARY_GENERATION_PROMPT },
@@ -2105,16 +2175,22 @@ export async function generateStudyMaterialFromExcerpts({
   options = {},
   plan,
   usageLedgerContext = null,
+  modelRoutingResolver = resolveModelForGeneration,
 }) {
   const normalizedOptions = normalizeGenerationOptions(generationType, options);
   const generationPlan = await resolveGenerationPlan({ plan, usageLedgerContext });
   if (generationType === DOCUMENT_GENERATION_TYPES.summary) {
+    const { model, reasoningEffort } = await modelRoutingResolver({
+      generationType,
+      plan: generationPlan,
+    });
     try {
       return await generateSummaryFromExcerptsWithCleanPrompt({
         generationType,
         excerpts,
         options: normalizedOptions,
-        plan: generationPlan,
+        model,
+        reasoningEffort,
         usageLedgerContext,
       });
     } catch (error) {
@@ -2133,6 +2209,8 @@ export async function generateStudyMaterialFromExcerpts({
           excerpts,
           language,
           options: normalizedOptions,
+          model,
+          reasoningEffort,
           usageLedgerContext,
         });
         return {
@@ -2158,22 +2236,18 @@ export async function generateStudyMaterialFromExcerpts({
     sourceTier,
     sampled: sourceMaterial.sampled,
   });
-  const routing = await resolveModelForGeneration({ generationType, plan: generationPlan });
+  const routing = await modelRoutingResolver({ generationType, plan: generationPlan });
   const { model, reasoningEffort } = routing;
-  const completionParams = {
+  const completionParams = buildModelCompletionParams({
     model,
+    reasoningEffort,
+    maxTokens: OUTPUT_TOKEN_LIMITS[generationType],
+    temperature: 0.3,
     messages: [
       { role: "system", content: buildSystemPrompt(generationType) },
       { role: "user", content: prompt },
     ],
-  };
-  if (reasoningEffort) {
-    completionParams.reasoning_effort = reasoningEffort;
-    completionParams.max_completion_tokens = OUTPUT_TOKEN_LIMITS[generationType];
-  } else {
-    completionParams.temperature = 0.3;
-    completionParams.max_tokens = OUTPUT_TOKEN_LIMITS[generationType];
-  }
+  });
 
   try {
     const openai = getClient();
@@ -2209,6 +2283,7 @@ export async function generateStudyMaterialFromExcerpts({
         sourceText: sourceMaterial.text,
         targetCount: effectiveOptions.cardCount,
         model,
+        reasoningEffort,
         usageLedgerContext,
       });
       output = qaResult.output;
@@ -2223,6 +2298,7 @@ export async function generateStudyMaterialFromExcerpts({
         sourceText: sourceMaterial.text,
         targetCount: effectiveOptions.questionCount,
         model,
+        reasoningEffort,
         usageLedgerContext,
       });
       output = qaResult.output;
@@ -2252,6 +2328,7 @@ export async function generateStudyMaterialFromExcerpts({
 }
 
 export const __studyMaterialsTestables = {
+  buildModelCompletionParams,
   cleanSummaryText,
   buildSummaryResponseDiagnostics,
   buildFlashcardsPrompt,
@@ -2264,6 +2341,7 @@ export const __studyMaterialsTestables = {
   getExamTargetCount,
   getFlashcardTargetCount,
   normalizeFlashcardsOutput,
+  setOpenAiClientForTests,
   toExamQaInput,
   toFlashcardQaInput,
 };

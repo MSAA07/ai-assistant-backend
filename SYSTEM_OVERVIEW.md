@@ -91,6 +91,9 @@ Generation:
 - large default-path documents can use sampled excerpts; V2 summaries analyze all usable excerpts through bounded extraction chunks before one global synthesis
 - weak documents reduce scope or count instead of inventing unsupported detail
 - model is chosen per request from routing policy
+- routing rows are cached independently by each process for at most 15 seconds, bounding worker staleness after an admin routing update without adding cross-process coordination
+- configured model and reasoning effort are preserved through summary structured fallback stages and flashcard/exam QA calls
+- every allow-listed model has explicit per-1M-token pricing; dated OpenAI model snapshots normalize to their base pricing key, and unknown pricing fails before generation instead of silently inheriting another model's rate
 - current policy: lower-cost model by default, stronger-model upgrade first for mock exams on entitled tiers
 - free, pro, and premium stay on the same backend generation endpoints and worker path; tier differences are routing-policy and limits decisions, not separate APIs
 - prompt-layer rollout and routing-policy rollout can be enabled or rolled back independently with feature flags

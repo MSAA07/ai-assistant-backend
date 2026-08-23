@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
 import { DOCUMENT_GENERATION_TYPES } from "./documentGeneration.js";
+import { getModelPricing } from "./modelPricing.js";
 import { captureSentryException } from "./sentry.js";
 
 export const DEFAULT_GENERATION_MODEL = "gpt-4o-mini";
@@ -22,7 +23,7 @@ export const VALID_PLANS = ["free", "premium"];
 export const VALID_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh"];
 
 const prisma = new PrismaClient();
-const CACHE_TTL_MS = 5 * 60 * 1000;
+export const ROUTING_CACHE_TTL_MS = 15 * 1000;
 
 let routingCache = null;
 let cacheLoadedAt = 0;
@@ -44,6 +45,11 @@ function getFallbackRoutingResult(generationType) {
     model: getFallbackModelForGeneration(generationType),
     reasoningEffort: null,
   };
+}
+
+function assertRoutingPricingConfigured(routing) {
+  getModelPricing(routing.model);
+  return routing;
 }
 
 async function loadRoutingCache() {
@@ -81,17 +87,17 @@ export async function invalidateRoutingCache() {
 
 export async function resolveModelForGeneration({ generationType, plan } = {}) {
   const now = Date.now();
-  if (!routingCache || now - cacheLoadedAt > CACHE_TTL_MS) {
+  if (!routingCache || now - cacheLoadedAt > ROUTING_CACHE_TTL_MS) {
     await loadRoutingCache();
   }
 
   const key = `${generationType}:${plan}`;
   const configured = routingCache?.[key];
   if (configured?.model) {
-    return {
+    return assertRoutingPricingConfigured({
       model: configured.model,
       reasoningEffort: configured.reasoningEffort ?? null,
-    };
+    });
   }
 
   const fallback = getFallbackRoutingResult(generationType);
@@ -111,5 +117,5 @@ export async function resolveModelForGeneration({ generationType, plan } = {}) {
     },
   });
 
-  return fallback;
+  return assertRoutingPricingConfigured(fallback);
 }

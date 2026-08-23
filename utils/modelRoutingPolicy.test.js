@@ -6,8 +6,13 @@ import {
   DEFAULT_GENERATION_MODEL,
   EXAM_GENERATION_MODEL,
   FLASHCARD_GENERATION_MODEL,
+  ROUTING_CACHE_TTL_MS,
   resolveModelForGeneration,
 } from "./modelRoutingPolicy.js";
+
+test("worker routing cache refreshes within 15 seconds", () => {
+  assert.equal(ROUTING_CACHE_TTL_MS, 15_000);
+});
 
 test("flashcard generation falls back to gpt-4o when config is unavailable", async () => {
   assert.equal(FLASHCARD_GENERATION_MODEL, "gpt-4o");
