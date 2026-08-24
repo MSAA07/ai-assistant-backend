@@ -223,11 +223,14 @@ function withUsageLedgerCallContext(usageLedgerContext, {
 }
 
 async function createChatCompletion(openai, params, usageLedgerContext) {
+  const abortSignal = usageLedgerContext?.abortSignal;
+  const requestOptions = abortSignal ? { signal: abortSignal } : undefined;
+
   if (!usageLedgerContext?.prisma) {
-    return openai.chat.completions.create(params);
+    return openai.chat.completions.create(params, requestOptions);
   }
 
-  const { prisma, ...ledgerContext } = usageLedgerContext;
+  const { prisma, abortSignal: _abortSignal, ...ledgerContext } = usageLedgerContext;
   const aiPhase = ledgerContext.aiPhase || ledgerContext.callKey || "model_call";
   const isQaCall = /(^|_)qa($|_)|:qa\b/i.test(aiPhase) || /(^|_)qa($|_)|:qa\b/i.test(ledgerContext.callKey || "");
   const stageName = isQaCall ? `qa_call:${aiPhase}` : `model_call:${aiPhase}`;
@@ -236,6 +239,7 @@ async function createChatCompletion(openai, params, usageLedgerContext) {
     prisma,
     openai,
     params,
+    requestOptions,
     context: ledgerContext,
   }), {
     metadata: {
@@ -1325,7 +1329,7 @@ Validation rules:
 - Coverage check: ensure cards cover definitions, models/frameworks, key distinctions, cause/effect relationships, and important lists from the source material.
 - If high-value coverage is missing, add cards.
 - Formatting: plain text only, no markdown, no symbols, clean JSON.
-- Keep the final set close to ${targetCount} cards unless the source clearly needs fewer or more.
+- Return exactly ${targetCount} cards. Add high-value coverage or remove the weakest duplicates as needed to hit the exact count.
 
 Process:
 1. Analyze the flashcards.
@@ -1400,7 +1404,7 @@ Validation rules:
 - Redundancy: remove duplicate or overlapping questions.
 - Coverage: ensure the exam includes definitions, models, comparisons, and key concepts from the source material. Add missing questions if needed.
 - Explanation quality: explanations must be short, 1-2 lines, and explain the reasoning.
-- Keep the final exam close to ${targetCount} questions.
+- Return exactly ${targetCount} questions. Add grounded questions or remove the weakest duplicates as needed to hit the exact count.
 - Distribution target: ${mcqMin}-${mcqMax} MCQs and ${trueFalseMin}-${trueFalseMax} True/False questions.
 
 Process:
@@ -1652,6 +1656,27 @@ function combineUsage(...usageRecords) {
   }), {});
 }
 
+function createQaItemCountMismatchError(generationType, targetCount, actualCount) {
+  const error = new Error(
+    `${generationType} QA returned ${actualCount} items; expected exactly ${targetCount} after count repair`,
+  );
+  error.code = "qa_item_count_mismatch";
+  error.generationType = generationType;
+  error.targetCount = targetCount;
+  error.actualCount = actualCount;
+  return error;
+}
+
+function buildQaCountRepairInstruction(generationType, targetCount, actualCount) {
+  const itemLabel = generationType === DOCUMENT_GENERATION_TYPES.flashcards
+    ? "flashcards"
+    : "questions";
+
+  return `\n\nCOUNT REPAIR REQUIRED:
+The previous QA response returned ${actualCount} ${itemLabel}, but the requested target is exactly ${targetCount}.
+Return exactly ${targetCount} ${itemLabel}. Preserve the strongest existing items, add source-grounded coverage when short, and remove the weakest duplicates when over. Do not return any other count.`;
+}
+
 function buildModelCompletionParams({
   model,
   messages,
@@ -1683,45 +1708,79 @@ async function validateAndImproveFlashcards({
   assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, output);
 
   const openai = getClient();
-  const params = buildModelCompletionParams({
-    model,
-    reasoningEffort,
-    temperature: 0.15,
-    maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
-    messages: [
-      {
-        role: "system",
-        content: "You validate and improve flashcards. Return only a valid JSON array of {front,back} objects.",
-      },
-      {
-        role: "user",
-        content: buildFlashcardQaPrompt(cards, language, sourceText, targetCount),
-      },
-    ],
-  });
-  const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
-    aiPhase: "flashcards_qa",
-    callKey: "flashcards:qa",
-    metadata: {
-      targetCount,
-      maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
-      temperature: reasoningEffort ? null : 0.15,
+  const runQaCall = async ({ inputCards, countRepair = null }) => {
+    const basePrompt = buildFlashcardQaPrompt(inputCards, language, sourceText, targetCount);
+    const params = buildModelCompletionParams({
+      model,
       reasoningEffort,
-    },
-  }));
+      temperature: 0.15,
+      maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
+      messages: [
+        {
+          role: "system",
+          content: "You validate and improve flashcards. Return only a valid JSON array of {front,back} objects.",
+        },
+        {
+          role: "user",
+          content: countRepair
+            ? `${basePrompt}${buildQaCountRepairInstruction(
+              DOCUMENT_GENERATION_TYPES.flashcards,
+              targetCount,
+              countRepair.actualCount,
+            )}`
+            : basePrompt,
+        },
+      ],
+    });
+    const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
+      aiPhase: countRepair ? "flashcards_qa_count_repair" : "flashcards_qa",
+      callKey: countRepair ? "flashcards:qa-count-repair" : "flashcards:qa",
+      metadata: {
+        targetCount,
+        previousCount: countRepair?.actualCount ?? null,
+        maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
+        temperature: reasoningEffort ? null : 0.15,
+        reasoningEffort,
+      },
+    }));
 
-  const raw = response.choices?.[0]?.message?.content;
-  if (!raw) {
-    throw new Error("OpenAI returned an empty flashcard QA response");
+    const raw = response.choices?.[0]?.message?.content;
+    if (!raw) {
+      throw new Error("OpenAI returned an empty flashcard QA response");
+    }
+
+    const nextOutput = normalizeFlashcardsOutput(parseJsonResponse(raw));
+    assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, nextOutput);
+    return { response, output: nextOutput };
+  };
+
+  const firstQa = await runQaCall({ inputCards: cards });
+  let improvedOutput = firstQa.output;
+  const responses = [firstQa.response];
+
+  if (improvedOutput.cards.length !== targetCount) {
+    const repairedQa = await runQaCall({
+      inputCards: improvedOutput.cards,
+      countRepair: { actualCount: improvedOutput.cards.length },
+    });
+    improvedOutput = repairedQa.output;
+    responses.push(repairedQa.response);
   }
 
-  const improvedOutput = normalizeFlashcardsOutput(parseJsonResponse(raw));
-  assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, improvedOutput);
+  if (improvedOutput.cards.length !== targetCount) {
+    throw createQaItemCountMismatchError(
+      DOCUMENT_GENERATION_TYPES.flashcards,
+      targetCount,
+      improvedOutput.cards.length,
+    );
+  }
+
+  const finalResponse = responses.at(-1);
 
   return {
     output: improvedOutput,
-    modelUsed: response?.model || model,
-    usage: response?.usage || null,
+    modelUsed: finalResponse?.model || model,
+    usage: combineUsage(...responses.map((response) => response?.usage)),
   };
 }
 
@@ -1738,45 +1797,79 @@ async function validateAndImproveExam({
   assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.exam, output);
 
   const openai = getClient();
-  const params = buildModelCompletionParams({
-    model,
-    reasoningEffort,
-    temperature: 0.15,
-    maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
-    messages: [
-      {
-        role: "system",
-        content: "You validate and improve mock exams. Return only a valid JSON object with a questions array.",
-      },
-      {
-        role: "user",
-        content: buildExamQaPrompt(questions, language, sourceText, targetCount),
-      },
-    ],
-  });
-  const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
-    aiPhase: "exam_qa",
-    callKey: "exam:qa",
-    metadata: {
-      targetCount,
-      maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
-      temperature: reasoningEffort ? null : 0.15,
+  const runQaCall = async ({ inputQuestions, countRepair = null }) => {
+    const basePrompt = buildExamQaPrompt(inputQuestions, language, sourceText, targetCount);
+    const params = buildModelCompletionParams({
+      model,
       reasoningEffort,
-    },
-  }));
+      temperature: 0.15,
+      maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
+      messages: [
+        {
+          role: "system",
+          content: "You validate and improve mock exams. Return only a valid JSON object with a questions array.",
+        },
+        {
+          role: "user",
+          content: countRepair
+            ? `${basePrompt}${buildQaCountRepairInstruction(
+              DOCUMENT_GENERATION_TYPES.exam,
+              targetCount,
+              countRepair.actualCount,
+            )}`
+            : basePrompt,
+        },
+      ],
+    });
+    const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
+      aiPhase: countRepair ? "exam_qa_count_repair" : "exam_qa",
+      callKey: countRepair ? "exam:qa-count-repair" : "exam:qa",
+      metadata: {
+        targetCount,
+        previousCount: countRepair?.actualCount ?? null,
+        maxTokens: OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
+        temperature: reasoningEffort ? null : 0.15,
+        reasoningEffort,
+      },
+    }));
 
-  const raw = response.choices?.[0]?.message?.content;
-  if (!raw) {
-    throw new Error("OpenAI returned an empty exam QA response");
+    const raw = response.choices?.[0]?.message?.content;
+    if (!raw) {
+      throw new Error("OpenAI returned an empty exam QA response");
+    }
+
+    const nextOutput = normalizeExamOutput(parseJsonResponse(raw));
+    assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.exam, nextOutput);
+    return { response, output: nextOutput };
+  };
+
+  const firstQa = await runQaCall({ inputQuestions: questions });
+  let improvedOutput = firstQa.output;
+  const responses = [firstQa.response];
+
+  if (improvedOutput.questions.length !== targetCount) {
+    const repairedQa = await runQaCall({
+      inputQuestions: improvedOutput.questions,
+      countRepair: { actualCount: improvedOutput.questions.length },
+    });
+    improvedOutput = repairedQa.output;
+    responses.push(repairedQa.response);
   }
 
-  const improvedOutput = normalizeExamOutput(parseJsonResponse(raw));
-  assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.exam, improvedOutput);
+  if (improvedOutput.questions.length !== targetCount) {
+    throw createQaItemCountMismatchError(
+      DOCUMENT_GENERATION_TYPES.exam,
+      targetCount,
+      improvedOutput.questions.length,
+    );
+  }
+
+  const finalResponse = responses.at(-1);
 
   return {
     output: improvedOutput,
-    modelUsed: response?.model || model,
-    usage: response?.usage || null,
+    modelUsed: finalResponse?.model || model,
+    usage: combineUsage(...responses.map((response) => response?.usage)),
   };
 }
 
@@ -2344,4 +2437,6 @@ export const __studyMaterialsTestables = {
   setOpenAiClientForTests,
   toExamQaInput,
   toFlashcardQaInput,
+  validateAndImproveExam,
+  validateAndImproveFlashcards,
 };

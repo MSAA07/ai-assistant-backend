@@ -6,12 +6,12 @@ dotenv.config();
 const prisma = new PrismaClient();
 
 const ROUTING_CONFIGS = [
-  { feature: "summary", plan: "free", model: "gpt-4o-mini", reasoningEffort: null },
-  { feature: "summary", plan: "premium", model: "gpt-4o-mini", reasoningEffort: null },
-  { feature: "flashcards", plan: "free", model: "gpt-4o", reasoningEffort: null },
-  { feature: "flashcards", plan: "premium", model: "gpt-4o", reasoningEffort: null },
-  { feature: "exam", plan: "free", model: "gpt-4o", reasoningEffort: null },
-  { feature: "exam", plan: "premium", model: "gpt-4o", reasoningEffort: null },
+  { feature: "summary", plan: "free", model: "gpt-4.1-nano", reasoningEffort: null },
+  { feature: "summary", plan: "premium", model: "gpt-4.1-nano", reasoningEffort: null },
+  { feature: "flashcards", plan: "free", model: "gpt-4o-mini", reasoningEffort: null },
+  { feature: "flashcards", plan: "premium", model: "gpt-4.1-mini", reasoningEffort: null },
+  { feature: "exam", plan: "free", model: "gpt-5.4-mini", reasoningEffort: "low" },
+  { feature: "exam", plan: "premium", model: "gpt-5.4-mini", reasoningEffort: "low" },
 ];
 
 async function main() {

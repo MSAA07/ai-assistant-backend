@@ -35,7 +35,7 @@ function getCompletionTokenUsage(usage) {
   return Number(usage?.completion_tokens ?? usage?.output_tokens ?? 0);
 }
 
-export async function processGeneration(prisma, job, workerId) {
+export async function processGeneration(prisma, job, workerId, { signal } = {}) {
   const generationType = getGenerationTypeForJobType(job.jobType);
   const documentId = job.documentId ?? job.payload?.documentId;
   const generationId = job.payload?.generationId;
@@ -123,6 +123,7 @@ export async function processGeneration(prisma, job, workerId) {
   const usageEventType = getUsageEventTypeForGenerationType(generationType);
   const usageLedgerContext = {
     prisma,
+    abortSignal: signal,
     userId: job.userId,
     documentId,
     generationId: generation.id,

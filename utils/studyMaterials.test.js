@@ -7,6 +7,47 @@ import {
   generateStudyMaterialFromExcerpts,
 } from "./studyMaterials.js";
 
+function makeFlashcards(count) {
+  return Array.from({ length: count }, (_, index) => ({
+    front: `Question ${index + 1}?`,
+    back: `Answer ${index + 1}`,
+  }));
+}
+
+function makeExamQuestions(count) {
+  return Array.from({ length: count }, (_, index) => {
+    if (index % 4 === 3) {
+      return {
+        type: "true_false",
+        question: `Statement ${index + 1}`,
+        correctAnswer: true,
+        explanation: `Explanation ${index + 1}`,
+      };
+    }
+
+    const correctAnswer = `Correct ${index + 1}`;
+    return {
+      type: "mcq",
+      question: `Question ${index + 1}?`,
+      options: [correctAnswer, `Wrong A ${index + 1}`, `Wrong B ${index + 1}`, `Wrong C ${index + 1}`],
+      correctAnswer,
+      explanation: `Explanation ${index + 1}`,
+    };
+  });
+}
+
+function makeQaResponse(content, tokenBase) {
+  return {
+    model: "gpt-5.4-mini-2026-08-01",
+    choices: [{ message: { content: JSON.stringify(content) } }],
+    usage: {
+      prompt_tokens: tokenBase,
+      completion_tokens: tokenBase / 2,
+      total_tokens: tokenBase * 1.5,
+    },
+  };
+}
+
 test("summary cleanup normalizes headings, bullets, separators, and spacing", () => {
   const cleaned = __studyMaterialsTestables.cleanSummaryText(`
 # 1. Learning Outcomes
@@ -227,6 +268,77 @@ test("flashcard QA prompt requires fixing issues and returning only a JSON array
   assert.match(prompt, /Return ONLY the improved JSON array/);
   assert.match(prompt, /"front":"question or prompt"/);
   assert.match(prompt, /"back":"clear, concise answer"/);
+  assert.match(prompt, /Return exactly 16 cards/);
+});
+
+test("flashcard QA repairs a short response to the exact requested count", async () => {
+  const calls = [];
+  const responses = [
+    makeQaResponse(makeFlashcards(2), 20),
+    makeQaResponse(makeFlashcards(3), 30),
+  ];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return responses.shift();
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await __studyMaterialsTestables.validateAndImproveFlashcards({
+      cards: makeFlashcards(3),
+      language: "english",
+      sourceText: "Grounded source material",
+      targetCount: 3,
+      model: "gpt-5.4-mini",
+      reasoningEffort: "low",
+    });
+
+    assert.equal(calls.length, 2);
+    assert.match(calls[1].messages[1].content, /COUNT REPAIR REQUIRED/);
+    assert.match(calls[1].messages[1].content, /returned 2 flashcards/);
+    assert.equal(result.output.cards.length, 3);
+    assert.deepEqual(result.usage, {
+      prompt_tokens: 50,
+      completion_tokens: 25,
+      total_tokens: 75,
+    });
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("flashcard QA fails clearly when count repair is still short", async () => {
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create() {
+          return makeQaResponse(makeFlashcards(2), 20);
+        },
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => __studyMaterialsTestables.validateAndImproveFlashcards({
+        cards: makeFlashcards(3),
+        language: "english",
+        sourceText: "Grounded source material",
+        targetCount: 3,
+        model: "gpt-4.1-mini",
+      }),
+      (error) => error?.code === "qa_item_count_mismatch"
+        && error.actualCount === 2
+        && error.targetCount === 3,
+    );
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
 });
 
 test("QA completion params branch consistently for standard and reasoning models", () => {
@@ -310,7 +422,74 @@ test("exam QA prompt requires fixing correctness, distractors, clarity, and cove
   assert.match(prompt, /remove duplicate or overlapping questions/);
   assert.match(prompt, /definitions, models, comparisons, and key concepts/);
   assert.match(prompt, /Return ONLY the improved JSON object/);
+  assert.match(prompt, /Return exactly 10 questions/);
   assert.doesNotMatch(prompt, /Use model: gpt-4o/);
+});
+
+test("exam QA repairs a short response and never returns a silent short success", async () => {
+  const calls = [];
+  const responses = [
+    makeQaResponse({ questions: makeExamQuestions(3) }, 40),
+    makeQaResponse({ questions: makeExamQuestions(4) }, 60),
+  ];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return responses.shift();
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await __studyMaterialsTestables.validateAndImproveExam({
+      questions: makeExamQuestions(4),
+      language: "english",
+      sourceText: "Grounded source material",
+      targetCount: 4,
+      model: "gpt-5.4-mini",
+      reasoningEffort: "low",
+    });
+
+    assert.equal(calls.length, 2);
+    assert.match(calls[1].messages[1].content, /COUNT REPAIR REQUIRED/);
+    assert.match(calls[1].messages[1].content, /returned 3 questions/);
+    assert.equal(result.output.questions.length, 4);
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("exam QA fails clearly when the count-repair response is still short", async () => {
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create() {
+          return makeQaResponse({ questions: makeExamQuestions(3) }, 40);
+        },
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => __studyMaterialsTestables.validateAndImproveExam({
+        questions: makeExamQuestions(4),
+        language: "english",
+        sourceText: "Grounded source material",
+        targetCount: 4,
+        model: "gpt-5.4-mini",
+        reasoningEffort: "low",
+      }),
+      (error) => error?.code === "qa_item_count_mismatch"
+        && error.actualCount === 3
+        && error.targetCount === 4,
+    );
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
 });
 
 test("exam QA input serializes true false answers as JSON booleans", () => {

@@ -9,6 +9,7 @@ import {
   recordModelUsageEvent,
 } from "./modelUsageLedger.js";
 import { convertUsdToSar, getUsdToSarRate } from "./modelPricing.js";
+import { runWithAbortableTimeout } from "./jobTimeout.js";
 
 function createMockPrisma() {
   const recordsByKey = new Map();
@@ -192,6 +193,94 @@ test("createTrackedChatCompletion records failed calls when usage metadata is av
   assert.equal(failed.inputTokens, 80);
   assert.equal(failed.outputTokens, 20);
   assert.equal(failed.billable, true);
+});
+
+test("createTrackedChatCompletion forwards the worker abort signal to the OpenAI SDK request", async () => {
+  const prisma = createMockPrisma();
+  const controller = new AbortController();
+  let receivedRequestOptions;
+  const openai = {
+    chat: {
+      completions: {
+        async create(_params, requestOptions) {
+          receivedRequestOptions = requestOptions;
+          return {
+            model: "gpt-4.1-mini",
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+            choices: [{ message: { content: "[]" } }],
+          };
+        },
+      },
+    },
+  };
+
+  await createTrackedChatCompletion({
+    prisma,
+    openai,
+    params: { model: "gpt-4.1-mini", messages: [] },
+    requestOptions: { signal: controller.signal },
+    context: {
+      ...baseContext,
+      aiPhase: "flashcards_initial_generation",
+      callKey: "flashcards:initial",
+    },
+  });
+
+  assert.equal(receivedRequestOptions?.signal, controller.signal);
+});
+
+test("a worker timeout aborts a slow tracked OpenAI call instead of orphaning it", async () => {
+  const prisma = createMockPrisma();
+  let abortObserved = false;
+  let providerCompleted = false;
+  const openai = {
+    chat: {
+      completions: {
+        async create(_params, requestOptions) {
+          return new Promise((resolve, reject) => {
+            const providerTimer = setTimeout(() => {
+              providerCompleted = true;
+              resolve({
+                model: "gpt-4.1-mini",
+                usage: { prompt_tokens: 100, completion_tokens: 100, total_tokens: 200 },
+                choices: [{ message: { content: "late response" } }],
+              });
+            }, 200);
+
+            requestOptions.signal.addEventListener("abort", () => {
+              abortObserved = true;
+              clearTimeout(providerTimer);
+              const abortError = new Error("OpenAI request aborted");
+              abortError.name = "AbortError";
+              abortError.code = "request_aborted";
+              reject(abortError);
+            }, { once: true });
+          });
+        },
+      },
+    },
+  };
+
+  await assert.rejects(
+    () => runWithAbortableTimeout((signal) => createTrackedChatCompletion({
+      prisma,
+      openai,
+      params: { model: "gpt-4.1-mini", messages: [] },
+      requestOptions: { signal },
+      context: {
+        ...baseContext,
+        aiPhase: "exam_initial_generation",
+        callKey: "exam:initial",
+      },
+    }), 10),
+    (error) => error?.code === "job_timeout",
+  );
+
+  assert.equal(abortObserved, true);
+  assert.equal(providerCompleted, false);
+  assert.equal(prisma.upserts.length, 1);
+  assert.equal(prisma.upserts[0].create.status, MODEL_USAGE_STATUS.failed);
+  assert.equal(prisma.upserts[0].create.billable, false);
 });
 
 test("idempotency key changes across job retry attempts", () => {

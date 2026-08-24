@@ -28,6 +28,7 @@ import {
 } from "./utils/adminAlerts.js";
 import { backfillDocumentProcessingState, serializeDocument } from "./utils/documentStatus.js";
 import { captureSentryException, flushSentry, initSentry } from "./utils/sentry.js";
+import { runWithAbortableTimeout } from "./utils/jobTimeout.js";
 import {
   assertStorageConfiguredForRuntime,
   safeUnlink,
@@ -457,8 +458,8 @@ async function runWorker() {
       const heartbeatHandle = startLeaseHeartbeat(job.id);
 
       try {
-        const jobResult = await withTimeout(
-          processor(prisma, job, WORKER_ID),
+        const jobResult = await runWithAbortableTimeout(
+          (signal) => processor(prisma, job, WORKER_ID, { signal }),
           timeout,
         );
         clearInterval(heartbeatHandle);
@@ -518,15 +519,6 @@ function startLeaseHeartbeat(jobId) {
   }, HEARTBEAT_INTERVAL_MS);
 }
 
-function withTimeout(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(`Job timed out after ${ms}ms`)), ms);
-    }),
-  ]);
-}
-
 function isNonRetryableJobError(error) {
   return error?.code === "doc_cap_hit"
     || error?.code === "token_cap_hit"
@@ -540,6 +532,7 @@ function isNonRetryableJobError(error) {
     || error?.code === "invalid_generation_request"
     || error?.code === "invalid_generation_job"
     || error?.code === "generation_config_missing"
+    || error?.code === "qa_item_count_mismatch"
     || error?.code === "export_artifact_not_found"
     || error?.code === "invalid_export_job"
     || error?.code === "export_not_ready"

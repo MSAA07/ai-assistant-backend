@@ -226,12 +226,13 @@ export async function createTrackedChatCompletion({
   prisma,
   openai,
   params,
+  requestOptions,
   context = {},
 }) {
   const startedAt = Date.now();
 
   try {
-    const response = await openai.chat.completions.create(params);
+    const response = await openai.chat.completions.create(params, requestOptions);
     const usage = response?.usage ?? {};
     const { totalTokens } = normalizeTokenUsage(usage);
 

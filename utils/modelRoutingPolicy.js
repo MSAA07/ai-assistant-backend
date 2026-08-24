@@ -4,9 +4,10 @@ import { DOCUMENT_GENERATION_TYPES } from "./documentGeneration.js";
 import { getModelPricing } from "./modelPricing.js";
 import { captureSentryException } from "./sentry.js";
 
-export const DEFAULT_GENERATION_MODEL = "gpt-4o-mini";
-export const FLASHCARD_GENERATION_MODEL = "gpt-4o";
-export const EXAM_GENERATION_MODEL = "gpt-4o";
+export const DEFAULT_GENERATION_MODEL = "gpt-4.1-nano";
+export const FREE_FLASHCARD_GENERATION_MODEL = "gpt-4o-mini";
+export const FLASHCARD_GENERATION_MODEL = "gpt-4.1-mini";
+export const EXAM_GENERATION_MODEL = "gpt-5.4-mini";
 export const ALLOWED_MODELS = [
   { id: "gpt-4o-mini", label: "GPT-4o mini", supportsReasoningEffort: false },
   { id: "gpt-4o", label: "GPT-4o", supportsReasoningEffort: false },
@@ -28,9 +29,9 @@ export const ROUTING_CACHE_TTL_MS = 15 * 1000;
 let routingCache = null;
 let cacheLoadedAt = 0;
 
-function getFallbackModelForGeneration(generationType) {
+function getFallbackModelForGeneration(generationType, plan) {
   if (generationType === DOCUMENT_GENERATION_TYPES.flashcards) {
-    return FLASHCARD_GENERATION_MODEL;
+    return plan === "free" ? FREE_FLASHCARD_GENERATION_MODEL : FLASHCARD_GENERATION_MODEL;
   }
 
   if (generationType === DOCUMENT_GENERATION_TYPES.exam) {
@@ -40,10 +41,11 @@ function getFallbackModelForGeneration(generationType) {
   return DEFAULT_GENERATION_MODEL;
 }
 
-function getFallbackRoutingResult(generationType) {
+function getFallbackRoutingResult(generationType, plan) {
+  const model = getFallbackModelForGeneration(generationType, plan);
   return {
-    model: getFallbackModelForGeneration(generationType),
-    reasoningEffort: null,
+    model,
+    reasoningEffort: model === EXAM_GENERATION_MODEL ? "low" : null,
   };
 }
 
@@ -100,7 +102,7 @@ export async function resolveModelForGeneration({ generationType, plan } = {}) {
     });
   }
 
-  const fallback = getFallbackRoutingResult(generationType);
+  const fallback = getFallbackRoutingResult(generationType, plan);
   const fallbackError = new Error("Model routing config missing; using hardcoded fallback");
   console.warn("[modelRoutingPolicy] missing routing config; using hardcoded fallback", {
     generationType,
