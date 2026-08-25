@@ -533,6 +533,7 @@ function isNonRetryableJobError(error) {
     || error?.code === "invalid_generation_job"
     || error?.code === "generation_config_missing"
     || error?.code === "qa_item_count_mismatch"
+    || error?.code === "ungrounded_generation_output"
     || error?.code === "export_artifact_not_found"
     || error?.code === "invalid_export_job"
     || error?.code === "export_not_ready"

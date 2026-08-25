@@ -187,6 +187,7 @@ export async function processGeneration(prisma, job, workerId, { signal } = {}) 
     output: generationResult.output,
     options: normalizedOptions,
     effectiveOptions: generationResult.effectiveOptions,
+    grounding: generationResult.grounding ?? null,
     modelUsed: generationResult.modelUsed,
     usage: generationResult.usage,
     estimatedInputTokens: generationResult.estimatedInputTokens ?? sourceMaterial.estimatedInputTokens,

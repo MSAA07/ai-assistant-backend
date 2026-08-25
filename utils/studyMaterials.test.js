@@ -11,17 +11,27 @@ function makeFlashcards(count) {
   return Array.from({ length: count }, (_, index) => ({
     front: `Question ${index + 1}?`,
     back: `Answer ${index + 1}`,
+    sourceQuote: `Question ${index + 1} Answer ${index + 1} Correct ${index + 1} Explanation ${index + 1}`,
   }));
+}
+
+function makeQaSource(count = 50) {
+  return Array.from(
+    { length: count },
+    (_, index) => `Question ${index + 1} Answer ${index + 1} Correct ${index + 1} Explanation ${index + 1} documented concept.`,
+  ).join(" ");
 }
 
 function makeExamQuestions(count) {
   return Array.from({ length: count }, (_, index) => {
+    const sourceQuote = `Question ${index + 1} Answer ${index + 1} Correct ${index + 1} Explanation ${index + 1}`;
     if (index % 4 === 3) {
       return {
         type: "true_false",
         question: `Statement ${index + 1}`,
         correctAnswer: true,
         explanation: `Explanation ${index + 1}`,
+        sourceQuote,
       };
     }
 
@@ -32,6 +42,7 @@ function makeExamQuestions(count) {
       options: [correctAnswer, `Wrong A ${index + 1}`, `Wrong B ${index + 1}`, `Wrong C ${index + 1}`],
       correctAnswer,
       explanation: `Explanation ${index + 1}`,
+      sourceQuote,
     };
   });
 }
@@ -46,6 +57,77 @@ function makeQaResponse(content, tokenBase) {
       total_tokens: tokenBase * 1.5,
     },
   };
+}
+
+const THIN_SOURCE_FACTS = [
+  "Photosynthesis converts light energy into chemical energy in plant cells",
+  "Chlorophyll absorbs photons and powers light-dependent reactions",
+  "Water splitting releases oxygen and supplies electrons",
+  "The Calvin cycle fixes carbon dioxide into glucose",
+  "Environmental conditions influence the overall rate of photosynthesis",
+];
+
+function makeRepeatedThinSourceExcerpts(count = 63) {
+  return Array.from({ length: count }, (_, index) => ({
+    slideOrPage: index + 1,
+    excerptType: "slide_text",
+    charOffset: 0,
+    content: `${THIN_SOURCE_FACTS.join(". ")}. Iteration ${index + 1} adds more content for recovery testing.`,
+  }));
+}
+
+function makeThinGroundedFlashcards() {
+  return [
+    { front: "What does photosynthesis convert?", back: "Light energy into chemical energy.", sourceQuote: THIN_SOURCE_FACTS[0] },
+    { front: "What does chlorophyll absorb?", back: "Chlorophyll absorbs photons.", sourceQuote: THIN_SOURCE_FACTS[1] },
+    { front: "What does water splitting release?", back: "Water splitting releases oxygen.", sourceQuote: THIN_SOURCE_FACTS[2] },
+    { front: "What does the Calvin cycle fix?", back: "The Calvin cycle fixes carbon dioxide.", sourceQuote: THIN_SOURCE_FACTS[3] },
+    { front: "What influences the rate of photosynthesis?", back: "Environmental conditions influence the rate.", sourceQuote: THIN_SOURCE_FACTS[4] },
+  ];
+}
+
+function makeThinGroundedExamQuestions() {
+  return [
+    {
+      type: "mcq",
+      question: "What kind of energy does photosynthesis convert?",
+      options: ["Light energy", "Chemical energy", "Environmental conditions", "Water splitting"],
+      correctAnswer: "Light energy",
+      explanation: "Photosynthesis converts light energy into chemical energy.",
+      sourceQuote: THIN_SOURCE_FACTS[0],
+    },
+    {
+      type: "mcq",
+      question: "What does chlorophyll absorb?",
+      options: ["Photons", "Oxygen", "Glucose", "Electrons"],
+      correctAnswer: "Photons",
+      explanation: "Chlorophyll absorbs photons.",
+      sourceQuote: THIN_SOURCE_FACTS[1],
+    },
+    {
+      type: "mcq",
+      question: "What does water splitting release?",
+      options: ["Oxygen", "Glucose", "Carbon dioxide", "Photons"],
+      correctAnswer: "Oxygen",
+      explanation: "Water splitting releases oxygen.",
+      sourceQuote: THIN_SOURCE_FACTS[2],
+    },
+    {
+      type: "mcq",
+      question: "What does the Calvin cycle fix?",
+      options: ["Carbon dioxide", "Oxygen", "Photons", "Environmental conditions"],
+      correctAnswer: "Carbon dioxide",
+      explanation: "The Calvin cycle fixes carbon dioxide.",
+      sourceQuote: THIN_SOURCE_FACTS[3],
+    },
+    {
+      type: "true_false",
+      question: "Environmental conditions influence the rate of photosynthesis.",
+      correctAnswer: true,
+      explanation: "Environmental conditions influence the overall rate.",
+      sourceQuote: THIN_SOURCE_FACTS[4],
+    },
+  ];
 }
 
 test("summary cleanup normalizes headings, bullets, separators, and spacing", () => {
@@ -221,7 +303,156 @@ test("flashcard target counts match exam-ready coverage bands", () => {
   assert.equal(__studyMaterialsTestables.getFlashcardTargetCount("long"), 48);
 });
 
-test("flashcard prompt requests strict front/back JSON array without explanations", () => {
+test("source grounding inventory deduplicates repeated facts and ignores iteration filler", () => {
+  const repeatedSource = makeRepeatedThinSourceExcerpts()
+    .map((excerpt) => `[Page ${excerpt.slideOrPage} | slide text]\n${excerpt.content}`)
+    .join("\n\n");
+  const grounding = __studyMaterialsTestables.inspectSourceGrounding(repeatedSource);
+
+  assert.equal(grounding.distinctStatementCount, 5);
+  assert.equal(__studyMaterialsTestables.resolveGroundedTargetCount(48, grounding), 5);
+  assert.equal(__studyMaterialsTestables.resolveGroundedTargetCount(25, grounding), 5);
+});
+
+test("source-limited prompts expose the smaller effective count without changing rich-source targets", () => {
+  const thinSource = `${THIN_SOURCE_FACTS.join(". ")}.`;
+  const flashcards = __studyMaterialsTestables.buildPromptForGeneration({
+    generationType: DOCUMENT_GENERATION_TYPES.flashcards,
+    language: "english",
+    options: { includeExplanations: false },
+    sourceText: thinSource,
+    sourceTier: "long",
+    sampled: false,
+  });
+  const exam = __studyMaterialsTestables.buildPromptForGeneration({
+    generationType: DOCUMENT_GENERATION_TYPES.exam,
+    language: "english",
+    options: { questionCount: 15 },
+    sourceText: thinSource,
+    sourceTier: "long",
+    sampled: false,
+  });
+
+  assert.equal(flashcards.effectiveOptions.requestedCardCount, 48);
+  assert.equal(flashcards.effectiveOptions.cardCount, 5);
+  assert.equal(flashcards.effectiveOptions.sourceLimited, true);
+  assert.match(flashcards.prompt, /Generate up to 5 flashcards/);
+  assert.equal(exam.effectiveOptions.requestedQuestionCount, 25);
+  assert.equal(exam.effectiveOptions.questionCount, 5);
+  assert.equal(exam.effectiveOptions.sourceLimited, true);
+  assert.match(exam.prompt, /Generate up to 5 questions/);
+});
+
+test("grounding verifier rejects fabricated named facts even when a real quote is attached", () => {
+  const sourceText = `${THIN_SOURCE_FACTS.join(". ")}.`;
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [
+      ...makeThinGroundedFlashcards().slice(0, 1),
+      {
+        front: "What does RuBisCO catalyze in the Calvin cycle?",
+        back: "RuBisCO catalyzes carbon fixation.",
+        sourceQuote: THIN_SOURCE_FACTS[3],
+      },
+      {
+        front: "What does photosynthesis convert?",
+        back: "Photosynthesis converts light energy.",
+        sourceQuote: "This supporting quote does not appear in the source",
+      },
+    ],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 1);
+  assert.equal(output.grounding.rejectedCount, 2);
+  assert.equal(output.grounding.rejectedItems[0].reason, "distinctive_term_absent_from_source");
+  assert.deepEqual(output.grounding.rejectedItems[0].unsupportedDistinctiveTerms, ["RuBisCO"]);
+  assert.equal(output.grounding.rejectedItems[1].reason, "missing_or_nonverbatim_source_quote");
+});
+
+test("thin repeated source succeeds with five verified cards instead of fabricating the long-source target", async () => {
+  const calls = [];
+  const cards = makeThinGroundedFlashcards();
+  const responses = [
+    makeQaResponse(cards, 100),
+    makeQaResponse(cards, 120),
+  ];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return responses.shift();
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await generateStudyMaterialFromExcerpts({
+      generationType: DOCUMENT_GENERATION_TYPES.flashcards,
+      excerpts: makeRepeatedThinSourceExcerpts(),
+      language: "english",
+      options: { includeExplanations: false },
+      plan: "premium",
+      modelRoutingResolver: async () => ({ model: "gpt-4.1-mini", reasoningEffort: null }),
+    });
+
+    assert.equal(calls.length, 2);
+    assert.equal(result.effectiveOptions.requestedCardCount, 48);
+    assert.equal(result.effectiveOptions.cardCount, 5);
+    assert.equal(result.effectiveOptions.sourceLimited, true);
+    assert.equal(result.output.cards.length, 5);
+    assert.equal(result.grounding.items.length, 5);
+    assert.ok(result.grounding.items.every((item) => item.grounded && item.sourceQuoteIsVerbatim));
+    assert.ok(result.output.cards.every((card) => !("sourceQuote" in card)));
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("thin repeated source succeeds with five verified exam questions instead of fabricating 25", async () => {
+  const calls = [];
+  const questions = makeThinGroundedExamQuestions();
+  const responses = [
+    makeQaResponse({ questions }, 100),
+    makeQaResponse({ questions }, 120),
+  ];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return responses.shift();
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await generateStudyMaterialFromExcerpts({
+      generationType: DOCUMENT_GENERATION_TYPES.exam,
+      excerpts: makeRepeatedThinSourceExcerpts(),
+      language: "english",
+      options: { questionCount: 15 },
+      plan: "premium",
+      modelRoutingResolver: async () => ({ model: "gpt-5.4-mini", reasoningEffort: "low" }),
+    });
+
+    assert.equal(calls.length, 2);
+    assert.equal(result.effectiveOptions.requestedQuestionCount, 25);
+    assert.equal(result.effectiveOptions.questionCount, 5);
+    assert.equal(result.effectiveOptions.sourceLimited, true);
+    assert.equal(result.output.questions.length, 5);
+    assert.equal(result.grounding.items.length, 5);
+    assert.ok(result.grounding.items.every((item) => item.grounded && item.sourceQuoteIsVerbatim));
+    assert.ok(result.output.questions.every((question) => !("sourceQuote" in question)));
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("flashcard prompt treats the target as a source-grounded upper bound without explanations", () => {
   const prompt = __studyMaterialsTestables.buildFlashcardsPrompt(
     "Enterprise Architecture connects strategy, process, people, and technology.",
     "english",
@@ -233,7 +464,10 @@ test("flashcard prompt requests strict front/back JSON array without explanation
   assert.match(prompt, /Return a JSON array of flashcards/);
   assert.match(prompt, /"front":"question or prompt"/);
   assert.match(prompt, /"back":"clear, concise answer"/);
-  assert.match(prompt, /Generate exactly 30 flashcards/);
+  assert.match(prompt, /Generate up to 30 flashcards/);
+  assert.match(prompt, /Do not use outside knowledge/);
+  assert.match(prompt, /return fewer cards and stop/);
+  assert.match(prompt, /Never pad the set with fabricated/);
   assert.match(prompt, /Do not include explanations or any fields other than "front" and "back"/);
 });
 
@@ -253,7 +487,7 @@ test("flashcard output normalization accepts strict JSON arrays", () => {
   });
 });
 
-test("flashcard QA prompt requires fixing issues and returning only a JSON array", () => {
+test("flashcard QA prompt requires source evidence and never invents to fill its upper bound", () => {
   const prompt = __studyMaterialsTestables.buildFlashcardQaPrompt(
     [
       { question: "Explain EA", answer: "EA is about lots of things including strategy, technology, people, process, and governance with many related details." },
@@ -268,7 +502,9 @@ test("flashcard QA prompt requires fixing issues and returning only a JSON array
   assert.match(prompt, /Return ONLY the improved JSON array/);
   assert.match(prompt, /"front":"question or prompt"/);
   assert.match(prompt, /"back":"clear, concise answer"/);
-  assert.match(prompt, /Return exactly 16 cards/);
+  assert.match(prompt, /Return at most 16 cards/);
+  assert.match(prompt, /sourceQuote/);
+  assert.match(prompt, /return the smaller supported set/);
 });
 
 test("flashcard QA repairs a short response to the exact requested count", async () => {
@@ -292,7 +528,7 @@ test("flashcard QA repairs a short response to the exact requested count", async
     const result = await __studyMaterialsTestables.validateAndImproveFlashcards({
       cards: makeFlashcards(3),
       language: "english",
-      sourceText: "Grounded source material",
+      sourceText: makeQaSource(),
       targetCount: 3,
       model: "gpt-5.4-mini",
       reasoningEffort: "low",
@@ -300,7 +536,7 @@ test("flashcard QA repairs a short response to the exact requested count", async
 
     assert.equal(calls.length, 2);
     assert.match(calls[1].messages[1].content, /COUNT REPAIR REQUIRED/);
-    assert.match(calls[1].messages[1].content, /returned 2 flashcards/);
+    assert.match(calls[1].messages[1].content, /returned 2 source-verified flashcards/);
     assert.equal(result.output.cards.length, 3);
     assert.deepEqual(result.usage, {
       prompt_tokens: 50,
@@ -328,13 +564,46 @@ test("flashcard QA fails clearly when count repair is still short", async () => 
       () => __studyMaterialsTestables.validateAndImproveFlashcards({
         cards: makeFlashcards(3),
         language: "english",
-        sourceText: "Grounded source material",
+        sourceText: makeQaSource(),
         targetCount: 3,
         model: "gpt-4.1-mini",
       }),
       (error) => error?.code === "qa_item_count_mismatch"
         && error.actualCount === 2
         && error.targetCount === 3,
+    );
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("flashcard QA rejects wholly unverified output instead of persisting fabricated cards", async () => {
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create() {
+          return makeQaResponse([
+            {
+              front: "What does RuBisCO catalyze?",
+              back: "RuBisCO catalyzes carbon fixation.",
+              sourceQuote: "RuBisCO catalyzes carbon fixation",
+            },
+          ], 20);
+        },
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => __studyMaterialsTestables.validateAndImproveFlashcards({
+        cards: makeThinGroundedFlashcards(),
+        language: "english",
+        sourceText: `${THIN_SOURCE_FACTS.join(". ")}.`,
+        targetCount: 5,
+        model: "gpt-4.1-mini",
+      }),
+      (error) => error?.code === "ungrounded_generation_output" && error.rejectedCount === 1,
     );
   } finally {
     __studyMaterialsTestables.setOpenAiClientForTests(null);
@@ -388,6 +657,9 @@ test("exam prompt requests gpt-4o-quality mock exam structure and distribution",
 
   assert.match(prompt, /Create a high-quality mock exam/);
   assert.match(prompt, /Return exactly this JSON object shape/);
+  assert.match(prompt, /Generate up to 20 questions/);
+  assert.match(prompt, /Do not use outside knowledge/);
+  assert.match(prompt, /return fewer questions and stop/);
   assert.match(prompt, /70-80% MCQ and 20-30% True\/False/);
   assert.match(prompt, /produce 14-16 MCQs and 4-6 True\/False questions/);
   assert.match(prompt, /correctAnswer must exactly match the full text of the correct option/);
@@ -422,7 +694,9 @@ test("exam QA prompt requires fixing correctness, distractors, clarity, and cove
   assert.match(prompt, /remove duplicate or overlapping questions/);
   assert.match(prompt, /definitions, models, comparisons, and key concepts/);
   assert.match(prompt, /Return ONLY the improved JSON object/);
-  assert.match(prompt, /Return exactly 10 questions/);
+  assert.match(prompt, /Return at most 10 questions/);
+  assert.match(prompt, /sourceQuote/);
+  assert.match(prompt, /return the smaller supported set/);
   assert.doesNotMatch(prompt, /Use model: gpt-4o/);
 });
 
@@ -447,7 +721,7 @@ test("exam QA repairs a short response and never returns a silent short success"
     const result = await __studyMaterialsTestables.validateAndImproveExam({
       questions: makeExamQuestions(4),
       language: "english",
-      sourceText: "Grounded source material",
+      sourceText: makeQaSource(),
       targetCount: 4,
       model: "gpt-5.4-mini",
       reasoningEffort: "low",
@@ -455,7 +729,7 @@ test("exam QA repairs a short response and never returns a silent short success"
 
     assert.equal(calls.length, 2);
     assert.match(calls[1].messages[1].content, /COUNT REPAIR REQUIRED/);
-    assert.match(calls[1].messages[1].content, /returned 3 questions/);
+    assert.match(calls[1].messages[1].content, /returned 3 source-verified questions/);
     assert.equal(result.output.questions.length, 4);
   } finally {
     __studyMaterialsTestables.setOpenAiClientForTests(null);
@@ -478,7 +752,7 @@ test("exam QA fails clearly when the count-repair response is still short", asyn
       () => __studyMaterialsTestables.validateAndImproveExam({
         questions: makeExamQuestions(4),
         language: "english",
-        sourceText: "Grounded source material",
+        sourceText: makeQaSource(),
         targetCount: 4,
         model: "gpt-5.4-mini",
         reasoningEffort: "low",

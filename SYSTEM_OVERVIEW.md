@@ -95,7 +95,9 @@ Generation:
 - configured model and reasoning effort are preserved through summary structured fallback stages and flashcard/exam QA calls
 - final routing defaults are summary `gpt-4.1-nano` for both plans, flashcards `gpt-4o-mini` for free and `gpt-4.1-mini` for premium, and exam `gpt-5.4-mini` with low reasoning effort for both plans
 - the worker owns an abort controller for each job deadline and forwards its signal through every tracked OpenAI Chat Completions request; a timed-out job aborts the provider request before retry/failure handling
-- flashcard and exam QA must return the exact requested item count; one targeted count-repair QA call closes a mismatch, and a second mismatch fails clearly with `qa_item_count_mismatch` without retrying the full job
+- flashcard and exam prompts treat requested counts as upper bounds and forbid outside knowledge; a deduplicated source-statement inventory lowers the effective target when the document cannot support the original count
+- every final flashcard/exam item must include a relevant, verbatim supporting source quote during QA; quotes and per-item grounding verdicts are retained in job-result metadata while only the existing public card/question shapes are persisted
+- one source-only count-repair QA call can recover underproduction on content-rich sources; a remaining mismatch fails with `qa_item_count_mismatch`, while wholly unsupported output fails with `ungrounded_generation_output` without retrying the full job
 - every allow-listed model has explicit per-1M-token pricing; dated OpenAI model snapshots normalize to their base pricing key, and unknown pricing fails before generation instead of silently inheriting another model's rate
 - current policy: lower-cost model by default, stronger-model upgrade first for mock exams on entitled tiers
 - free, pro, and premium stay on the same backend generation endpoints and worker path; tier differences are routing-policy and limits decisions, not separate APIs
