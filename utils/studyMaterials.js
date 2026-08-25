@@ -2090,7 +2090,9 @@ async function validateAndImproveFlashcards({
     });
     const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
       aiPhase: countRepair ? "flashcards_qa_count_repair" : "flashcards_qa",
-      callKey: countRepair ? "flashcards:qa-count-repair" : "flashcards:qa",
+      callKey: countRepair
+        ? `flashcards:qa-count-repair:${countRepair.attempt ?? 1}`
+        : "flashcards:qa",
       metadata: {
         targetCount,
         previousCount: countRepair?.actualCount ?? null,
@@ -2243,7 +2245,9 @@ async function validateAndImproveExam({
     });
     const response = await createChatCompletion(openai, params, withUsageLedgerCallContext(usageLedgerContext, {
       aiPhase: countRepair ? "exam_qa_count_repair" : "exam_qa",
-      callKey: countRepair ? "exam:qa-count-repair" : "exam:qa",
+      callKey: countRepair
+        ? `exam:qa-count-repair:${countRepair.attempt ?? 1}`
+        : "exam:qa",
       metadata: {
         targetCount,
         previousCount: countRepair?.actualCount ?? null,

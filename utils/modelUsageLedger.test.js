@@ -302,6 +302,27 @@ test("idempotency key changes across job retry attempts", () => {
   assert.notEqual(firstAttemptKey, retryAttemptKey);
 });
 
+test("each grounded count-repair request has its own billable idempotency key", () => {
+  for (const feature of ["flashcards", "exam"]) {
+    const firstRepairKey = buildModelUsageIdempotencyKey({
+      ...baseContext,
+      featureKey: feature,
+      aiPhase: `${feature}_qa_count_repair`,
+      callKey: `${feature}:qa-count-repair:1`,
+      attemptNumber: 1,
+    });
+    const secondRepairKey = buildModelUsageIdempotencyKey({
+      ...baseContext,
+      featureKey: feature,
+      aiPhase: `${feature}_qa_count_repair`,
+      callKey: `${feature}:qa-count-repair:2`,
+      attemptNumber: 1,
+    });
+
+    assert.notEqual(firstRepairKey, secondRepairKey);
+  }
+});
+
 test("SAR conversion defaults to the configured display rate without affecting ledger USD", () => {
   assert.equal(getUsdToSarRate({}), 3.75);
   assert.equal(getUsdToSarRate({ USD_TO_SAR_RATE: "3.76" }), 3.76);
