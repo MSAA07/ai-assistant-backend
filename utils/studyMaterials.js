@@ -374,8 +374,42 @@ function inspectSourceGrounding(sourceText) {
 
   return {
     distinctStatementCount: statements.size,
+    statements: [...statements.values()].map((text, index) => ({
+      id: `S${String(index + 1).padStart(3, "0")}`,
+      text,
+    })),
     sourceText: normalizeString(sourceText),
   };
+}
+
+function formatSourceEvidenceCatalog(sourceGrounding) {
+  return sourceGrounding.statements
+    .map((statement) => `[${statement.id}] ${statement.text}`)
+    .join("\n");
+}
+
+function selectRelevantSourceQuote(statement, factualContent) {
+  const words = normalizeString(statement).split(/\s+/u).filter(Boolean);
+  if (words.length <= 24) {
+    return words.join(" ");
+  }
+
+  const factualRoots = new Set(getGroundingTokens(factualContent).map(stemGroundingToken));
+  let bestStart = 0;
+  let bestScore = -1;
+
+  for (let start = 0; start < words.length; start += 1) {
+    const candidate = words.slice(start, start + 18).join(" ");
+    const score = getGroundingTokens(candidate)
+      .map(stemGroundingToken)
+      .filter((token) => factualRoots.has(token)).length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestStart = start;
+    }
+  }
+
+  return words.slice(bestStart, bestStart + 18).join(" ");
 }
 
 function resolveGroundedTargetCount(requestedCount, sourceGrounding) {
@@ -389,16 +423,27 @@ function resolveGroundedTargetCount(requestedCount, sourceGrounding) {
   return Math.min(normalizedRequestedCount, distinctStatementCount);
 }
 
-function assessItemSourceEvidence({ generationType, rawItem, normalizedItem, sourceText, index }) {
-  const sourceQuote = normalizeString(rawItem?.sourceQuote);
+function assessItemSourceEvidence({
+  generationType,
+  rawItem,
+  normalizedItem,
+  sourceText,
+  index,
+  sourceStatementsById = null,
+}) {
+  const factualContent = generationType === DOCUMENT_GENERATION_TYPES.flashcards
+    ? `${normalizedItem.question} ${normalizedItem.answer}`
+    : `${normalizedItem.question} ${normalizedItem.correctAnswer} ${normalizedItem.explanation || ""}`;
+  const sourceId = normalizeString(rawItem?.sourceId ?? rawItem?.sourceStatementId).toUpperCase();
+  const citedStatement = sourceStatementsById?.get(sourceId) ?? null;
+  const sourceQuote = citedStatement
+    ? selectRelevantSourceQuote(citedStatement.text, factualContent)
+    : normalizeString(rawItem?.sourceQuote);
   const normalizedQuote = normalizeSourceEvidence(sourceQuote);
   const normalizedSource = normalizeSourceEvidence(sourceText);
   const quoteTokens = getGroundingTokens(sourceQuote);
   const sourceQuoteIsVerbatim = quoteTokens.length >= MIN_SOURCE_EVIDENCE_WORDS
     && normalizedSource.includes(normalizedQuote);
-  const factualContent = generationType === DOCUMENT_GENERATION_TYPES.flashcards
-    ? `${normalizedItem.question} ${normalizedItem.answer}`
-    : `${normalizedItem.question} ${normalizedItem.correctAnswer} ${normalizedItem.explanation || ""}`;
   const evidenceRoots = new Set(quoteTokens.map(stemGroundingToken));
   const factualRoots = getGroundingTokens(factualContent).map(stemGroundingToken);
   const sharedEvidenceTerms = [...new Set(factualRoots.filter((token) => evidenceRoots.has(token)))];
@@ -424,6 +469,7 @@ function assessItemSourceEvidence({ generationType, rawItem, normalizedItem, sou
     index,
     grounded,
     verdict: grounded ? "source_traceable" : "appears_invented_or_unverifiable",
+    sourceId: citedStatement?.id ?? null,
     sourceQuote,
     sourceQuoteIsVerbatim,
     sharedEvidenceTerms,
@@ -439,6 +485,10 @@ function assessItemSourceEvidence({ generationType, rawItem, normalizedItem, sou
 }
 
 function normalizeGroundedQaOutput(generationType, parsed, sourceText) {
+  const sourceGrounding = inspectSourceGrounding(sourceText);
+  const sourceStatementsById = new Map(
+    sourceGrounding.statements.map((statement) => [statement.id, statement]),
+  );
   const isFlashcards = generationType === DOCUMENT_GENERATION_TYPES.flashcards;
   const rawItems = isFlashcards
     ? Array.isArray(parsed)
@@ -463,6 +513,7 @@ function normalizeGroundedQaOutput(generationType, parsed, sourceText) {
         index,
         grounded: false,
         verdict: "appears_invented_or_unverifiable",
+        sourceId: normalizeString(rawItem?.sourceId ?? rawItem?.sourceStatementId) || null,
         sourceQuote: normalizeString(rawItem?.sourceQuote),
         sourceQuoteIsVerbatim: false,
         sharedEvidenceTerms: [],
@@ -478,6 +529,7 @@ function normalizeGroundedQaOutput(generationType, parsed, sourceText) {
       normalizedItem,
       sourceText,
       index,
+      sourceStatementsById,
     });
 
     if (!evidence.grounded) {
@@ -1374,7 +1426,15 @@ ${optimizedText}
 """`;
 }
 
-function buildFlashcardsPrompt(text, language, options, sourceTier, sampled, targetCount = null) {
+function buildFlashcardsPrompt(
+  text,
+  language,
+  options,
+  sourceTier,
+  sampled,
+  targetCount = null,
+  distinctSourceStatementCount = null,
+) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const cardCount = targetCount ?? getFlashcardTargetCount(sourceTier);
   const guidancePrompt = buildRegenerationGuidancePrompt(options);
@@ -1389,6 +1449,7 @@ Each flashcard must have exactly this shape:
 
 Core rules:
 - Generate up to ${cardCount} flashcards. This is a maximum, not permission to invent content.
+- The document contains ${distinctSourceStatementCount ?? "multiple"} distinct source statements. When at least ${cardCount} distinct source-supported concepts are available, produce all ${cardCount} cards rather than stopping early.
 - Every question, answer, technical term, named entity, relationship, and example must be directly supported by the provided source excerpts.
 - Do not use outside knowledge, fill in missing steps, infer unstated facts, or introduce familiar topic details that the document does not actually state.
 - If fewer than ${cardCount} distinct, meaningful source-supported concepts exist, return fewer cards and stop. Never pad the set with fabricated, speculative, duplicate, or trivial content.
@@ -1416,7 +1477,7 @@ ${text}
 """`;
 }
 
-function buildExamPrompt(text, language, questionCount, options, sampled) {
+function buildExamPrompt(text, language, questionCount, options, sampled, distinctSourceStatementCount = null) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const guidancePrompt = buildRegenerationGuidancePrompt(options);
   const mcqMin = Math.ceil(questionCount * 0.7);
@@ -1435,6 +1496,7 @@ Return exactly this JSON object shape:
 
 Rules:
 - Generate up to ${questionCount} questions. This is a maximum, not permission to invent content.
+- The document contains ${distinctSourceStatementCount ?? "multiple"} distinct source statements. When at least ${questionCount} distinct source-supported concepts are available, produce all ${questionCount} questions rather than stopping early.
 - Every tested claim, correct answer, explanation, named entity, process, number, and example must be directly supported by the provided source excerpts.
 - Do not use outside knowledge, infer unstated facts, or introduce familiar details that are absent from the document.
 - If fewer than ${questionCount} distinct, meaningful source-supported concepts exist, return fewer questions and stop. Never pad the exam with fabricated, speculative, duplicate, or trivial questions.
@@ -1492,6 +1554,8 @@ function toFlashcardQaInput(cards = []) {
 function buildFlashcardQaPrompt(cards, language, sourceText, targetCount) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const qaInput = JSON.stringify(toFlashcardQaInput(cards), null, 2);
+  const sourceGrounding = inspectSourceGrounding(sourceText);
+  const evidenceCatalog = formatSourceEvidenceCatalog(sourceGrounding);
 
   return `You are performing strict QA validation for flashcards in ${languageName}.
 
@@ -1500,9 +1564,9 @@ Use model behavior optimized for production-quality flashcards.
 INPUT FLASHCARDS:
 ${qaInput}
 
-SOURCE MATERIAL FOR COVERAGE CHECK:
+NUMBERED SOURCE STATEMENTS FOR CORRECTNESS AND COVERAGE:
 """
-${sourceText}
+${evidenceCatalog}
 """
 
 OBJECTIVE:
@@ -1521,8 +1585,9 @@ Validation rules:
 - If high-value coverage is missing, add cards.
 - Formatting: plain text only, no markdown, no symbols, clean JSON.
 - Return at most ${targetCount} cards. Reach ${targetCount} only if that many distinct, meaningful, source-supported concepts exist.
+- The source catalog contains ${sourceGrounding.distinctStatementCount} distinct statements. If it supports ${targetCount} distinct high-value cards, return all ${targetCount}; do not stop early merely because the input draft was short.
 - If the source is exhausted, return the smaller supported set; never invent, duplicate, or add trivial cards to fill the count.
-- Every returned card must include "sourceQuote": a short verbatim quote of at least three meaningful words copied directly from the supplied excerpts and directly supporting that card's answer.
+- Every returned card must include "sourceId": the exact identifier of one numbered source statement that directly supports its question and answer, for example "S012". Never cite an unrelated statement.
 
 Process:
 1. Analyze the flashcards.
@@ -1536,7 +1601,7 @@ Stop only when cards are concise, non-redundant, clear, testable, and exam-ready
 Output:
 Return ONLY the improved JSON array.
 Each item must be exactly:
-{"front":"question or prompt","back":"clear, concise answer","sourceQuote":"short verbatim supporting source quote"}
+{"front":"question or prompt","back":"clear, concise answer","sourceId":"S012"}
 No explanations. No markdown. No extra text.`;
 }
 
@@ -1569,6 +1634,8 @@ function toExamQaInput(questions = []) {
 function buildExamQaPrompt(questions, language, sourceText, targetCount) {
   const languageName = language === "arabic" ? "Arabic" : "English";
   const qaInput = JSON.stringify({ questions: toExamQaInput(questions) }, null, 2);
+  const sourceGrounding = inspectSourceGrounding(sourceText);
+  const evidenceCatalog = formatSourceEvidenceCatalog(sourceGrounding);
   const mcqMin = Math.ceil(targetCount * 0.7);
   const mcqMax = Math.max(mcqMin, Math.floor(targetCount * 0.8));
   const trueFalseMin = targetCount - mcqMax;
@@ -1579,9 +1646,9 @@ function buildExamQaPrompt(questions, language, sourceText, targetCount) {
 MOCK EXAM JSON:
 ${qaInput}
 
-SOURCE MATERIAL FOR CORRECTNESS AND COVERAGE:
+NUMBERED SOURCE STATEMENTS FOR CORRECTNESS AND COVERAGE:
 """
-${sourceText}
+${evidenceCatalog}
 """
 
 OBJECTIVE:
@@ -1600,8 +1667,9 @@ Validation rules:
 - Coverage: ensure the exam includes definitions, models, comparisons, and key concepts from the source material. Add missing questions if needed.
 - Explanation quality: explanations must be short, 1-2 lines, and explain the reasoning.
 - Return at most ${targetCount} questions. Reach ${targetCount} only if that many distinct, meaningful, source-supported concepts exist.
+- The source catalog contains ${sourceGrounding.distinctStatementCount} distinct statements. If it supports ${targetCount} distinct high-value questions, return all ${targetCount}; do not stop early merely because the input draft was short.
 - If the source is exhausted, return the smaller supported set; never invent, duplicate, or add trivial questions to fill the count.
-- Every returned question must include "sourceQuote": a short verbatim quote of at least three meaningful words copied directly from the supplied excerpts and directly supporting the correct answer and explanation.
+- Every returned question must include "sourceId": the exact identifier of one numbered source statement that directly supports its correct answer and explanation, for example "S012". Never cite an unrelated statement.
 - Distribution target when all ${targetCount} grounded questions are possible: ${mcqMin}-${mcqMax} MCQs and ${trueFalseMin}-${trueFalseMax} True/False questions.
 
 Process:
@@ -1616,7 +1684,7 @@ Stop only when all questions are correct, distractors are strong, no ambiguity e
 Output:
 Return ONLY the improved JSON object.
 Use exactly this shape:
-{"questions":[{"type":"mcq","question":"string","options":["A","B","C","D"],"correctAnswer":"exact correct option text","explanation":"short explanation","sourceQuote":"short verbatim supporting source quote"},{"type":"true_false","question":"string","correctAnswer":true,"explanation":"short explanation","sourceQuote":"short verbatim supporting source quote"}]}
+{"questions":[{"type":"mcq","question":"string","options":["A","B","C","D"],"correctAnswer":"exact correct option text","explanation":"short explanation","sourceId":"S012"},{"type":"true_false","question":"string","correctAnswer":true,"explanation":"short explanation","sourceId":"S034"}]}
 No markdown. No extra text.`;
 }
 
@@ -1866,7 +1934,7 @@ function createQaItemCountMismatchError(generationType, targetCount, actualCount
 
 function createUngroundedGenerationOutputError(generationType, rejectedCount) {
   const error = new Error(
-    `${generationType} QA did not return any items with a valid, relevant verbatim source quote (${rejectedCount} rejected)`,
+    `${generationType} QA did not return any items with a valid, relevant source citation (${rejectedCount} rejected)`,
   );
   error.code = "ungrounded_generation_output";
   error.generationType = generationType;
@@ -1882,7 +1950,7 @@ function buildQaCountRepairInstruction(generationType, targetCount, actualCount)
   return `\n\nCOUNT REPAIR REQUIRED:
 The previous QA response returned ${actualCount} source-verified ${itemLabel}, while this source has capacity for up to ${targetCount}.
 Preserve the strongest supported items and add only distinct concepts explicitly present in the source excerpts until there are ${targetCount} ${itemLabel}.
-Every item must include a relevant verbatim "sourceQuote" copied from the source. If the source truly cannot support the target, return the smaller supported set; never invent facts, add outside knowledge, or duplicate concepts merely to meet a number.`;
+Every item must include the "sourceId" of the numbered source statement that directly supports it. If the source truly cannot support the target, return the smaller supported set; never invent facts, add outside knowledge, or duplicate concepts merely to meet a number.`;
 }
 
 function buildModelCompletionParams({
@@ -1926,7 +1994,7 @@ async function validateAndImproveFlashcards({
       messages: [
         {
           role: "system",
-          content: "You validate source-grounded flashcards. Return only a valid JSON array of {front,back,sourceQuote} objects; never invent unsupported facts.",
+          content: "You validate source-grounded flashcards. Return only a valid JSON array of {front,back,sourceId} objects; never invent unsupported facts.",
         },
         {
           role: "user",
@@ -2031,7 +2099,7 @@ async function validateAndImproveExam({
       messages: [
         {
           role: "system",
-          content: "You validate source-grounded mock exams. Return only a valid JSON object with questions that each include a verbatim sourceQuote; never invent unsupported facts.",
+          content: "You validate source-grounded mock exams. Return only a valid JSON object with questions that each cite a numbered sourceId; never invent unsupported facts.",
         },
         {
           role: "user",
@@ -2127,7 +2195,15 @@ function buildPromptForGeneration({ generationType, language, options, sourceTex
     const requestedCardCount = getFlashcardTargetCount(sourceTier);
     const groundedCardCount = resolveGroundedTargetCount(requestedCardCount, sourceGrounding);
     return {
-      prompt: buildFlashcardsPrompt(sourceText, language, options, sourceTier, sampled, groundedCardCount),
+      prompt: buildFlashcardsPrompt(
+        sourceText,
+        language,
+        options,
+        sourceTier,
+        sampled,
+        groundedCardCount,
+        sourceGrounding.distinctStatementCount,
+      ),
       effectiveOptions: {
         ...options,
         cardCount: groundedCardCount,
@@ -2141,7 +2217,14 @@ function buildPromptForGeneration({ generationType, language, options, sourceTex
   const requestedQuestionCount = getExamTargetCount(sourceTier, options.questionCount);
   const effectiveQuestionCount = resolveGroundedTargetCount(requestedQuestionCount, sourceGrounding);
   return {
-    prompt: buildExamPrompt(sourceText, language, effectiveQuestionCount, options, sampled),
+    prompt: buildExamPrompt(
+      sourceText,
+      language,
+      effectiveQuestionCount,
+      options,
+      sampled,
+      sourceGrounding.distinctStatementCount,
+    ),
     effectiveOptions: {
       ...options,
       questionCount: effectiveQuestionCount,

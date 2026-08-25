@@ -370,6 +370,38 @@ test("grounding verifier rejects fabricated named facts even when a real quote i
   assert.equal(output.grounding.rejectedItems[1].reason, "missing_or_nonverbatim_source_quote");
 });
 
+test("numbered source citations resolve into exact supporting quotes without copying brittle PDF text", () => {
+  const sourceText = `${THIN_SOURCE_FACTS.join(". ")}.`;
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [
+      {
+        front: "What does the Calvin cycle fix?",
+        back: "The Calvin cycle fixes carbon dioxide.",
+        sourceId: "S004",
+      },
+      {
+        front: "What does RuBisCO do in the Calvin cycle?",
+        back: "RuBisCO fixes carbon dioxide.",
+        sourceId: "S004",
+      },
+      {
+        front: "What does chlorophyll absorb?",
+        back: "Chlorophyll absorbs photons.",
+        sourceId: "S099",
+      },
+    ],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 1);
+  assert.equal(output.grounding.items[0].sourceId, "S004");
+  assert.equal(output.grounding.items[0].sourceQuote, THIN_SOURCE_FACTS[3]);
+  assert.equal(output.grounding.items[0].sourceQuoteIsVerbatim, true);
+  assert.equal(output.grounding.rejectedItems[0].reason, "distinctive_term_absent_from_source");
+  assert.equal(output.grounding.rejectedItems[1].reason, "missing_or_nonverbatim_source_quote");
+});
+
 test("thin repeated source succeeds with five verified cards instead of fabricating the long-source target", async () => {
   const calls = [];
   const cards = makeThinGroundedFlashcards();
@@ -503,7 +535,8 @@ test("flashcard QA prompt requires source evidence and never invents to fill its
   assert.match(prompt, /"front":"question or prompt"/);
   assert.match(prompt, /"back":"clear, concise answer"/);
   assert.match(prompt, /Return at most 16 cards/);
-  assert.match(prompt, /sourceQuote/);
+  assert.match(prompt, /sourceId/);
+  assert.match(prompt, /\[S001\]/);
   assert.match(prompt, /return the smaller supported set/);
 });
 
@@ -695,7 +728,8 @@ test("exam QA prompt requires fixing correctness, distractors, clarity, and cove
   assert.match(prompt, /definitions, models, comparisons, and key concepts/);
   assert.match(prompt, /Return ONLY the improved JSON object/);
   assert.match(prompt, /Return at most 10 questions/);
-  assert.match(prompt, /sourceQuote/);
+  assert.match(prompt, /sourceId/);
+  assert.match(prompt, /\[S001\]/);
   assert.match(prompt, /return the smaller supported set/);
   assert.doesNotMatch(prompt, /Use model: gpt-4o/);
 });
