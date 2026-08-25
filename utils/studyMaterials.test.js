@@ -540,11 +540,11 @@ test("flashcard QA prompt requires source evidence and never invents to fill its
   assert.match(prompt, /return the smaller supported set/);
 });
 
-test("flashcard QA repairs a short response to the exact requested count", async () => {
+test("flashcard QA preserves verified items and requests only the missing grounded card", async () => {
   const calls = [];
   const responses = [
     makeQaResponse(makeFlashcards(2), 20),
-    makeQaResponse(makeFlashcards(3), 30),
+    makeQaResponse(makeFlashcards(3).slice(2), 30),
   ];
   __studyMaterialsTestables.setOpenAiClientForTests({
     chat: {
@@ -570,7 +570,13 @@ test("flashcard QA repairs a short response to the exact requested count", async
     assert.equal(calls.length, 2);
     assert.match(calls[1].messages[1].content, /COUNT REPAIR REQUIRED/);
     assert.match(calls[1].messages[1].content, /returned 2 source-verified flashcards/);
+    assert.match(calls[1].messages[1].content, /Return exactly 1 ADDITIONAL source-grounded flashcards/);
     assert.equal(result.output.cards.length, 3);
+    assert.deepEqual(result.output.cards.map((card) => card.question), [
+      "Question 1?",
+      "Question 2?",
+      "Question 3?",
+    ]);
     assert.deepEqual(result.usage, {
       prompt_tokens: 50,
       completion_tokens: 25,
@@ -734,11 +740,11 @@ test("exam QA prompt requires fixing correctness, distractors, clarity, and cove
   assert.doesNotMatch(prompt, /Use model: gpt-4o/);
 });
 
-test("exam QA repairs a short response and never returns a silent short success", async () => {
+test("exam QA preserves verified questions and requests only the missing grounded item", async () => {
   const calls = [];
   const responses = [
     makeQaResponse({ questions: makeExamQuestions(3) }, 40),
-    makeQaResponse({ questions: makeExamQuestions(4) }, 60),
+    makeQaResponse({ questions: makeExamQuestions(4).slice(3) }, 60),
   ];
   __studyMaterialsTestables.setOpenAiClientForTests({
     chat: {
@@ -764,6 +770,7 @@ test("exam QA repairs a short response and never returns a silent short success"
     assert.equal(calls.length, 2);
     assert.match(calls[1].messages[1].content, /COUNT REPAIR REQUIRED/);
     assert.match(calls[1].messages[1].content, /returned 3 source-verified questions/);
+    assert.match(calls[1].messages[1].content, /Return exactly 1 ADDITIONAL source-grounded questions/);
     assert.equal(result.output.questions.length, 4);
   } finally {
     __studyMaterialsTestables.setOpenAiClientForTests(null);

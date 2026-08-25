@@ -1543,11 +1543,19 @@ ${text}
 
 function toFlashcardQaInput(cards = []) {
   return cards
-    .map((card) => normalizeFlashcard(card))
+    .map((card) => {
+      const normalized = normalizeFlashcard(card);
+      if (!normalized) {
+        return null;
+      }
+      const sourceId = normalizeString(card?.sourceId);
+      return sourceId ? { ...normalized, sourceId } : normalized;
+    })
     .filter(Boolean)
     .map((card) => ({
       front: card.question,
       back: card.answer,
+      ...(card.sourceId ? { sourceId: card.sourceId } : {}),
     }));
 }
 
@@ -1607,7 +1615,14 @@ No explanations. No markdown. No extra text.`;
 
 function toExamQaInput(questions = []) {
   return questions
-    .map((question) => normalizeExamQuestion(question))
+    .map((question) => {
+      const normalized = normalizeExamQuestion(question);
+      if (!normalized) {
+        return null;
+      }
+      const sourceId = normalizeString(question?.sourceId);
+      return sourceId ? { ...normalized, sourceId } : normalized;
+    })
     .filter(Boolean)
     .map((question) => {
       const baseQuestion = {
@@ -1615,6 +1630,7 @@ function toExamQaInput(questions = []) {
         question: question.question,
         correctAnswer: question.correctAnswer,
         explanation: question.explanation,
+        ...(question.sourceId ? { sourceId: question.sourceId } : {}),
       };
 
       if (question.type === "true_false") {
@@ -1942,15 +1958,65 @@ function createUngroundedGenerationOutputError(generationType, rejectedCount) {
   return error;
 }
 
-function buildQaCountRepairInstruction(generationType, targetCount, actualCount) {
+function buildQaCountRepairInstruction(generationType, targetCount, actualCount, existingSourceIds = []) {
   const itemLabel = generationType === DOCUMENT_GENERATION_TYPES.flashcards
     ? "flashcards"
     : "questions";
+  const missingCount = targetCount - actualCount;
+
+  if (missingCount > 0) {
+    return `\n\nCOUNT REPAIR REQUIRED:
+The previous QA response returned ${actualCount} source-verified ${itemLabel}, while this source has capacity for ${targetCount}.
+Those ${actualCount} verified items are already preserved. Return exactly ${missingCount} ADDITIONAL source-grounded ${itemLabel}, not the full set.
+Find ${missingCount} distinct, meaningful concepts from numbered source statements that are not already covered by the input items.${existingSourceIds.length > 0 ? ` Do not reuse these existing source identifiers: ${existingSourceIds.join(", ")}.` : ""}
+Every additional item must include its directly supporting "sourceId". Never repeat an existing question, invent facts, add outside knowledge, or duplicate concepts merely to meet a number.`;
+  }
 
   return `\n\nCOUNT REPAIR REQUIRED:
 The previous QA response returned ${actualCount} source-verified ${itemLabel}, while this source has capacity for up to ${targetCount}.
 Preserve the strongest supported items and add only distinct concepts explicitly present in the source excerpts until there are ${targetCount} ${itemLabel}.
 Every item must include the "sourceId" of the numbered source statement that directly supports it. If the source truly cannot support the target, return the smaller supported set; never invent facts, add outside knowledge, or duplicate concepts merely to meet a number.`;
+}
+
+function mergeGroundedQaResults(generationType, currentResult, additionalResult, targetCount) {
+  const itemKey = generationType === DOCUMENT_GENERATION_TYPES.flashcards ? "cards" : "questions";
+  const currentItems = currentResult.output[itemKey];
+  const mergedItems = [...currentItems];
+  const mergedEvidence = currentResult.grounding.items.map((item, index) => ({ ...item, index }));
+  const seenQuestions = new Set(currentItems.map((item) => normalizeSourceEvidence(item.question)));
+  const usedSourceIds = new Set(mergedEvidence.map((item) => item.sourceId).filter(Boolean));
+
+  for (const [index, item] of additionalResult.output[itemKey].entries()) {
+    if (mergedItems.length >= targetCount) {
+      break;
+    }
+
+    const evidence = additionalResult.grounding.items[index];
+    const questionKey = normalizeSourceEvidence(item.question);
+    if (seenQuestions.has(questionKey) || (evidence?.sourceId && usedSourceIds.has(evidence.sourceId))) {
+      continue;
+    }
+
+    mergedItems.push(item);
+    mergedEvidence.push({ ...evidence, index: mergedItems.length - 1 });
+    seenQuestions.add(questionKey);
+    if (evidence?.sourceId) {
+      usedSourceIds.add(evidence.sourceId);
+    }
+  }
+
+  return {
+    output: { [itemKey]: mergedItems },
+    grounding: {
+      items: mergedEvidence,
+      rejectedItems: [
+        ...currentResult.grounding.rejectedItems,
+        ...additionalResult.grounding.rejectedItems,
+      ],
+      rejectedCount: currentResult.grounding.rejectedCount + additionalResult.grounding.rejectedCount,
+      totalRejectedCount: currentResult.grounding.rejectedCount + additionalResult.grounding.rejectedCount,
+    },
+  };
 }
 
 function buildModelCompletionParams({
@@ -1985,7 +2051,10 @@ async function validateAndImproveFlashcards({
 
   const openai = getClient();
   const runQaCall = async ({ inputCards, countRepair = null }) => {
-    const basePrompt = buildFlashcardQaPrompt(inputCards, language, sourceText, targetCount);
+    const repairTarget = countRepair && countRepair.actualCount < targetCount
+      ? targetCount - countRepair.actualCount
+      : targetCount;
+    const basePrompt = buildFlashcardQaPrompt(inputCards, language, sourceText, repairTarget);
     const params = buildModelCompletionParams({
       model,
       reasoningEffort,
@@ -2003,6 +2072,7 @@ async function validateAndImproveFlashcards({
               DOCUMENT_GENERATION_TYPES.flashcards,
               targetCount,
               countRepair.actualCount,
+              countRepair.existingSourceIds,
             )}`
             : basePrompt,
         },
@@ -2014,6 +2084,9 @@ async function validateAndImproveFlashcards({
       metadata: {
         targetCount,
         previousCount: countRepair?.actualCount ?? null,
+        requestedAdditionalCount: countRepair && countRepair.actualCount < targetCount
+          ? targetCount - countRepair.actualCount
+          : null,
         maxTokens: QA_OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
         temperature: reasoningEffort ? null : 0.15,
         reasoningEffort,
@@ -2039,15 +2112,36 @@ async function validateAndImproveFlashcards({
   const responses = [firstQa.response];
 
   if (improvedOutput.cards.length !== targetCount) {
+    const previousResult = { output: improvedOutput, grounding };
+    const inputCards = improvedOutput.cards.length > 0
+      ? improvedOutput.cards.map((card, index) => ({
+        ...card,
+        ...(grounding.items[index]?.sourceId ? { sourceId: grounding.items[index].sourceId } : {}),
+      }))
+      : cards;
     const repairedQa = await runQaCall({
-      inputCards: improvedOutput.cards.length > 0 ? improvedOutput.cards : cards,
-      countRepair: { actualCount: improvedOutput.cards.length },
+      inputCards,
+      countRepair: {
+        actualCount: improvedOutput.cards.length,
+        existingSourceIds: grounding.items.map((item) => item.sourceId).filter(Boolean),
+      },
     });
-    improvedOutput = repairedQa.output;
-    grounding = {
-      ...repairedQa.grounding,
-      totalRejectedCount: firstQa.grounding.rejectedCount + repairedQa.grounding.rejectedCount,
-    };
+    const repairedResult = improvedOutput.cards.length < targetCount && improvedOutput.cards.length > 0
+      ? mergeGroundedQaResults(
+        DOCUMENT_GENERATION_TYPES.flashcards,
+        previousResult,
+        repairedQa,
+        targetCount,
+      )
+      : {
+        output: repairedQa.output,
+        grounding: {
+          ...repairedQa.grounding,
+          totalRejectedCount: firstQa.grounding.rejectedCount + repairedQa.grounding.rejectedCount,
+        },
+      };
+    improvedOutput = repairedResult.output;
+    grounding = repairedResult.grounding;
     responses.push(repairedQa.response);
   }
 
@@ -2090,7 +2184,10 @@ async function validateAndImproveExam({
 
   const openai = getClient();
   const runQaCall = async ({ inputQuestions, countRepair = null }) => {
-    const basePrompt = buildExamQaPrompt(inputQuestions, language, sourceText, targetCount);
+    const repairTarget = countRepair && countRepair.actualCount < targetCount
+      ? targetCount - countRepair.actualCount
+      : targetCount;
+    const basePrompt = buildExamQaPrompt(inputQuestions, language, sourceText, repairTarget);
     const params = buildModelCompletionParams({
       model,
       reasoningEffort,
@@ -2108,6 +2205,7 @@ async function validateAndImproveExam({
               DOCUMENT_GENERATION_TYPES.exam,
               targetCount,
               countRepair.actualCount,
+              countRepair.existingSourceIds,
             )}`
             : basePrompt,
         },
@@ -2119,6 +2217,9 @@ async function validateAndImproveExam({
       metadata: {
         targetCount,
         previousCount: countRepair?.actualCount ?? null,
+        requestedAdditionalCount: countRepair && countRepair.actualCount < targetCount
+          ? targetCount - countRepair.actualCount
+          : null,
         maxTokens: QA_OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
         temperature: reasoningEffort ? null : 0.15,
         reasoningEffort,
@@ -2144,15 +2245,36 @@ async function validateAndImproveExam({
   const responses = [firstQa.response];
 
   if (improvedOutput.questions.length !== targetCount) {
+    const previousResult = { output: improvedOutput, grounding };
+    const inputQuestions = improvedOutput.questions.length > 0
+      ? improvedOutput.questions.map((question, index) => ({
+        ...question,
+        ...(grounding.items[index]?.sourceId ? { sourceId: grounding.items[index].sourceId } : {}),
+      }))
+      : questions;
     const repairedQa = await runQaCall({
-      inputQuestions: improvedOutput.questions.length > 0 ? improvedOutput.questions : questions,
-      countRepair: { actualCount: improvedOutput.questions.length },
+      inputQuestions,
+      countRepair: {
+        actualCount: improvedOutput.questions.length,
+        existingSourceIds: grounding.items.map((item) => item.sourceId).filter(Boolean),
+      },
     });
-    improvedOutput = repairedQa.output;
-    grounding = {
-      ...repairedQa.grounding,
-      totalRejectedCount: firstQa.grounding.rejectedCount + repairedQa.grounding.rejectedCount,
-    };
+    const repairedResult = improvedOutput.questions.length < targetCount && improvedOutput.questions.length > 0
+      ? mergeGroundedQaResults(
+        DOCUMENT_GENERATION_TYPES.exam,
+        previousResult,
+        repairedQa,
+        targetCount,
+      )
+      : {
+        output: repairedQa.output,
+        grounding: {
+          ...repairedQa.grounding,
+          totalRejectedCount: firstQa.grounding.rejectedCount + repairedQa.grounding.rejectedCount,
+        },
+      };
+    improvedOutput = repairedResult.output;
+    grounding = repairedResult.grounding;
     responses.push(repairedQa.response);
   }
 
