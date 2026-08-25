@@ -18,10 +18,10 @@ import {
 import { sendTransactionalEmail } from "./utils/email.js";
 import { captureSentryException } from "./utils/sentry.js";
 import { maskEmailAddress, recordAuthEvent, recordAuthFailure } from "./utils/authTelemetry.js";
+import { getAuthCookieAttributes } from "./utils/authCookieAttributes.js";
 
 const prisma = new PrismaClient();
 
-const isProduction = process.env.NODE_ENV === "production";
 function resolveBetterAuthBaseUrl() {
   const rawBaseUrl = process.env.BETTER_AUTH_URL ?? process.env.BETTER_AUTH_BASE_URL ?? "";
   const trimmed = rawBaseUrl.trim();
@@ -288,10 +288,9 @@ export const auth = betterAuth({
     }
   },
   advanced: {
-    defaultCookieAttributes: {
-      sameSite: isProduction ? "none" : "lax",
-      secure: isProduction,
-      partitioned: isProduction,
-    },
+    defaultCookieAttributes: getAuthCookieAttributes({
+      baseURL: resolvedBetterAuthBaseURL,
+      nodeEnv: process.env.NODE_ENV,
+    }),
   },
 });

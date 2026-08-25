@@ -94,6 +94,7 @@ Operational support:
 - `utils/storage.js`
 - `utils/limits.js`
 - `utils/frontendOrigins.js`
+- `utils/authCookieAttributes.js`: selects cross-site-safe cookies for HTTPS deployments while preserving local HTTP development
 - `utils/featureFlags.js`
 - `utils/costGuard.js`
 - `utils/authEmailTemplates.js`
