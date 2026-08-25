@@ -616,6 +616,47 @@ test("flashcard QA fails clearly when count repair is still short", async () => 
   }
 });
 
+test("flashcard QA performs bounded additive repairs using still-unused source statements", async () => {
+  const calls = [];
+  const responses = [
+    makeQaResponse(makeFlashcards(1), 20),
+    makeQaResponse(makeFlashcards(2).slice(1), 20),
+    makeQaResponse(makeFlashcards(3).slice(2), 20),
+  ];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return responses.shift();
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await __studyMaterialsTestables.validateAndImproveFlashcards({
+      cards: makeFlashcards(3),
+      language: "english",
+      sourceText: makeQaSource(),
+      targetCount: 3,
+      model: "gpt-4.1-nano",
+    });
+
+    assert.equal(calls.length, 3);
+    assert.match(calls[1].messages[1].content, /still-unused, directly citable source statements/);
+    assert.match(calls[1].messages[1].content, /Return exactly 2 ADDITIONAL/);
+    assert.match(calls[2].messages[1].content, /Return exactly 1 ADDITIONAL/);
+    assert.deepEqual(result.output.cards.map((card) => card.question), [
+      "Question 1?",
+      "Question 2?",
+      "Question 3?",
+    ]);
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
 test("flashcard QA rejects wholly unverified output instead of persisting fabricated cards", async () => {
   __studyMaterialsTestables.setOpenAiClientForTests({
     chat: {
@@ -802,6 +843,42 @@ test("exam QA fails clearly when the count-repair response is still short", asyn
         && error.actualCount === 3
         && error.targetCount === 4,
     );
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("exam QA performs bounded additive repairs using still-unused source statements", async () => {
+  const calls = [];
+  const responses = [
+    makeQaResponse({ questions: makeExamQuestions(2) }, 20),
+    makeQaResponse({ questions: makeExamQuestions(3).slice(2) }, 20),
+    makeQaResponse({ questions: makeExamQuestions(4).slice(3) }, 20),
+  ];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return responses.shift();
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await __studyMaterialsTestables.validateAndImproveExam({
+      questions: makeExamQuestions(4),
+      language: "english",
+      sourceText: makeQaSource(),
+      targetCount: 4,
+      model: "gpt-4.1-nano",
+    });
+
+    assert.equal(calls.length, 3);
+    assert.match(calls[1].messages[1].content, /still-unused, directly citable source statements/);
+    assert.match(calls[2].messages[1].content, /Return exactly 1 ADDITIONAL/);
+    assert.equal(result.output.questions.length, 4);
   } finally {
     __studyMaterialsTestables.setOpenAiClientForTests(null);
   }

@@ -44,6 +44,7 @@ const QA_OUTPUT_TOKEN_LIMITS = {
   [DOCUMENT_GENERATION_TYPES.flashcards]: 5_200,
   [DOCUMENT_GENERATION_TYPES.exam]: 7_500,
 };
+const MAX_QA_COUNT_REPAIR_ATTEMPTS = 3;
 const MIN_SOURCE_EVIDENCE_WORDS = 3;
 const SOURCE_GROUNDING_STOP_WORDS = new Set([
   "about", "according", "answer", "because", "being", "between", "both", "does", "each",
@@ -1958,7 +1959,13 @@ function createUngroundedGenerationOutputError(generationType, rejectedCount) {
   return error;
 }
 
-function buildQaCountRepairInstruction(generationType, targetCount, actualCount, existingSourceIds = []) {
+function buildQaCountRepairInstruction(
+  generationType,
+  targetCount,
+  actualCount,
+  existingSourceIds = [],
+  availableSourceStatements = [],
+) {
   const itemLabel = generationType === DOCUMENT_GENERATION_TYPES.flashcards
     ? "flashcards"
     : "questions";
@@ -1969,7 +1976,9 @@ function buildQaCountRepairInstruction(generationType, targetCount, actualCount,
 The previous QA response returned ${actualCount} source-verified ${itemLabel}, while this source has capacity for ${targetCount}.
 Those ${actualCount} verified items are already preserved. Return exactly ${missingCount} ADDITIONAL source-grounded ${itemLabel}, not the full set.
 Find ${missingCount} distinct, meaningful concepts from numbered source statements that are not already covered by the input items.${existingSourceIds.length > 0 ? ` Do not reuse these existing source identifiers: ${existingSourceIds.join(", ")}.` : ""}
-Every additional item must include its directly supporting "sourceId". Never repeat an existing question, invent facts, add outside knowledge, or duplicate concepts merely to meet a number.`;
+Every additional item must include its directly supporting "sourceId". Never repeat an existing question, invent facts, add outside knowledge, or duplicate concepts merely to meet a number.${availableSourceStatements.length > 0 ? `
+Select your additional concepts from these still-unused, directly citable source statements:
+${availableSourceStatements.map((statement) => `[${statement.id}] ${statement.text}`).join("\n")}` : ""}`;
   }
 
   return `\n\nCOUNT REPAIR REQUIRED:
@@ -2073,6 +2082,7 @@ async function validateAndImproveFlashcards({
               targetCount,
               countRepair.actualCount,
               countRepair.existingSourceIds,
+              countRepair.availableSourceStatements,
             )}`
             : basePrompt,
         },
@@ -2087,6 +2097,7 @@ async function validateAndImproveFlashcards({
         requestedAdditionalCount: countRepair && countRepair.actualCount < targetCount
           ? targetCount - countRepair.actualCount
           : null,
+        repairAttempt: countRepair?.attempt ?? null,
         maxTokens: QA_OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
         temperature: reasoningEffort ? null : 0.15,
         reasoningEffort,
@@ -2111,8 +2122,19 @@ async function validateAndImproveFlashcards({
   let grounding = firstQa.grounding;
   const responses = [firstQa.response];
 
-  if (improvedOutput.cards.length !== targetCount) {
+  for (
+    let repairAttempt = 1;
+    improvedOutput.cards.length !== targetCount && repairAttempt <= MAX_QA_COUNT_REPAIR_ATTEMPTS;
+    repairAttempt += 1
+  ) {
+    const previousCount = improvedOutput.cards.length;
     const previousResult = { output: improvedOutput, grounding };
+    const existingSourceIds = grounding.items.map((item) => item.sourceId).filter(Boolean);
+    const usedSourceIds = new Set(existingSourceIds);
+    const missingCount = Math.max(1, targetCount - previousCount);
+    const availableSourceStatements = inspectSourceGrounding(sourceText).statements
+      .filter((statement) => !usedSourceIds.has(statement.id))
+      .slice(0, Math.max(12, missingCount * 3));
     const inputCards = improvedOutput.cards.length > 0
       ? improvedOutput.cards.map((card, index) => ({
         ...card,
@@ -2122,8 +2144,10 @@ async function validateAndImproveFlashcards({
     const repairedQa = await runQaCall({
       inputCards,
       countRepair: {
-        actualCount: improvedOutput.cards.length,
-        existingSourceIds: grounding.items.map((item) => item.sourceId).filter(Boolean),
+        actualCount: previousCount,
+        existingSourceIds,
+        availableSourceStatements,
+        attempt: repairAttempt,
       },
     });
     const repairedResult = improvedOutput.cards.length < targetCount && improvedOutput.cards.length > 0
@@ -2137,12 +2161,17 @@ async function validateAndImproveFlashcards({
         output: repairedQa.output,
         grounding: {
           ...repairedQa.grounding,
-          totalRejectedCount: firstQa.grounding.rejectedCount + repairedQa.grounding.rejectedCount,
+          totalRejectedCount: (grounding.totalRejectedCount ?? grounding.rejectedCount)
+            + repairedQa.grounding.rejectedCount,
         },
       };
     improvedOutput = repairedResult.output;
     grounding = repairedResult.grounding;
     responses.push(repairedQa.response);
+
+    if (improvedOutput.cards.length <= previousCount) {
+      break;
+    }
   }
 
   if (improvedOutput.cards.length === 0 && grounding.rejectedCount > 0) {
@@ -2206,6 +2235,7 @@ async function validateAndImproveExam({
               targetCount,
               countRepair.actualCount,
               countRepair.existingSourceIds,
+              countRepair.availableSourceStatements,
             )}`
             : basePrompt,
         },
@@ -2220,6 +2250,7 @@ async function validateAndImproveExam({
         requestedAdditionalCount: countRepair && countRepair.actualCount < targetCount
           ? targetCount - countRepair.actualCount
           : null,
+        repairAttempt: countRepair?.attempt ?? null,
         maxTokens: QA_OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.exam],
         temperature: reasoningEffort ? null : 0.15,
         reasoningEffort,
@@ -2244,8 +2275,19 @@ async function validateAndImproveExam({
   let grounding = firstQa.grounding;
   const responses = [firstQa.response];
 
-  if (improvedOutput.questions.length !== targetCount) {
+  for (
+    let repairAttempt = 1;
+    improvedOutput.questions.length !== targetCount && repairAttempt <= MAX_QA_COUNT_REPAIR_ATTEMPTS;
+    repairAttempt += 1
+  ) {
+    const previousCount = improvedOutput.questions.length;
     const previousResult = { output: improvedOutput, grounding };
+    const existingSourceIds = grounding.items.map((item) => item.sourceId).filter(Boolean);
+    const usedSourceIds = new Set(existingSourceIds);
+    const missingCount = Math.max(1, targetCount - previousCount);
+    const availableSourceStatements = inspectSourceGrounding(sourceText).statements
+      .filter((statement) => !usedSourceIds.has(statement.id))
+      .slice(0, Math.max(12, missingCount * 3));
     const inputQuestions = improvedOutput.questions.length > 0
       ? improvedOutput.questions.map((question, index) => ({
         ...question,
@@ -2255,8 +2297,10 @@ async function validateAndImproveExam({
     const repairedQa = await runQaCall({
       inputQuestions,
       countRepair: {
-        actualCount: improvedOutput.questions.length,
-        existingSourceIds: grounding.items.map((item) => item.sourceId).filter(Boolean),
+        actualCount: previousCount,
+        existingSourceIds,
+        availableSourceStatements,
+        attempt: repairAttempt,
       },
     });
     const repairedResult = improvedOutput.questions.length < targetCount && improvedOutput.questions.length > 0
@@ -2270,12 +2314,17 @@ async function validateAndImproveExam({
         output: repairedQa.output,
         grounding: {
           ...repairedQa.grounding,
-          totalRejectedCount: firstQa.grounding.rejectedCount + repairedQa.grounding.rejectedCount,
+          totalRejectedCount: (grounding.totalRejectedCount ?? grounding.rejectedCount)
+            + repairedQa.grounding.rejectedCount,
         },
       };
     improvedOutput = repairedResult.output;
     grounding = repairedResult.grounding;
     responses.push(repairedQa.response);
+
+    if (improvedOutput.questions.length <= previousCount) {
+      break;
+    }
   }
 
   if (improvedOutput.questions.length === 0 && grounding.rejectedCount > 0) {
