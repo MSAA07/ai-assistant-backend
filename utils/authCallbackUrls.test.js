@@ -8,8 +8,21 @@ import {
 
 async function withEnv(overrides, fn) {
   const previous = new Map();
+  const normalizedOverrides = {
+    NODE_ENV: null,
+    BETTER_AUTH_URL: null,
+    BETTER_AUTH_BASE_URL: null,
+    RAILWAY_ENVIRONMENT: null,
+    BACKEND_DEPLOYMENT_ENV: null,
+    RAILWAY_PUBLIC_DOMAIN: null,
+    RAILWAY_STATIC_URL: null,
+    RAILWAY_SERVICE_ID: null,
+    RAILWAY_PROJECT_ID: null,
+    FRONTEND_ORIGINS: null,
+    ...overrides,
+  };
 
-  for (const [key, value] of Object.entries(overrides)) {
+  for (const [key, value] of Object.entries(normalizedOverrides)) {
     previous.set(key, process.env[key]);
     if (value == null) {
       delete process.env[key];
@@ -150,6 +163,90 @@ test("buildPasswordResetEmailActionUrl ignores invalid production env callback a
           url: "https://backend.example.com/api/auth/reset-password/token-123",
           token: "token-123",
         }),
+        "https://studymaxing.com/?auth_action=reset-password&token=token-123",
+      );
+    },
+  );
+});
+
+test("staging rejects an untrusted configured reset callback and uses the staging fallback", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "staging",
+      FRONTEND_ORIGINS: "",
+      AUTH_PASSWORD_RESET_CALLBACK_URL: "https://untrusted.example/reset",
+      VITE_AUTH_PASSWORD_RESET_CALLBACK_URL: "",
+      AUTH_EMAIL_APP_URL: "",
+    },
+    () => {
+      assert.equal(
+        buildPasswordResetEmailActionUrl({
+          url: "https://backend.example.com/api/auth/reset-password/token-123",
+          token: "token-123",
+        }),
+        "https://stage.studymaxing.com/?auth_action=reset-password&token=token-123",
+      );
+    },
+  );
+});
+
+test("staging accepts an allowlisted configured reset callback", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "staging",
+      FRONTEND_ORIGINS: "",
+      AUTH_PASSWORD_RESET_CALLBACK_URL: "https://stage.studymaxing.com/reset",
+      VITE_AUTH_PASSWORD_RESET_CALLBACK_URL: "",
+      AUTH_EMAIL_APP_URL: "",
+    },
+    () => {
+      assert.equal(
+        buildPasswordResetEmailActionUrl({
+          url: "https://backend.example.com/api/auth/reset-password/token-123",
+          token: "token-123",
+        }),
+        "https://stage.studymaxing.com/reset?auth_action=reset-password&token=token-123",
+      );
+    },
+  );
+});
+
+test("staging rejects an untrusted request callback and uses the staging fallback", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "staging",
+      FRONTEND_ORIGINS: "",
+      AUTH_PASSWORD_RESET_CALLBACK_URL: "",
+      VITE_AUTH_PASSWORD_RESET_CALLBACK_URL: "",
+      AUTH_EMAIL_APP_URL: "",
+    },
+    () => {
+      const callbackUrl = "https://untrusted.example/reset";
+      const rawUrl = `https://backend.example.com/api/auth/reset-password/token-123?callbackURL=${encodeURIComponent(callbackUrl)}`;
+
+      assert.equal(
+        buildPasswordResetEmailActionUrl({ url: rawUrl, token: "token-123" }),
+        "https://stage.studymaxing.com/?auth_action=reset-password&token=token-123",
+      );
+    },
+  );
+});
+
+test("production rejects an untrusted request callback and keeps its existing fallback", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      FRONTEND_ORIGINS: "",
+      AUTH_PASSWORD_RESET_CALLBACK_URL: "",
+      VITE_AUTH_PASSWORD_RESET_CALLBACK_URL: "",
+      AUTH_EMAIL_APP_URL: "",
+    },
+    () => {
+      const callbackUrl = "https://untrusted.example/reset";
+      const rawUrl = `https://backend.example.com/api/auth/reset-password/token-123?callbackURL=${encodeURIComponent(callbackUrl)}`;
+
+      assert.equal(
+        buildPasswordResetEmailActionUrl({ url: rawUrl, token: "token-123" }),
         "https://studymaxing.com/?auth_action=reset-password&token=token-123",
       );
     },

@@ -1,4 +1,7 @@
-import { isAllowedFrontendOrigin } from "./frontendOrigins.js";
+import {
+  getFrontendDeploymentMode,
+  isAllowedFrontendOrigin,
+} from "./frontendOrigins.js";
 
 const authCallbackDiagnostics = {
   lastAction: "",
@@ -11,10 +14,7 @@ const authCallbackDiagnostics = {
 };
 
 const PRODUCTION_AUTH_APP_URL = "https://studymaxing.com";
-
-function isProductionEnvironment() {
-  return process.env.NODE_ENV === "production";
-}
+const STAGING_AUTH_APP_URL = "https://stage.studymaxing.com";
 
 function normalizeAbsoluteUrl(value = "") {
   const trimmed = String(value).trim();
@@ -88,18 +88,25 @@ function getFirstConfiguredUrl(envNames = []) {
 function sanitizeCallbackUrl(value = "") {
   const normalized = normalizeAbsoluteUrl(value);
   if (!normalized) return "";
-  if (!isProductionEnvironment()) return normalized;
+  if (getFrontendDeploymentMode() === "local") return normalized;
 
-  return isAllowedFrontendOrigin(normalized) ? normalized : "";
+  try {
+    return isAllowedFrontendOrigin(new URL(normalized).origin) ? normalized : "";
+  } catch {
+    return "";
+  }
 }
 
 function resolveFrontendCallbackBase({ rawUrl, action, envNames }) {
   const extractedCallbackUrl = extractCallbackUrl(rawUrl);
   if (extractedCallbackUrl) {
-    return {
-      source: "request",
-      callbackUrl: extractedCallbackUrl,
-    };
+    const sanitizedCallbackUrl = sanitizeCallbackUrl(extractedCallbackUrl);
+    if (sanitizedCallbackUrl) {
+      return {
+        source: "request",
+        callbackUrl: sanitizedCallbackUrl,
+      };
+    }
   }
 
   const configuredCallbackUrl = getFirstConfiguredUrl(envNames);
@@ -118,11 +125,23 @@ function resolveFrontendCallbackBase({ rawUrl, action, envNames }) {
     };
   }
 
-  if (isProductionEnvironment()) {
+  const deploymentMode = getFrontendDeploymentMode();
+  if (deploymentMode === "production") {
     return {
       source: "production_default",
       callbackUrl: buildFrontendActionUrl(PRODUCTION_AUTH_APP_URL, { auth_action: action }),
     };
+  }
+
+  if (deploymentMode === "staging") {
+    return {
+      source: "staging_default",
+      callbackUrl: buildFrontendActionUrl(STAGING_AUTH_APP_URL, { auth_action: action }),
+    };
+  }
+
+  if (deploymentMode === "deployed") {
+    throw new Error("A trusted auth callback URL is required for this HTTPS deployment");
   }
 
   return {
