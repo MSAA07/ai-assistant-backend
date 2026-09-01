@@ -268,7 +268,9 @@ export const auth = betterAuth({
   },
   plugins: [
     createExistingUserSignUpEnumerationPlugin(),
-    admin()
+    admin({
+      impersonationSessionDuration: 60 * 60,
+    })
   ],
   user: {
     additionalFields: {

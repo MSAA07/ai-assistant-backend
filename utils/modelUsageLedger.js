@@ -6,6 +6,7 @@ import {
   resolvePricingModelKey,
 } from "./modelPricing.js";
 import {
+  alertModelPricingMissing,
   evaluateSystemUsageAlerts,
   evaluateUsageAlertsForUser,
 } from "./adminAlerts.js";
@@ -159,6 +160,28 @@ export async function recordModelUsageEvent(prisma, {
     jobRetryCount: safeJobRetryCount,
   });
 
+  let estimatedCostUsd = "0.00000000";
+  if (shouldBill) {
+    try {
+      estimatedCostUsd = estimateCostUsdString(modelName, inputTokens, outputTokens);
+    } catch (error) {
+      if (error?.code === "model_pricing_missing") {
+        await alertModelPricingMissing(prisma, error, {
+          model: modelName,
+          pricingVersion,
+          metadata: {
+            source: "model_usage_ledger",
+            featureKey,
+            jobId,
+          },
+        }).catch((alertError) => {
+          console.error("[modelUsageLedger] failed to raise missing-pricing alert:", alertError);
+        });
+      }
+      throw error;
+    }
+  }
+
   return prisma.modelUsageEvent.upsert({
     where: { idempotencyKey: key },
     update: {},
@@ -174,9 +197,7 @@ export async function recordModelUsageEvent(prisma, {
       inputTokens,
       outputTokens,
       totalTokens,
-      estimatedCostUsd: shouldBill
-        ? estimateCostUsdString(modelName, inputTokens, outputTokens)
-        : "0.00000000",
+      estimatedCostUsd,
       currency: "USD",
       pricingVersion,
       status,
@@ -218,6 +239,9 @@ export async function safelyRecordModelUsageEvent(prisma, payload) {
     return record;
   } catch (error) {
     console.error("[modelUsageLedger] failed to persist model usage:", error);
+    if (error?.code === "model_pricing_missing") {
+      throw error;
+    }
     return null;
   }
 }

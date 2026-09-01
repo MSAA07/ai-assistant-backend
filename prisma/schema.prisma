@@ -36,14 +36,14 @@ model User {
   sessions  Session[]
   accounts  Account[]
 
-  userLimit         UserLimit?
-  costAnomalyAlerts CostAnomalyAlert[]
-  adminAlerts       AdminAlert[]
-  usageEvents       UsageEvent[]
-  modelUsageEvents  ModelUsageEvent[]
-  jobs              Job[]
-  telegramConnection TelegramConnection?
-  telegramLinkTokens  TelegramLinkToken[]
+  userLimit            UserLimit?
+  costAnomalyAlerts    CostAnomalyAlert[]
+  adminAlerts          AdminAlert[]
+  usageEvents          UsageEvent[]
+  modelUsageEvents     ModelUsageEvent[]
+  jobs                 Job[]
+  telegramConnection   TelegramConnection?
+  telegramLinkTokens   TelegramLinkToken[]
   telegramDeliveryLogs TelegramDeliveryLog[]
 
   @@index([lastActive])
@@ -51,15 +51,16 @@ model User {
 }
 
 model Session {
-  id        String   @id
-  userId    String
-  expiresAt DateTime
-  token     String
-  createdAt DateTime
-  updatedAt DateTime
-  ipAddress String?
-  userAgent String?
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String   @id
+  userId         String
+  expiresAt      DateTime
+  token          String
+  createdAt      DateTime
+  updatedAt      DateTime
+  ipAddress      String?
+  userAgent      String?
+  impersonatedBy String?
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([token])
   @@map("session")
@@ -113,14 +114,14 @@ model Document {
   processingError  String?
   processedAt      DateTime?
 
-  excerpts         DocumentExcerpt[]
-  generations      DocumentGeneration[]
-  modelUsageEvents ModelUsageEvent[]
-  flashcardSets    FlashcardSet[]
-  examRecords      ExamRecord[]
-  exportArtifacts  ExportArtifact[]
+  excerpts             DocumentExcerpt[]
+  generations          DocumentGeneration[]
+  modelUsageEvents     ModelUsageEvent[]
+  flashcardSets        FlashcardSet[]
+  examRecords          ExamRecord[]
+  exportArtifacts      ExportArtifact[]
   telegramDeliveryLogs TelegramDeliveryLog[]
-  storageKey       String? // R2 object key - added for P1-S04
+  storageKey           String? // R2 object key - added for P1-S04
 
   @@index([userId])
   @@index([userId, processingStatus])
@@ -128,21 +129,21 @@ model Document {
 }
 
 model ExamAttempt {
-  id             String   @id @default(uuid())
-  documentId     String
-  userId         String
-  examRecordId   String?
-  examRecord     ExamRecord? @relation(fields: [examRecordId], references: [id], onDelete: SetNull)
-  score          Int
-  totalQuestions Int
-  answers        Json
-  status         String   @default("submitted") // 'in_progress' | 'submitted' | 'abandoned'
-  startedAt      DateTime @default(now())
-  lastSavedAt    DateTime @default(now())
-  submittedAt    DateTime? @default(now())
-  feedbackMode   String   @default("end") // 'instant' | 'end'
+  id                   String      @id @default(uuid())
+  documentId           String
+  userId               String
+  examRecordId         String?
+  examRecord           ExamRecord? @relation(fields: [examRecordId], references: [id], onDelete: SetNull)
+  score                Int
+  totalQuestions       Int
+  answers              Json
+  status               String      @default("submitted") // 'in_progress' | 'submitted' | 'abandoned'
+  startedAt            DateTime    @default(now())
+  lastSavedAt          DateTime    @default(now())
+  submittedAt          DateTime?   @default(now())
+  feedbackMode         String      @default("end") // 'instant' | 'end'
   restartFromAttemptId String?
-  completedAt    DateTime @default(now())
+  completedAt          DateTime    @default(now())
 
   @@index([userId])
   @@index([documentId])
@@ -183,18 +184,18 @@ model FlashcardSet {
 }
 
 model FlashcardCard {
-  id          String      @id @default(cuid())
+  id          String       @id @default(cuid())
   setId       String
   set         FlashcardSet @relation(fields: [setId], references: [id], onDelete: Cascade)
   position    Int
-  question    String      @db.Text
-  answer      String      @db.Text
-  explanation String?     @db.Text
-  sourceRefs  Json        @default("[]")
-  isDeleted   Boolean     @default(false)
+  question    String       @db.Text
+  answer      String       @db.Text
+  explanation String?      @db.Text
+  sourceRefs  Json         @default("[]")
+  isDeleted   Boolean      @default(false)
   deletedAt   DateTime?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   states FlashcardCardState[]
 
@@ -203,18 +204,18 @@ model FlashcardCard {
 }
 
 model FlashcardCardState {
-  id               String       @id @default(cuid())
+  id               String        @id @default(cuid())
   userId           String
   cardId           String
   card             FlashcardCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  isHidden         Boolean      @default(false)
-  isDeletedForUser Boolean      @default(false)
-  mastered         Boolean      @default(false)
-  correctCount     Int          @default(0)
-  incorrectCount   Int          @default(0)
-  lastResult       String       @default("unseen") // 'correct' | 'incorrect' | 'unseen'
+  isHidden         Boolean       @default(false)
+  isDeletedForUser Boolean       @default(false)
+  mastered         Boolean       @default(false)
+  correctCount     Int           @default(0)
+  incorrectCount   Int           @default(0)
+  lastResult       String        @default("unseen") // 'correct' | 'incorrect' | 'unseen'
   lastReviewedAt   DateTime?
-  updatedAt        DateTime     @updatedAt
+  updatedAt        DateTime      @updatedAt
 
   @@unique([userId, cardId])
   @@index([userId, lastResult, updatedAt])
@@ -285,13 +286,15 @@ model ExportArtifact {
 }
 
 model AuditLog {
-  id        String   @id @default(uuid())
-  adminId   String
-  action    String
-  targetId  String?
-  details   Json?
-  ipAddress String?
-  createdAt DateTime @default(now())
+  id            String   @id @default(uuid())
+  adminId       String
+  action        String
+  targetId      String?
+  details       Json?
+  previousValue Json?
+  newValue      Json?
+  ipAddress     String?
+  createdAt     DateTime @default(now())
 
   @@index([adminId])
   @@index([action])
@@ -420,19 +423,19 @@ model FeatureFlagAuditLog {
 }
 
 model UserLimit {
-  userId                  String   @id
-  user                    User     @relation(fields: [userId], references: [id])
-  dailyTokenCap           Int      @default(200000)
-  dailyDocCap             Int      @default(10)
-  requestsPerMin          Int      @default(10)
-  tokensUsedToday         Int      @default(0)
-  docsUsedToday           Int      @default(0)
-  lastResetDate           DateTime @default(now())
-  documentCapOverride     Int?
-  costCapUsdOverride      Decimal? @db.Decimal(10, 4)
-  tokenCapOverride        Int?
-  featureCapsOverride     Json     @default("{}")
-  overrideBy              String?
+  userId              String   @id
+  user                User     @relation(fields: [userId], references: [id])
+  dailyTokenCap       Int      @default(200000)
+  dailyDocCap         Int      @default(10)
+  requestsPerMin      Int      @default(10)
+  tokensUsedToday     Int      @default(0)
+  docsUsedToday       Int      @default(0)
+  lastResetDate       DateTime @default(now())
+  documentCapOverride Int?
+  costCapUsdOverride  Decimal? @db.Decimal(10, 4)
+  tokenCapOverride    Int?
+  featureCapsOverride Json     @default("{}")
+  overrideBy          String?
 }
 
 model UsageCapConfig {

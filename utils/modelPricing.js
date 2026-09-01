@@ -1,4 +1,6 @@
-export const MODEL_PRICING_VERSION = "openai-text-pricing-2026-08-23-v2";
+import { captureSentryException } from "./sentry.js";
+
+export const MODEL_PRICING_VERSION = "openai-text-pricing-2026-08-31-v3";
 export const DEFAULT_USD_TO_SAR_RATE = 3.75;
 
 // USD per 1M text tokens. Keep ledger costs in USD; SAR conversion belongs to display code.
@@ -40,6 +42,14 @@ export function getModelPricing(modelName) {
     });
     const error = new Error(`No pricing configured for model: ${normalized}`);
     error.code = "model_pricing_missing";
+    captureSentryException(error, {
+      level: "error",
+      tags: { util: "model_pricing", anomaly: "missing_pricing" },
+      extra: {
+        model: normalized,
+        pricingVersion: MODEL_PRICING_VERSION,
+      },
+    });
     throw error;
   }
 

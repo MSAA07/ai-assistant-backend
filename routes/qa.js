@@ -18,15 +18,12 @@ const QA_RATE_LIMITS_MS = Object.freeze({
   pipeline: 3 * 60 * 1000,
   full: 5 * 60 * 1000,
 });
+const QA_TARGET = "staging";
+const QA_STAGING_SERVICE_NAME = "studymaxing-backend-staging";
 
 const QA_ACCOUNT = Object.freeze({
   email: QA_EMAIL,
   password: QA_PASSWORD,
-});
-
-const DEFAULT_TARGETS = Object.freeze({
-  staging: process.env.QA_STAGING_TARGET_URL || "https://ai-assistant-backend-staging.up.railway.app",
-  production: process.env.QA_PRODUCTION_TARGET_URL || "https://ai-assistant-backend-production-ddf0.up.railway.app",
 });
 
 const HEALTH_TEST_NAMES = Object.freeze({
@@ -256,7 +253,7 @@ let qaScheduleContext = null;
 
 function normalizeTarget(value) {
   const target = typeof value === "string" ? value.trim().toLowerCase() : "";
-  return target === "staging" || target === "production" ? target : "";
+  return target === QA_TARGET ? target : "";
 }
 
 function normalizeFullMode(value) {
@@ -270,13 +267,45 @@ function normalizeBaseUrl(value) {
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
 }
 
-function getTargetBaseUrl(target) {
-  const envKey = target === "production"
-    ? "QA_PRODUCTION_API_BASE_URL"
-    : "QA_STAGING_API_BASE_URL";
-  return normalizeBaseUrl(process.env[envKey])
-    || normalizeBaseUrl(process.env.QA_API_BASE_URL)
-    || DEFAULT_TARGETS[target];
+function getStagingBaseUrl(env = process.env) {
+  const baseUrl = normalizeBaseUrl(env.QA_STAGING_API_BASE_URL);
+  if (!baseUrl) {
+    const error = new Error("QA_STAGING_API_BASE_URL is required to run QA; no fallback target is allowed");
+    error.status = 503;
+    throw error;
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(baseUrl);
+  } catch {
+    const error = new Error("QA_STAGING_API_BASE_URL must be a valid staging URL");
+    error.status = 503;
+    throw error;
+  }
+
+  const hostname = parsedUrl.hostname.toLowerCase();
+  const hasStagingMarker = /(^|[.-])stag(e|ing)([.-]|$)/.test(hostname);
+  const hasProductionMarker = /(^|[.-])prod(uction)?([.-]|$)/.test(hostname);
+  if (parsedUrl.protocol !== "https:" || !hasStagingMarker || hasProductionMarker) {
+    const error = new Error("QA_STAGING_API_BASE_URL must be an HTTPS staging host and must not identify production");
+    error.status = 503;
+    throw error;
+  }
+
+  return baseUrl;
+}
+
+function assertQaServiceIsStaging(env = process.env) {
+  const serviceName = typeof env.RAILWAY_SERVICE_NAME === "string"
+    ? env.RAILWAY_SERVICE_NAME.trim()
+    : "";
+  if (serviceName !== QA_STAGING_SERVICE_NAME) {
+    const error = new Error(`QA routes are available only on ${QA_STAGING_SERVICE_NAME}`);
+    error.status = 503;
+    throw error;
+  }
+  return serviceName;
 }
 
 function sleep(ms) {
@@ -1600,15 +1629,16 @@ async function runQaTier({
   prisma,
   auth,
   tier,
-  target,
+  baseUrl,
   adminCookieHeader = "",
   triggeredBy = "unknown",
 }) {
+  const target = QA_TARGET;
   const runStartedAt = new Date();
   const runStartedMs = Date.now();
   const durationEstimates = await getQaDurationEstimates(prisma, tier);
   const state = {
-    baseUrl: getTargetBaseUrl(target),
+    baseUrl,
     qaCookieHeader: "",
     qaUserId: "",
     documentId: "",
@@ -1784,7 +1814,7 @@ async function runScheduledHealthCheck() {
   const result = await runQaTier({
     ...qaScheduleContext,
     tier: "health",
-    target: "staging",
+    baseUrl: getStagingBaseUrl(),
     adminCookieHeader: "",
     triggeredBy: "auto",
   });
@@ -1816,11 +1846,12 @@ async function restartQaScheduleInterval() {
 }
 
 export async function initializeQaScheduler({ prisma, auth }) {
-  qaScheduleContext = { prisma, auth };
-
   try {
+    assertQaServiceIsStaging();
+    qaScheduleContext = { prisma, auth };
     await restartQaScheduleInterval();
   } catch (error) {
+    qaScheduleContext = null;
     console.error("[qa] Failed to initialize QA scheduler:", error);
   }
 }
@@ -1846,8 +1877,17 @@ function ensureRunCanStart(req, res, tier) {
   return true;
 }
 
-export const createQaRouter = ({ prisma, auth }) => {
+export const createQaRouter = ({ prisma, auth, env = process.env }) => {
   const router = express.Router();
+
+  router.use((_req, res, next) => {
+    try {
+      assertQaServiceIsStaging(env);
+      next();
+    } catch (error) {
+      return res.status(error.status || 503).json({ error: error.message });
+    }
+  });
 
   router.get("/history", async (_req, res) => {
     try {
@@ -1893,9 +1933,17 @@ export const createQaRouter = ({ prisma, auth }) => {
   });
 
   async function handleTierRun(req, res, tier) {
-    const target = normalizeTarget(req.body?.target);
-    if (!target) {
-      return res.status(400).json({ error: "target must be staging or production" });
+    const requestedTarget = req.body?.target;
+    if (requestedTarget !== undefined && !normalizeTarget(requestedTarget)) {
+      return res.status(400).json({ error: "target must be staging" });
+    }
+
+    let baseUrl;
+    try {
+      baseUrl = getStagingBaseUrl();
+    } catch (error) {
+      console.error("[qa] Staging target configuration is invalid:", error.message);
+      return res.status(error.status || 503).json({ error: error.message });
     }
 
     if (!ensureRunCanStart(req, res, tier)) {
@@ -1907,14 +1955,14 @@ export const createQaRouter = ({ prisma, auth }) => {
       prisma,
       auth,
       tier,
-      target,
+      baseUrl,
       adminCookieHeader: req.headers.cookie || "",
       triggeredBy,
     });
 
     return res.status(202).json({
       started: true,
-      target,
+      target: QA_TARGET,
       tier,
       tierLabel: getTierLabel(tier),
       totalTests: getTestSequence(tier).length,
@@ -1940,3 +1988,9 @@ export const createQaRouter = ({ prisma, auth }) => {
 
   return router;
 };
+
+export const __qaTestables = Object.freeze({
+  assertQaServiceIsStaging,
+  getStagingBaseUrl,
+  normalizeTarget,
+});

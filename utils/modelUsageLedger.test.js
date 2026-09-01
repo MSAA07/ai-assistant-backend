@@ -7,6 +7,7 @@ import {
   MODEL_USAGE_STATUS,
   normalizeTokenUsage,
   recordModelUsageEvent,
+  safelyRecordModelUsageEvent,
 } from "./modelUsageLedger.js";
 import { convertUsdToSar, getUsdToSarRate } from "./modelPricing.js";
 import { runWithAbortableTimeout } from "./jobTimeout.js";
@@ -111,6 +112,21 @@ test("recordModelUsageEvent is idempotent for the same call attempt", async () =
 
   assert.equal(first.id, second.id);
   assert.equal(prisma.upserts.length, 2);
+});
+
+test("safelyRecordModelUsageEvent rethrows missing pricing instead of swallowing it", async () => {
+  const prisma = createMockPrisma();
+
+  await assert.rejects(
+    () => safelyRecordModelUsageEvent(prisma, {
+      ...baseContext,
+      model: "gpt-future-unpriced",
+      usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
+      idempotencyKey: "missing-pricing",
+    }),
+    (error) => error?.code === "model_pricing_missing",
+  );
+  assert.equal(prisma.upserts.length, 0);
 });
 
 test("createTrackedChatCompletion creates separate rows for generation and QA calls", async () => {

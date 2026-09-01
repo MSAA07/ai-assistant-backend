@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ADMIN_ALERT_TYPES,
   alertJobFailure,
+  alertModelPricingMissing,
   evaluateDailySystemCostThreshold,
   evaluateFailedJobSpike,
   evaluateSystemCostSpike,
@@ -59,7 +60,7 @@ function createCostThresholdPrisma() {
       },
     },
     usageCapConfig: {
-      async upsert() {
+      async findUnique() {
         return {
           plan: "free",
           documentCap: 5,
@@ -180,6 +181,32 @@ test("recordAdminAlert deduplicates the same type and target inside the window",
   assert.equal(second.status, "deduped");
   assert.equal(prisma.alerts.length, 1);
   assert.equal(sends, 1);
+});
+
+test("alertModelPricingMissing records a deduplicated error anomaly for the model", async () => {
+  const prisma = createAlertPrisma();
+  const error = Object.assign(new Error("No pricing configured for model: gpt-future"), {
+    code: "model_pricing_missing",
+  });
+  const options = {
+    model: "gpt-future",
+    pricingVersion: "pricing-test-v1",
+    env: { ALERTS_ENABLED: "false" },
+    metadata: { source: "test" },
+  };
+
+  const first = await alertModelPricingMissing(prisma, error, options);
+  const second = await alertModelPricingMissing(prisma, error, options);
+
+  assert.equal(first.status, "disabled");
+  assert.equal(second.status, "deduped");
+  assert.equal(prisma.alerts.length, 1);
+  assert.equal(prisma.alerts[0].alertType, ADMIN_ALERT_TYPES.modelPricingMissing);
+  assert.equal(prisma.alerts[0].severity, "error");
+  assert.equal(prisma.alerts[0].targetType, "model");
+  assert.equal(prisma.alerts[0].targetId, "gpt-future");
+  assert.equal(prisma.alerts[0].metadata.pricingVersion, "pricing-test-v1");
+  assert.equal(prisma.alerts[0].metadata.source, "test");
 });
 
 test("evaluateUserCostThreshold sends when spend crosses 80 percent of cap", async () => {

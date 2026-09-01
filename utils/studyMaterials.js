@@ -45,12 +45,25 @@ const QA_OUTPUT_TOKEN_LIMITS = {
   [DOCUMENT_GENERATION_TYPES.exam]: 7_500,
 };
 const MAX_QA_COUNT_REPAIR_ATTEMPTS = 3;
+const MAX_FLASHCARD_ADAPTIVE_REPAIR_ATTEMPTS = 2;
+const MAX_EXTRACTIVE_FLASHCARD_ANSWER_WORDS = 18;
+const MAX_PERSISTED_GROUNDING_REJECTIONS = 50;
 const MIN_SOURCE_EVIDENCE_WORDS = 3;
-const SOURCE_GROUNDING_STOP_WORDS = new Set([
+const SOURCE_STATEMENT_STOP_WORDS = new Set([
   "about", "according", "answer", "because", "being", "between", "both", "does", "each",
   "false", "following", "from", "have", "into", "more", "most", "only", "other", "source",
   "statement", "that", "their", "them", "there", "these", "they", "this", "those", "through",
   "true", "what", "when", "where", "which", "while", "with", "would",
+]);
+const SOURCE_GROUNDING_STOP_WORDS = new Set([
+  ...SOURCE_STATEMENT_STOP_WORDS,
+  "a", "after", "again", "all", "also", "among", "an", "and", "another", "any", "are", "as",
+  "at", "be", "been", "before", "but", "by", "can", "could", "did", "do", "during", "either",
+  "every", "for", "had", "has", "having", "here", "how", "if", "in", "is", "it", "its",
+  "itself", "just", "many", "may", "might", "must", "neither", "of", "on", "once", "one",
+  "or", "our", "out", "over", "same", "should", "since", "so", "some", "such", "than",
+  "the", "then", "to", "too", "under", "until", "upon", "very", "was", "were", "whether",
+  "who", "whom", "why", "will", "within", "yet", "you", "your",
 ]);
 const SUMMARY_STUDY_GUIDE_SECTIONS = Object.freeze([
   "Title",
@@ -335,10 +348,10 @@ function normalizeSourceEvidence(value) {
     .toLocaleLowerCase();
 }
 
-function getGroundingTokens(value) {
+function getGroundingTokens(value, stopWords = SOURCE_GROUNDING_STOP_WORDS) {
   return normalizeSourceEvidence(value)
     .match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu)
-    ?.filter((token) => token.length >= 3 && !SOURCE_GROUNDING_STOP_WORDS.has(token)) ?? [];
+    ?.filter((token) => token.length >= 3 && !stopWords.has(token)) ?? [];
 }
 
 function stemGroundingToken(token) {
@@ -362,7 +375,7 @@ function inspectSourceGrounding(sourceText) {
 
     if (
       normalizedStatement.length < 18
-      || getGroundingTokens(normalizedStatement).length < 3
+      || getGroundingTokens(normalizedStatement, SOURCE_STATEMENT_STOP_WORDS).length < 3
       || /^(?:iteration|repeat|repetition|pass|run)\s+#(?:\s|$)/u.test(normalizedStatement)
     ) {
       continue;
@@ -389,21 +402,22 @@ function formatSourceEvidenceCatalog(sourceGrounding) {
     .join("\n");
 }
 
-function selectRelevantSourceQuote(statement, factualContent) {
+function selectRelevantSourceQuote(statement, factualContent, answerContent = factualContent) {
   const words = normalizeString(statement).split(/\s+/u).filter(Boolean);
   if (words.length <= 24) {
     return words.join(" ");
   }
 
   const factualRoots = new Set(getGroundingTokens(factualContent).map(stemGroundingToken));
+  const answerRoots = new Set(getGroundingTokens(answerContent).map(stemGroundingToken));
   let bestStart = 0;
   let bestScore = -1;
 
   for (let start = 0; start < words.length; start += 1) {
     const candidate = words.slice(start, start + 18).join(" ");
-    const score = getGroundingTokens(candidate)
-      .map(stemGroundingToken)
-      .filter((token) => factualRoots.has(token)).length;
+    const candidateRoots = getGroundingTokens(candidate).map(stemGroundingToken);
+    const score = candidateRoots.filter((token) => factualRoots.has(token)).length
+      + candidateRoots.filter((token) => answerRoots.has(token)).length * 3;
     if (score > bestScore) {
       bestScore = score;
       bestStart = start;
@@ -424,6 +438,31 @@ function resolveGroundedTargetCount(requestedCount, sourceGrounding) {
   return Math.min(normalizedRequestedCount, distinctStatementCount);
 }
 
+function isHeadingOnlySourceEvidence(value) {
+  const sourceEvidence = normalizeString(value);
+  if (!sourceEvidence) {
+    return false;
+  }
+
+  if (/^(?:key\s+(?:term|concept)|important\s+(?:term|concept)|learning\s+(?:outcomes?|objectives?)|chapter|section|unit|lesson|topic)\s*[:\-–—]/iu.test(sourceEvidence)) {
+    return true;
+  }
+
+  if (/[.!?؟;؛]|\d/u.test(sourceEvidence)) {
+    return false;
+  }
+
+  const words = sourceEvidence.match(/[\p{L}]+(?:[-'][\p{L}]+)*/gu) ?? [];
+  return words.length >= 2
+    && words.length <= 8
+    && words.every((word) => SOURCE_GROUNDING_STOP_WORDS.has(word.toLocaleLowerCase())
+      || /^\p{Lu}/u.test(word));
+}
+
+function isIncompleteSourceEvidence(value) {
+  return /\b(?:a|an|the)\s*$/iu.test(normalizeString(value));
+}
+
 function assessItemSourceEvidence({
   generationType,
   rawItem,
@@ -435,10 +474,15 @@ function assessItemSourceEvidence({
   const factualContent = generationType === DOCUMENT_GENERATION_TYPES.flashcards
     ? `${normalizedItem.question} ${normalizedItem.answer}`
     : `${normalizedItem.question} ${normalizedItem.correctAnswer} ${normalizedItem.explanation || ""}`;
+  const answerContent = generationType === DOCUMENT_GENERATION_TYPES.flashcards
+    ? normalizedItem.answer
+    : normalizedItem.type === "true_false"
+      ? normalizedItem.explanation
+      : normalizedItem.correctAnswer;
   const sourceId = normalizeString(rawItem?.sourceId ?? rawItem?.sourceStatementId).toUpperCase();
   const citedStatement = sourceStatementsById?.get(sourceId) ?? null;
   const sourceQuote = citedStatement
-    ? selectRelevantSourceQuote(citedStatement.text, factualContent)
+    ? selectRelevantSourceQuote(citedStatement.text, factualContent, answerContent)
     : normalizeString(rawItem?.sourceQuote);
   const normalizedQuote = normalizeSourceEvidence(sourceQuote);
   const normalizedSource = normalizeSourceEvidence(sourceText);
@@ -448,7 +492,27 @@ function assessItemSourceEvidence({
   const evidenceRoots = new Set(quoteTokens.map(stemGroundingToken));
   const factualRoots = getGroundingTokens(factualContent).map(stemGroundingToken);
   const sharedEvidenceTerms = [...new Set(factualRoots.filter((token) => evidenceRoots.has(token)))];
-  const hasRelevantEvidence = sharedEvidenceTerms.length > 0;
+  const answerRoots = [...new Set(getGroundingTokens(answerContent).map(stemGroundingToken))];
+  const sharedAnswerEvidenceTerms = answerRoots.filter((token) => evidenceRoots.has(token));
+  const requiredAnswerEvidenceTerms = Math.min(2, answerRoots.length);
+  const questionRoots = new Set(getGroundingTokens(normalizedItem.question).map(stemGroundingToken));
+  const answerSpecificRoots = answerRoots.filter((token) => !questionRoots.has(token));
+  const sharedAnswerSpecificEvidenceTerms = answerSpecificRoots.filter((token) => evidenceRoots.has(token));
+  const requiredAnswerSpecificEvidenceTerms = generationType === DOCUMENT_GENERATION_TYPES.exam
+    && normalizedItem.type === "true_false"
+    ? 0
+    : Math.min(
+      answerSpecificRoots.length,
+      Math.max(2, Math.ceil(answerSpecificRoots.length * 0.5)),
+    );
+  const sourceQuoteIsHeading = isHeadingOnlySourceEvidence(citedStatement?.text ?? sourceQuote);
+  const sourceQuoteIsIncomplete = isIncompleteSourceEvidence(citedStatement?.text ?? sourceQuote);
+  const hasRelevantEvidence = !sourceQuoteIsHeading
+    && !sourceQuoteIsIncomplete
+    && answerRoots.length > 0
+    && sharedEvidenceTerms.length >= Math.min(2, new Set(factualRoots).size)
+    && sharedAnswerEvidenceTerms.length >= requiredAnswerEvidenceTerms
+    && sharedAnswerSpecificEvidenceTerms.length >= requiredAnswerSpecificEvidenceTerms;
   const sourceRoots = new Set((normalizeSourceEvidence(sourceText)
     .match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu) ?? [])
     .filter((token) => token.length >= 2)
@@ -473,7 +537,14 @@ function assessItemSourceEvidence({
     sourceId: citedStatement?.id ?? null,
     sourceQuote,
     sourceQuoteIsVerbatim,
+    sourceQuoteIsHeading,
+    sourceQuoteIsIncomplete,
     sharedEvidenceTerms,
+    sharedAnswerEvidenceTerms,
+    requiredAnswerEvidenceTerms,
+    answerSpecificEvidenceTerms: answerSpecificRoots,
+    sharedAnswerSpecificEvidenceTerms,
+    requiredAnswerSpecificEvidenceTerms,
     unsupportedDistinctiveTerms,
     reason: grounded
       ? null
@@ -481,7 +552,11 @@ function assessItemSourceEvidence({
         ? "missing_or_nonverbatim_source_quote"
         : unsupportedDistinctiveTerms.length > 0
           ? "distinctive_term_absent_from_source"
-          : "source_quote_does_not_support_item",
+          : sourceQuoteIsHeading
+            ? "source_quote_is_heading_only"
+            : sourceQuoteIsIncomplete
+              ? "source_quote_is_incomplete"
+              : "source_quote_does_not_support_item",
   };
 }
 
@@ -1584,6 +1659,8 @@ You must FIX issues, not just report them.
 
 Validation rules:
 - Grounding is the highest-priority invariant: every question and answer must be directly supported by the provided excerpts, with no outside knowledge or invented topic details.
+- Cite a complete factual statement that directly supports the ANSWER itself, not merely the question topic. Never cite a section heading, label, bare title, incomplete sentence, or unrelated statement; the supporting statement must share meaningful answer facts beyond terms already repeated in the question.
+- Every material answer detail must be asserted by that one cited statement. Keep answers concise, reuse the statement's factual language, and never append claims found only in a different statement.
 - Remove unsupported cards instead of rescuing them with guessed facts.
 - One concept per card: each card tests ONE idea only. If multiple ideas appear, split them into multiple cards.
 - Answer length: max 1-2 lines. No paragraphs. No long explanations.
@@ -1674,6 +1751,8 @@ You must detect problems, fix them, and improve quality.
 
 Validation rules:
 - Grounding is the highest-priority invariant: every tested claim, correct answer, and explanation must be directly supported by the provided excerpts, with no outside knowledge or invented topic details.
+- Cite a complete factual statement that directly supports the correct ANSWER or true/false explanation itself, not merely the question topic. Never cite a section heading, label, bare title, incomplete sentence, or unrelated statement; the supporting statement must share meaningful answer facts beyond terms already repeated in the question.
+- Every material answer detail must be asserted by that one cited statement. Keep answers concise, reuse the statement's factual language, and never append claims found only in a different statement.
 - Remove unsupported questions instead of rescuing them with guessed facts.
 - Correctness: ensure every correct answer is actually correct according to the source material. Fix any wrong answers immediately.
 - MCQ quality: ensure every MCQ has exactly 4 options, only one correct answer, and realistic topic-related distractors.
@@ -1959,6 +2038,298 @@ function createUngroundedGenerationOutputError(generationType, rejectedCount) {
   return error;
 }
 
+function isUsefulFlashcardRepairStatement(statement) {
+  const sourceText = normalizeString(statement?.text);
+  const words = sourceText.split(/\s+/u).filter(Boolean);
+
+  return words.length >= 6
+    && !isHeadingOnlySourceEvidence(sourceText)
+    && !isIncompleteSourceEvidence(sourceText)
+    && !/\blearning\s+(?:outcomes?|objectives?)\b|^\s*(?:understand|become\s+familiar|identify|describe|figure|table|chapter|key\s+term)\b|\(e\s*$/iu.test(sourceText);
+}
+
+function scoreFlashcardRepairStatement(statement) {
+  const sourceText = normalizeString(statement?.text);
+  const wordCount = sourceText.split(/\s+/u).filter(Boolean).length;
+  const hasFactualClause = /\b(?:is|are|was|were|has|have|includes?|involves?|requires?|represents?|contains?|provides?|supports?|defines?|describes?|allows?|helps?|creates?|connects?|consists?|comprises?|affects?|identifies?)\b/iu.test(sourceText);
+  const startsAmbiguously = /^\s*(?:this|these|those|it|they|their|there|which|that|and|or|but|also)\b/iu.test(sourceText);
+
+  return Math.min(wordCount, 28)
+    + (wordCount >= 8 && wordCount <= 35 ? 20 : 0)
+    + (hasFactualClause ? 15 : 0)
+    - (startsAmbiguously ? 20 : 0);
+}
+
+function getAvailableFlashcardRepairStatements(sourceGrounding, usedSourceIds, attemptedSourceIds = new Set()) {
+  const availableStatements = sourceGrounding.statements
+    .filter((statement) => !usedSourceIds.has(statement.id)
+      && isUsefulFlashcardRepairStatement(statement))
+    .sort((left, right) => scoreFlashcardRepairStatement(right) - scoreFlashcardRepairStatement(left));
+  const freshStatements = availableStatements.filter((statement) => !attemptedSourceIds.has(statement.id));
+  const previouslyAttemptedStatements = availableStatements.filter((statement) => attemptedSourceIds.has(statement.id));
+
+  return [...freshStatements, ...previouslyAttemptedStatements];
+}
+
+function enrichFlashcardRejectionDiagnostics(groundedResult, rawItems) {
+  groundedResult.grounding.rejectedItems = groundedResult.grounding.rejectedItems.map((evidence) => {
+    const rawItem = rawItems[evidence.index];
+    const normalizedItem = normalizeFlashcard(rawItem);
+
+    return {
+      ...evidence,
+      question: normalizedItem?.question ?? null,
+      answer: normalizedItem?.answer ?? null,
+    };
+  });
+
+  return groundedResult;
+}
+
+function recoverFlashcardSourceCitations({
+  groundedResult,
+  rawItems,
+  sourceText,
+  sourceGrounding,
+  existingSourceIds = [],
+}) {
+  const sourceStatementsById = new Map(
+    sourceGrounding.statements.map((statement) => [statement.id, statement]),
+  );
+  const statementRootsById = new Map(
+    sourceGrounding.statements.map((statement) => [
+      statement.id,
+      new Set(getGroundingTokens(statement.text).map(stemGroundingToken)),
+    ]),
+  );
+  const usedSourceIds = new Set([
+    ...existingSourceIds,
+    ...groundedResult.grounding.items.map((item) => item.sourceId).filter(Boolean),
+  ]);
+  let recoveredCount = 0;
+
+  for (const rejection of groundedResult.grounding.rejectedItems) {
+    const rawItem = rawItems[rejection.index];
+    const normalizedItem = normalizeFlashcard(rawItem);
+    if (!normalizedItem || rejection.reason === "distinctive_term_absent_from_source") {
+      continue;
+    }
+
+    const answerRoots = [...new Set(
+      getGroundingTokens(normalizedItem.answer).map(stemGroundingToken),
+    )];
+    const candidateStatements = sourceGrounding.statements
+      .filter((statement) => !usedSourceIds.has(statement.id)
+        && statement.id !== rejection.sourceId
+        && !isHeadingOnlySourceEvidence(statement.text)
+        && !isIncompleteSourceEvidence(statement.text))
+      .map((statement) => ({
+        statement,
+        overlap: answerRoots.filter((root) => statementRootsById.get(statement.id)?.has(root)).length,
+      }))
+      .filter((candidate) => candidate.overlap > 0)
+      .sort((left, right) => right.overlap - left.overlap);
+
+    for (const { statement } of candidateStatements) {
+      const evidence = assessItemSourceEvidence({
+        generationType: DOCUMENT_GENERATION_TYPES.flashcards,
+        rawItem: { ...rawItem, sourceId: statement.id },
+        normalizedItem,
+        sourceText,
+        index: groundedResult.output.cards.length,
+        sourceStatementsById,
+      });
+
+      const missingAnswerSpecificEvidence = evidence.answerSpecificEvidenceTerms
+        ?.filter((term) => !evidence.sharedAnswerSpecificEvidenceTerms?.includes(term)) ?? [];
+      if (!evidence.grounded || missingAnswerSpecificEvidence.length > 0) {
+        continue;
+      }
+
+      groundedResult.output.cards.push(normalizedItem);
+      groundedResult.grounding.items.push({
+        ...evidence,
+        repairMethod: "citation_relinked",
+        originalSourceId: rejection.sourceId,
+      });
+      usedSourceIds.add(statement.id);
+      recoveredCount += 1;
+      break;
+    }
+  }
+
+  return recoveredCount;
+}
+
+function buildExtractiveFlashcard(statement) {
+  const words = normalizeString(statement.text).split(/\s+/u).filter(Boolean);
+  const subjectMatch = statement.text.match(
+    /^(.{8,85}?)\s+(?:is|are|was|were|has|have|adapts?|improves?|includes?|involves?|requires?|represents?|contains?|provides?|supports?|defines?|describes?|allows?|helps?|creates?|connects?|consists?|comprises?|affects?|identifies?)\b/iu,
+  );
+  const subjectWords = normalizeString(subjectMatch?.[1] ?? "").split(/\s+/u).filter(Boolean);
+  const topicWords = subjectWords.length >= 2 && subjectWords.length <= 8
+    ? subjectWords
+    : words.slice(0, Math.min(6, Math.max(3, Math.floor(words.length / 3))));
+  const topic = topicWords.join(" ").replace(/[,:;]+$/u, "");
+  let answer = words.slice(0, MAX_EXTRACTIVE_FLASHCARD_ANSWER_WORDS).join(" ");
+
+  if (words.length > MAX_EXTRACTIVE_FLASHCARD_ANSWER_WORDS) {
+    const finalClauseBoundary = Math.max(answer.lastIndexOf(","), answer.lastIndexOf(";"));
+    const completeClauses = finalClauseBoundary > 0
+      ? answer.slice(0, finalClauseBoundary).trim()
+      : "";
+    if (completeClauses.split(/\s+/u).filter(Boolean).length >= 6) {
+      answer = completeClauses;
+    }
+  }
+
+  answer = answer.replace(/(?:\s+(?:a|an|the|and|or|to|of|for|with|in|on|at|by|as))+$/iu, "");
+  answer = answer.replace(/[,:;]+$/u, "");
+
+  return {
+    front: `According to the source, what is stated about ${topic}?`,
+    back: answer,
+    sourceId: statement.id,
+  };
+}
+
+function appendExtractiveGroundedFlashcards({
+  currentResult,
+  sourceText,
+  sourceGrounding,
+  targetCount,
+}) {
+  const sourceStatementsById = new Map(
+    sourceGrounding.statements.map((statement) => [statement.id, statement]),
+  );
+  const usedSourceIds = new Set(currentResult.grounding.items.map((item) => item.sourceId).filter(Boolean));
+  const usedQuestions = new Set(
+    currentResult.output.cards.map((item) => normalizeSourceEvidence(item.question)),
+  );
+  let appendedCount = 0;
+
+  for (const statement of getAvailableFlashcardRepairStatements(sourceGrounding, usedSourceIds)) {
+    if (currentResult.output.cards.length >= targetCount) {
+      break;
+    }
+
+    const rawItem = buildExtractiveFlashcard(statement);
+    const normalizedItem = normalizeFlashcard(rawItem);
+    const questionKey = normalizeSourceEvidence(normalizedItem?.question);
+    if (!normalizedItem || usedQuestions.has(questionKey)) {
+      continue;
+    }
+
+    const evidence = assessItemSourceEvidence({
+      generationType: DOCUMENT_GENERATION_TYPES.flashcards,
+      rawItem,
+      normalizedItem,
+      sourceText,
+      index: currentResult.output.cards.length,
+      sourceStatementsById,
+    });
+    if (!evidence.grounded) {
+      continue;
+    }
+
+    currentResult.output.cards.push(normalizedItem);
+    currentResult.grounding.items.push({
+      ...evidence,
+      repairMethod: "extractive_source_fallback",
+    });
+    usedQuestions.add(questionKey);
+    usedSourceIds.add(statement.id);
+    appendedCount += 1;
+  }
+
+  return appendedCount;
+}
+
+function buildFlashcardCountRepairPrompt({
+  targetCount,
+  actualCount,
+  existingCards,
+  existingSourceIds,
+  availableSourceStatements,
+  recentRejections,
+  attempt,
+}) {
+  const missingCount = targetCount - actualCount;
+  const rejectionExamples = recentRejections.slice(-8)
+    .map((item) => `- ${item.sourceId ?? "missing sourceId"}: ${item.reason}; question: ${item.question ?? "unavailable"}; answer: ${item.answer ?? "unavailable"}`)
+    .join("\n");
+
+  return `COUNT REPAIR REQUIRED (adaptive attempt ${attempt}):
+The previous QA response returned ${actualCount} source-verified flashcards. Those cards are already preserved.
+Return exactly ${missingCount} ADDITIONAL source-grounded flashcards, not the full set.
+
+Create one flashcard per distinct numbered source statement below. Write a specific question and a concise answer of no more than 18 words. Every factual answer detail must appear in its ONE cited statement; copy the statement's factual wording. Never cite a heading, an incomplete fragment, or a statement that only names the question topic.
+
+still-unused, directly citable source statements:
+${availableSourceStatements.map((statement) => `[${statement.id}] ${statement.text}`).join("\n")}
+
+Do not reuse these source identifiers: ${existingSourceIds.join(", ") || "none"}.
+Do not repeat these existing questions:
+${existingCards.map((card) => `- ${card.question}`).join("\n")}
+${rejectionExamples ? `\nRecent rejected candidates and exact failure reasons:\n${rejectionExamples}\n` : ""}
+Return ONLY a valid JSON array of exactly ${missingCount} objects shaped {"front":"specific question","back":"brief factual answer","sourceId":"S001"}.`;
+}
+
+function buildFlashcardGroundingDiagnostics({
+  targetCount,
+  sourceGrounding,
+  grounding,
+  acceptedCount,
+  firstPassAccepted,
+  firstPassAfterCitationRecovery,
+  repairAttempts,
+  citationRecoveryCount,
+  extractiveFallbackCount,
+}) {
+  const rejectedItems = grounding.rejectedItems.slice(-MAX_PERSISTED_GROUNDING_REJECTIONS);
+  const rejectionReasons = {};
+  for (const rejection of grounding.rejectedItems) {
+    const reason = rejection.reason ?? "unknown";
+    rejectionReasons[reason] = (rejectionReasons[reason] ?? 0) + 1;
+  }
+
+  return {
+    generationType: DOCUMENT_GENERATION_TYPES.flashcards,
+    targetCount,
+    acceptedCount,
+    firstPassAccepted,
+    firstPassAfterCitationRecovery,
+    sourceStatementCount: sourceGrounding.distinctStatementCount,
+    usableSourceStatementCount: sourceGrounding.statements.filter(isUsefulFlashcardRepairStatement).length,
+    rejectedCount: grounding.totalRejectedCount ?? grounding.rejectedCount,
+    rejectionReasons,
+    rejectedItems,
+    repairAttempts,
+    citationRecoveryCount,
+    extractiveFallbackCount,
+  };
+}
+
+async function persistFlashcardGroundingDiagnostics(usageLedgerContext, diagnostics) {
+  if (!usageLedgerContext?.jobId || !usageLedgerContext?.prisma?.job?.updateMany) {
+    return;
+  }
+
+  try {
+    await usageLedgerContext.prisma.job.updateMany({
+      where: {
+        id: usageLedgerContext.jobId,
+        status: "running",
+      },
+      data: {
+        result: { failureDiagnostics: diagnostics },
+      },
+    });
+  } catch (error) {
+    console.warn("[studyMaterials] failed to persist grounding diagnostics:", error);
+  }
+}
+
 function buildQaCountRepairInstruction(
   generationType,
   targetCount,
@@ -2059,16 +2430,44 @@ async function validateAndImproveFlashcards({
   assertNonEmptyGenerationOutput(DOCUMENT_GENERATION_TYPES.flashcards, output);
 
   const openai = getClient();
+  const sourceGrounding = inspectSourceGrounding(sourceText);
+  await persistFlashcardGroundingDiagnostics(usageLedgerContext, buildFlashcardGroundingDiagnostics({
+    targetCount,
+    sourceGrounding,
+    grounding: { rejectedItems: [], rejectedCount: 0 },
+    acceptedCount: 0,
+    firstPassAccepted: null,
+    firstPassAfterCitationRecovery: null,
+    repairAttempts: [],
+    citationRecoveryCount: 0,
+    extractiveFallbackCount: 0,
+  }));
   const runQaCall = async ({ inputCards, countRepair = null }) => {
     const repairTarget = countRepair && countRepair.actualCount < targetCount
       ? targetCount - countRepair.actualCount
       : targetCount;
-    const basePrompt = buildFlashcardQaPrompt(inputCards, language, sourceText, repairTarget);
+    const maxTokens = countRepair
+      ? Math.min(
+        QA_OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
+        Math.max(450, repairTarget * 110),
+      )
+      : QA_OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards];
+    const prompt = countRepair
+      ? buildFlashcardCountRepairPrompt({
+        targetCount,
+        actualCount: countRepair.actualCount,
+        existingCards: inputCards,
+        existingSourceIds: countRepair.existingSourceIds,
+        availableSourceStatements: countRepair.availableSourceStatements,
+        recentRejections: countRepair.recentRejections,
+        attempt: countRepair.attempt,
+      })
+      : buildFlashcardQaPrompt(inputCards, language, sourceText, repairTarget);
     const params = buildModelCompletionParams({
       model,
       reasoningEffort,
       temperature: 0.15,
-      maxTokens: QA_OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
+      maxTokens,
       messages: [
         {
           role: "system",
@@ -2076,15 +2475,7 @@ async function validateAndImproveFlashcards({
         },
         {
           role: "user",
-          content: countRepair
-            ? `${basePrompt}${buildQaCountRepairInstruction(
-              DOCUMENT_GENERATION_TYPES.flashcards,
-              targetCount,
-              countRepair.actualCount,
-              countRepair.existingSourceIds,
-              countRepair.availableSourceStatements,
-            )}`
-            : basePrompt,
+          content: prompt,
         },
       ],
     });
@@ -2100,7 +2491,9 @@ async function validateAndImproveFlashcards({
           ? targetCount - countRepair.actualCount
           : null,
         repairAttempt: countRepair?.attempt ?? null,
-        maxTokens: QA_OUTPUT_TOKEN_LIMITS[DOCUMENT_GENERATION_TYPES.flashcards],
+        repairStrategy: countRepair ? "source_anchored_adaptive" : null,
+        candidateSourceCount: countRepair?.availableSourceStatements.length ?? null,
+        maxTokens,
         temperature: reasoningEffort ? null : 0.15,
         reasoningEffort,
       },
@@ -2111,22 +2504,72 @@ async function validateAndImproveFlashcards({
       throw new Error("OpenAI returned an empty flashcard QA response");
     }
 
-    const groundedResult = normalizeGroundedQaOutput(
+    const parsed = parseJsonResponse(raw);
+    const rawItems = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.cards)
+        ? parsed.cards
+        : [];
+    const groundedResult = enrichFlashcardRejectionDiagnostics(normalizeGroundedQaOutput(
       DOCUMENT_GENERATION_TYPES.flashcards,
-      parseJsonResponse(raw),
+      parsed,
       sourceText,
-    );
-    return { response, ...groundedResult };
+    ), rawItems);
+    const verifiedBeforeRecovery = groundedResult.output.cards.length;
+    const recoveredCount = recoverFlashcardSourceCitations({
+      groundedResult,
+      rawItems,
+      sourceText,
+      sourceGrounding,
+      existingSourceIds: countRepair?.existingSourceIds,
+    });
+
+    return {
+      response,
+      ...groundedResult,
+      rawItemCount: rawItems.length,
+      verifiedBeforeRecovery,
+      recoveredCount,
+    };
   };
 
   const firstQa = await runQaCall({ inputCards: cards });
   let improvedOutput = firstQa.output;
   let grounding = firstQa.grounding;
   const responses = [firstQa.response];
+  const repairAttempts = [];
+  const attemptedSourceIds = new Set();
+  const firstPassAccepted = firstQa.verifiedBeforeRecovery;
+  const firstPassAfterCitationRecovery = improvedOutput.cards.length;
+  let citationRecoveryCount = firstQa.recoveredCount;
+  let extractiveFallbackCount = 0;
+  const getDiagnostics = () => buildFlashcardGroundingDiagnostics({
+    targetCount,
+    sourceGrounding,
+    grounding,
+    acceptedCount: improvedOutput.cards.length,
+    firstPassAccepted,
+    firstPassAfterCitationRecovery,
+    repairAttempts,
+    citationRecoveryCount,
+    extractiveFallbackCount,
+  });
+
+  await persistFlashcardGroundingDiagnostics(usageLedgerContext, getDiagnostics());
+
+  if (improvedOutput.cards.length === 0 && grounding.rejectedCount > 0) {
+    const error = createUngroundedGenerationOutputError(
+      DOCUMENT_GENERATION_TYPES.flashcards,
+      grounding.rejectedCount,
+    );
+    error.groundingDiagnostics = getDiagnostics();
+    throw error;
+  }
 
   for (
     let repairAttempt = 1;
-    improvedOutput.cards.length !== targetCount && repairAttempt <= MAX_QA_COUNT_REPAIR_ATTEMPTS;
+    improvedOutput.cards.length < targetCount
+      && repairAttempt <= MAX_FLASHCARD_ADAPTIVE_REPAIR_ATTEMPTS;
     repairAttempt += 1
   ) {
     const previousCount = improvedOutput.cards.length;
@@ -2134,9 +2577,14 @@ async function validateAndImproveFlashcards({
     const existingSourceIds = grounding.items.map((item) => item.sourceId).filter(Boolean);
     const usedSourceIds = new Set(existingSourceIds);
     const missingCount = Math.max(1, targetCount - previousCount);
-    const availableSourceStatements = inspectSourceGrounding(sourceText).statements
-      .filter((statement) => !usedSourceIds.has(statement.id))
-      .slice(0, Math.max(12, missingCount * 3));
+    const availableSourceStatements = getAvailableFlashcardRepairStatements(
+      sourceGrounding,
+      usedSourceIds,
+      attemptedSourceIds,
+    ).slice(0, Math.max(12, missingCount * 2));
+    for (const statement of availableSourceStatements) {
+      attemptedSourceIds.add(statement.id);
+    }
     const inputCards = improvedOutput.cards.length > 0
       ? improvedOutput.cards.map((card, index) => ({
         ...card,
@@ -2149,6 +2597,7 @@ async function validateAndImproveFlashcards({
         actualCount: previousCount,
         existingSourceIds,
         availableSourceStatements,
+        recentRejections: grounding.rejectedItems,
         attempt: repairAttempt,
       },
     });
@@ -2170,32 +2619,58 @@ async function validateAndImproveFlashcards({
     improvedOutput = repairedResult.output;
     grounding = repairedResult.grounding;
     responses.push(repairedQa.response);
-
-    if (improvedOutput.cards.length <= previousCount) {
-      break;
-    }
+    citationRecoveryCount += repairedQa.recoveredCount;
+    repairAttempts.push({
+      attempt: repairAttempt,
+      requestedCount: missingCount,
+      acceptedBefore: previousCount,
+      acceptedAfter: improvedOutput.cards.length,
+      rawCandidateCount: repairedQa.rawItemCount,
+      initiallyGroundedCount: repairedQa.verifiedBeforeRecovery,
+      citationRecoveryCount: repairedQa.recoveredCount,
+      rejectedCount: repairedQa.grounding.rejectedCount,
+      offeredSourceIds: availableSourceStatements.map((statement) => statement.id),
+    });
+    await persistFlashcardGroundingDiagnostics(usageLedgerContext, getDiagnostics());
   }
 
-  if (improvedOutput.cards.length === 0 && grounding.rejectedCount > 0) {
-    throw createUngroundedGenerationOutputError(
-      DOCUMENT_GENERATION_TYPES.flashcards,
-      grounding.rejectedCount,
-    );
+  if (improvedOutput.cards.length > 0
+    && improvedOutput.cards.length < targetCount
+    && sourceGrounding.distinctStatementCount >= targetCount) {
+    extractiveFallbackCount = appendExtractiveGroundedFlashcards({
+      currentResult: { output: improvedOutput, grounding },
+      sourceText,
+      sourceGrounding,
+      targetCount,
+    });
+    await persistFlashcardGroundingDiagnostics(usageLedgerContext, getDiagnostics());
   }
 
   if (improvedOutput.cards.length !== targetCount) {
-    throw createQaItemCountMismatchError(
+    const error = createQaItemCountMismatchError(
       DOCUMENT_GENERATION_TYPES.flashcards,
       targetCount,
       improvedOutput.cards.length,
     );
+    error.groundingDiagnostics = getDiagnostics();
+    throw error;
   }
 
   const finalResponse = responses.at(-1);
 
   return {
     output: improvedOutput,
-    grounding,
+    grounding: {
+      ...grounding,
+      repairSummary: {
+        firstPassAccepted,
+        firstPassAfterCitationRecovery,
+        modelRepairAttempts: repairAttempts,
+        citationRecoveryCount,
+        extractiveFallbackCount,
+        usableSourceStatementCount: sourceGrounding.statements.filter(isUsefulFlashcardRepairStatement).length,
+      },
+    },
     modelUsed: finalResponse?.model || model,
     usage: combineUsage(...responses.map((response) => response?.usage)),
   };
@@ -2290,7 +2765,9 @@ async function validateAndImproveExam({
     const usedSourceIds = new Set(existingSourceIds);
     const missingCount = Math.max(1, targetCount - previousCount);
     const availableSourceStatements = inspectSourceGrounding(sourceText).statements
-      .filter((statement) => !usedSourceIds.has(statement.id))
+      .filter((statement) => !usedSourceIds.has(statement.id)
+        && !isHeadingOnlySourceEvidence(statement.text)
+        && !isIncompleteSourceEvidence(statement.text))
       .slice(0, Math.max(12, missingCount * 3));
     const inputQuestions = improvedOutput.questions.length > 0
       ? improvedOutput.questions.map((question, index) => ({
@@ -2935,6 +3412,7 @@ export async function generateStudyMaterialFromExcerpts({
 
 export const __studyMaterialsTestables = {
   assessItemSourceEvidence,
+  buildExtractiveFlashcard,
   buildPromptForGeneration,
   buildModelCompletionParams,
   cleanSummaryText,
@@ -2951,6 +3429,7 @@ export const __studyMaterialsTestables = {
   inspectSourceGrounding,
   normalizeGroundedQaOutput,
   normalizeFlashcardsOutput,
+  persistFlashcardGroundingDiagnostics,
   resolveGroundedTargetCount,
   setOpenAiClientForTests,
   toExamQaInput,

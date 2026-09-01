@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
-import { estimateCost } from "./modelPricing.js";
+import { alertModelPricingMissing } from "./adminAlerts.js";
+import { estimateCost, MODEL_PRICING_VERSION } from "./modelPricing.js";
 import { sendTelegramAdminNotification } from "./telegramNotify.js";
 
 const prisma = new PrismaClient();
@@ -16,7 +17,21 @@ export async function recordUsageEvent(
   outputTokens,
   metadata = {},
 ) {
-  const estimatedCostUsd = estimateCost(modelUsed, inputTokens, outputTokens);
+  let estimatedCostUsd;
+  try {
+    estimatedCostUsd = estimateCost(modelUsed, inputTokens, outputTokens);
+  } catch (error) {
+    if (error?.code === "model_pricing_missing") {
+      await alertModelPricingMissing(prisma, error, {
+        model: modelUsed,
+        pricingVersion: MODEL_PRICING_VERSION,
+        metadata: { source: "cost_guard", userId, featureKey, eventType },
+      }).catch((alertError) => {
+        console.error("[costGuard] failed to raise missing-pricing alert:", alertError);
+      });
+    }
+    throw error;
+  }
 
   await prisma.usageEvent.create({
     data: {

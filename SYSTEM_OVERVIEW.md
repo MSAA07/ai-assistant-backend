@@ -97,9 +97,11 @@ Generation:
 - final routing defaults are summary `gpt-4.1-nano` for both plans, flashcards `gpt-4o-mini` for free and `gpt-4.1-mini` for premium, and exam `gpt-5.4-mini` with low reasoning effort for both plans
 - the worker owns an abort controller for each job deadline and forwards its signal through every tracked OpenAI Chat Completions request; a timed-out job aborts the provider request before retry/failure handling
 - flashcard and exam prompts treat requested counts as upper bounds and forbid outside knowledge; a deduplicated source-statement inventory lowers the effective target when the document cannot support the original count
-- every final flashcard/exam item must cite a numbered, directly relevant source statement during QA; the backend resolves that citation into a verbatim supporting quote and retains per-item grounding verdicts in job-result metadata while only the existing public card/question shapes are persisted
-- up to three bounded additive, source-only count-repair QA calls preserve verified items, request only the missing concepts, and provide a shortlist of still-unused source statements; every attempt has its own billable ledger identity, repair stops immediately if an attempt adds no verified item, a remaining mismatch fails with `qa_item_count_mismatch`, and wholly unsupported output fails with `ungrounded_generation_output` without retrying the full job
-- every allow-listed model has explicit per-1M-token pricing; dated OpenAI model snapshots normalize to their base pricing key, and unknown pricing fails before generation instead of silently inheriting another model's rate
+- every final flashcard/exam item must cite a numbered, directly relevant factual source statement during QA; the backend rejects heading-only citations and incomplete sentence fragments, ignores common function words, requires meaningful proportional support for answer facts beyond repeated question-topic terms, resolves accepted citations into answer-focused verbatim quotes, and retains per-item grounding verdicts in job-result metadata while only the existing public card/question shapes are persisted
+- flashcard QA first relinks incorrect citation identifiers only when the unchanged grounding verifier confirms another factual source statement directly supports every answer-specific evidence term; up to two lean adaptive repair calls then request only missing cards from fresh, ranked, still-unused statements and include exact rejection feedback instead of repeating the entire document
+- if grounded flashcards remain missing after adaptive repair, a deterministic source-extractive fallback builds cards directly from unused factual statements and accepts each one only after the same strict grounding verification; wholly unsupported model output still fails closed, genuinely exhausted documents still raise `qa_item_count_mismatch`, and exam QA retains its existing three-attempt additive repair policy
+- running flashcard jobs persist bounded grounding-rejection and repair diagnostics before the first QA call and after each completed QA pass, so count-mismatch failures and provider timeouts retain actionable evidence; flashcard workers have a bounded 180-second abortable deadline, while existing cancellation and usage-ledger behavior remain intact
+- every allow-listed model has explicit, current OpenAI per-1M-token input/output pricing; reasoning tokens use the published output-token rate because OpenAI does not publish a separate reasoning-token rate for these models; dated model snapshots normalize to their base pricing key, and unknown pricing fails before generation while raising Sentry and a deduplicated `model_pricing_missing` admin alert instead of silently inheriting another model's rate
 - current policy: lower-cost model by default, stronger-model upgrade first for mock exams on entitled tiers
 - free, pro, and premium stay on the same backend generation endpoints and worker path; tier differences are routing-policy and limits decisions, not separate APIs
 - prompt-layer rollout and routing-policy rollout can be enabled or rolled back independently with feature flags
@@ -160,11 +162,12 @@ Behavior:
 
 Admin QA pipeline:
 
-`POST /api/admin/qa/{health|pipeline|full} -> in-memory runner -> target backend -> QaRun/QaRunResult history`
+`POST /api/admin/qa/{health|pipeline|full} -> in-memory runner -> staging backend -> QaRun/QaRunResult history`
 
 Behavior:
 
 - all QA routes require an authenticated admin session
+- all QA routes and the scheduler fail closed unless Railway identifies the current service as `studymaxing-backend-staging`; runs reject non-staging targets and fail before starting unless `QA_STAGING_API_BASE_URL` names an HTTPS staging host
 - `POST /api/admin/qa/health` runs eight no-AI checks for backend, database, R2 storage, OpenAI, Mistral, Resend, auth, and admin endpoint reachability
 - `POST /api/admin/qa/pipeline` signs in as `qa@studymaxing.com`, uploads `qa-pipeline-test.pdf`, waits for extraction/generation, exports a PDF, deletes the QA document, and signs out
 - `POST /api/admin/qa/full` supports `mode=optimized` and `mode=full`; both run the full file-type and edge-case suite across PDF, DOCX, PPTX, Arabic OCR paths, oversized rejection, corrupt-file handling, PDF export, and admin health
@@ -226,11 +229,18 @@ Admin coverage:
 
 - users
 - files
-- sessions
+- Security & Access sessions and audit activity
 - analytics
 - storage
 - usage and cost reporting
 - per-user limits
+- Users APIs return explicit `limit`, `offset`, and `total`; bulk suspend/delete supports page IDs or all matching filters, previews eligible/excluded counts, and requires exact count-based confirmation
+- per-user session reads return unexpired sessions only, and `GET /api/admin/users/:id/limits` performs no default-row write
+- `GET /api/admin/sessions` excludes expired rows at query time, returns `limit`/`offset`/`total`, active/revoked-today/expired-excluded KPIs, and supports a user filter; per-user bulk revoke is atomic with its audit record
+- `GET /api/admin/audit-logs` returns `limit`/`offset`/`total`, distinct stored action types, date/actor-or-target/admin-activity filters, actor/target user references, and the Admin Activity scorecard
+- `AuditLog.previousValue` and `AuditLog.newValue` store nullable JSON before/after state for new mutations; legacy rows require no backfill and render as uncaptured
+- support login delegates to Better Auth impersonation, requires an audited reason with acting-admin and target-user identities, and is hard-capped at 3,600 seconds
+- user JSON export omits credential/session tokens; delete and erase share a storage-first deletion path whose audit and database deletion are atomic
 - anomaly resolution
 - feature flags and flag audit
 - benchmark/evaluation annotation for completed generation jobs
@@ -290,6 +300,7 @@ Current migration folders:
 - `20260511000000_add_telegram_delivery`
 - `20260606000000_add_qa_run_history`
 - `20260607000000_add_qa_tier`
+- `20260831000000_add_session_impersonation`
 
 ## Environment Variables
 
@@ -301,14 +312,12 @@ Required:
 - `OPENAI_API_KEY`
 - `RESEND_API_KEY`
 - `MISTRAL_API_KEY`
+- `QA_STAGING_API_BASE_URL`
 
 Optional core operations:
 
 - `ADMIN_EMAILS`
 - `FRONTEND_ORIGINS`
-- `QA_STAGING_API_BASE_URL`
-- `QA_PRODUCTION_API_BASE_URL`
-- `QA_API_BASE_URL`
 - `R2_ENDPOINT`
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`

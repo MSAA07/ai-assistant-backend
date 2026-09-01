@@ -11,6 +11,7 @@ Backend API and worker stack for the AI Study Assistant.
 - canonical study records and compatibility mirrors
 - Mistral OCR fallback for scanned/image-based PDFs via `@mistralai/mistralai` SDK
 - admin QA runner, QA history, and automatic health monitoring
+- admin user operations with paginated filtering, eligibility-aware bulk actions, 60-minute audited support login, structured export/erasure, and storage-first deletion ordering
 - Railway deployment configuration
 
 ## Quick Orientation
@@ -56,6 +57,9 @@ Required environment variables:
 - `ADMIN_ALERT_EMAIL`
 - `ALERT_FROM_EMAIL`
 - `MISTRAL_API_KEY` (must be set on BOTH backend and worker Railway services — used for Mistral OCR fallback on scanned PDFs)
+- `QA_STAGING_API_BASE_URL` (required by the QA runner; must be an HTTPS staging host)
+
+The QA router and scheduler also require Railway's provided `RAILWAY_SERVICE_NAME` to equal `studymaxing-backend-staging`; they fail closed on every other service name.
 
 Optional environment variables:
 
@@ -73,9 +77,6 @@ Optional environment variables:
 - auth email callback targets are backend-owned `/auth/verify-email` and `/auth/reset-password` bridge URLs; the final frontend destination can still be controlled by frontend env overrides or `AUTH_EMAIL_APP_URL`
 - `ADMIN_EMAILS`
 - `FRONTEND_ORIGINS` (comma-separated extra allowed frontend origins when needed)
-- `QA_STAGING_API_BASE_URL`
-- `QA_PRODUCTION_API_BASE_URL`
-- `QA_API_BASE_URL` (fallback for both QA targets)
 - `R2_ENDPOINT`
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`

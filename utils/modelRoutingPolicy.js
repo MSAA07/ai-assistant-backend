@@ -1,7 +1,8 @@
 import { PrismaClient } from "@prisma/client";
 
 import { DOCUMENT_GENERATION_TYPES } from "./documentGeneration.js";
-import { getModelPricing } from "./modelPricing.js";
+import { alertModelPricingMissing } from "./adminAlerts.js";
+import { getModelPricing, MODEL_PRICING_VERSION } from "./modelPricing.js";
 import { captureSentryException } from "./sentry.js";
 
 export const DEFAULT_GENERATION_MODEL = "gpt-4.1-nano";
@@ -49,9 +50,20 @@ function getFallbackRoutingResult(generationType, plan) {
   };
 }
 
-function assertRoutingPricingConfigured(routing) {
-  getModelPricing(routing.model);
-  return routing;
+async function assertRoutingPricingConfigured(routing) {
+  try {
+    getModelPricing(routing.model);
+    return routing;
+  } catch (error) {
+    await alertModelPricingMissing(prisma, error, {
+      model: routing.model,
+      pricingVersion: MODEL_PRICING_VERSION,
+      metadata: { source: "model_routing_policy" },
+    }).catch((alertError) => {
+      console.error("[modelRoutingPolicy] failed to raise missing-pricing alert:", alertError);
+    });
+    throw error;
+  }
 }
 
 async function loadRoutingCache() {

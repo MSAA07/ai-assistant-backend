@@ -50,7 +50,7 @@ const DEFAULT_JOB_TIMEOUT_MS = 300_000;
 const JOB_TIMEOUTS = {
   extract_document: 60_000,
   [GENERATION_JOB_TYPES.summary]: 300_000,
-  [GENERATION_JOB_TYPES.flashcards]: 90_000,
+  [GENERATION_JOB_TYPES.flashcards]: 180_000,
   [GENERATION_JOB_TYPES.exam]: 90_000,
   export_pdf: 30_000,
 };

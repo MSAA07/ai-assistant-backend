@@ -2,6 +2,7 @@ import { getUserAllowance } from "./limits.js";
 
 export const ADMIN_ALERT_TYPES = Object.freeze({
   jobFailure: "job_failure",
+  modelPricingMissing: "model_pricing_missing",
   userCostThreshold: "user_cost_threshold",
   dailySystemCostThreshold: "daily_system_cost_threshold",
   userUsageSpike: "user_usage_spike",
@@ -119,6 +120,9 @@ function buildSuggestedAction(alertType) {
   }
   if (alertType === ADMIN_ALERT_TYPES.failedJobSpike) {
     return "Check worker logs and recent failed jobs for a shared provider, parsing, or queue issue.";
+  }
+  if (alertType === ADMIN_ALERT_TYPES.modelPricingMissing) {
+    return "Add and verify the model's published token rates before allowing it to run again.";
   }
   return "Review the Usage tab, confirm whether spend is expected, and adjust thresholds or caps if needed.";
 }
@@ -417,6 +421,29 @@ export async function alertJobFailure(prisma, job, error, options = {}) {
       maxRetries: job.maxRetries,
       errorMessage,
       ...options.metadata,
+    },
+  }, options);
+}
+
+export async function alertModelPricingMissing(prisma, error, options = {}) {
+  const model = typeof options.model === "string" && options.model.trim()
+    ? options.model.trim()
+    : "unknown";
+  const errorMessage = error instanceof Error ? error.message : String(error || "Missing model pricing");
+
+  return recordAdminAlert(prisma, {
+    alertType: ADMIN_ALERT_TYPES.modelPricingMissing,
+    severity: "error",
+    targetType: "model",
+    targetId: model,
+    adminPath: "/admin?tab=usage",
+    suggestedAction: buildSuggestedAction(ADMIN_ALERT_TYPES.modelPricingMissing),
+    metadata: {
+      model,
+      errorCode: error?.code || "model_pricing_missing",
+      errorMessage,
+      pricingVersion: options.pricingVersion || null,
+      ...(options.metadata && typeof options.metadata === "object" ? options.metadata : {}),
     },
   }, options);
 }

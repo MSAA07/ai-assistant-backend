@@ -1,6 +1,6 @@
 import express from "express";
 import { createRateLimiter } from "../middleware/rateLimit.js";
-import { logAdminAction } from "../utils/auditLog.js";
+import { logAdminAction, withAuditDiff } from "../utils/auditLog.js";
 import { serializeUser, toNumber } from "../utils/serializers.js";
 import { captureSentryException } from "../utils/sentry.js";
 import { deleteFile } from "../utils/storage.js";
@@ -50,6 +50,146 @@ async function collectUserStorageKeys(prisma, userId) {
     ...documents.map((document) => document.storageKey),
     ...exportArtifacts.map((artifact) => artifact.storageKey),
   ].filter(Boolean)));
+}
+
+const buildUserFilter = ({ search, role, plan, status } = {}) => {
+  const where = { AND: [{ email: { not: QA_SYSTEM_EMAIL } }] };
+
+  if (search) {
+    where.AND.push({
+      OR: [
+        { email: { contains: search, mode: "insensitive" } },
+        { name: { contains: search, mode: "insensitive" } },
+      ],
+    });
+  }
+  if (role && role !== "all") where.AND.push({ role });
+  if (plan && plan !== "all") where.AND.push({ plan });
+  if (status === "banned") where.AND.push({ banned: true });
+  if (status === "active") {
+    where.AND.push({ OR: [{ banned: false }, { banned: null }] });
+  }
+
+  return where;
+};
+
+const normalizeUserFilters = (input = {}) => ({
+  search: typeof input.search === "string" ? input.search.trim() : "",
+  role: typeof input.role === "string" ? input.role.trim().toLowerCase() : "",
+  plan: typeof input.plan === "string" ? input.plan.trim().toLowerCase() : "",
+  status: typeof input.status === "string" ? input.status.trim().toLowerCase() : "",
+});
+
+const resolveBulkUsers = async (prisma, selection = {}) => {
+  if (selection.mode === "matching") {
+    return prisma.user.findMany({
+      where: buildUserFilter(normalizeUserFilters(selection.filters)),
+      select: { id: true, email: true, banned: true, role: true },
+    });
+  }
+
+  const ids = Array.isArray(selection.ids)
+    ? [...new Set(selection.ids.filter((id) => typeof id === "string" && id.trim()))]
+    : [];
+  if (ids.length === 0) return [];
+
+  return prisma.user.findMany({
+    where: {
+      AND: [
+        { id: { in: ids } },
+        { email: { not: QA_SYSTEM_EMAIL } },
+      ],
+    },
+    select: { id: true, email: true, banned: true, role: true },
+  });
+};
+
+const getBulkEligibility = (users, action, actingAdminId) => {
+  const eligible = [];
+  const excluded = [];
+
+  for (const user of users) {
+    const reason = user.id === actingAdminId
+      ? "acting_admin"
+      : action === "suspend" && user.banned
+        ? "already_suspended"
+        : null;
+
+    if (reason) excluded.push({ id: user.id, email: user.email, reason });
+    else eligible.push(user);
+  }
+
+  return { eligible, excluded };
+};
+
+const buildAuditData = (req, { action, targetId = null, details = null, previousValue, newValue }) => withAuditDiff({
+  adminId: req.session.user.id,
+  action,
+  targetId,
+  details,
+  ...(previousValue !== undefined ? { previousValue } : {}),
+  ...(newValue !== undefined ? { newValue } : {}),
+  ipAddress: getIpAddress(req),
+});
+
+const omitInternalStorageKey = ({ storageKey: _storageKey, ...record }) => record;
+
+const transactWithAudit = async (prisma, auditData, mutate) => {
+  if (typeof prisma.$transaction !== "function") {
+    await prisma.auditLog.create({ data: auditData });
+    return mutate(prisma);
+  }
+
+  return prisma.$transaction(async (tx) => {
+    await tx.auditLog.create({ data: auditData });
+    return mutate(tx);
+  });
+};
+
+const deleteDependentUserRows = async (tx, userId) => {
+  const deletions = [
+    ["flashcardCardState", { userId }],
+    ["flashcardProgress", { userId }],
+    ["examAttempt", { userId }],
+    ["exportArtifact", { userId }],
+    ["usageEvent", { userId }],
+    ["costAnomalyAlert", { userId }],
+    ["job", { userId }],
+    ["userLimit", { userId }],
+    ["featureFlagAssignment", { entityType: "user", entityId: userId }],
+  ];
+
+  for (const [model, where] of deletions) {
+    if (typeof tx[model]?.deleteMany === "function") {
+      await tx[model].deleteMany({ where });
+    }
+  }
+};
+
+export async function deleteAdminUserData({
+  prisma,
+  userId,
+  auditData,
+  deleteStorageFile = deleteFile,
+}) {
+  const storageKeys = await collectUserStorageKeys(prisma, userId);
+
+  // Storage is the non-transactional dependency. It must succeed before the
+  // database row is removed so a storage failure leaves the account intact.
+  await Promise.all(storageKeys.map((key) => deleteStorageFile(key)));
+
+  await transactWithAudit(prisma, {
+    ...auditData,
+    details: {
+      ...(auditData.details || {}),
+      storageObjectsDeleted: storageKeys.length,
+    },
+  }, async (tx) => {
+    await deleteDependentUserRows(tx, userId);
+    await tx.user.delete({ where: { id: userId } });
+  });
+
+  return { storageObjectsDeleted: storageKeys.length };
 }
 
 const parseNumber = (value, fallback) => {
@@ -914,6 +1054,7 @@ export const createAdminRouter = ({
   requireAdmin,
   auth,
   healthDiagnostics,
+  deleteStorageFile = deleteFile,
 }) => {
   const router = express.Router();
   const limiter = createRateLimiter({
@@ -1040,35 +1181,15 @@ export const createAdminRouter = ({
 
   router.get("/users", async (req, res) => {
     try {
-      const getQueryValue = (value) => (Array.isArray(value) ? value[0] : value);
-      const search = getQueryValue(req.query.search);
-      const role = getQueryValue(req.query.role);
-      const plan = getQueryValue(req.query.plan);
-      const status = getQueryValue(req.query.status);
-      const limit = Math.min(parseNumber(getQueryValue(req.query.limit), 50), 200);
+      const filters = normalizeUserFilters({
+        search: getQueryValue(req.query.search),
+        role: getQueryValue(req.query.role),
+        plan: getQueryValue(req.query.plan),
+        status: getQueryValue(req.query.status),
+      });
+      const limit = Math.min(Math.max(parseNumber(getQueryValue(req.query.limit), 50), 1), 200);
       const offset = Math.max(parseNumber(getQueryValue(req.query.offset), 0), 0);
-
-      const where = { AND: [{ email: { not: QA_SYSTEM_EMAIL } }] };
-      if (search) {
-        where.AND.push({
-          OR: [
-            { email: { contains: search, mode: "insensitive" } },
-            { name: { contains: search, mode: "insensitive" } },
-          ],
-        });
-      }
-      if (role) {
-        where.AND.push({ role });
-      }
-      if (plan) {
-        where.AND.push({ plan });
-      }
-      if (status === "banned") {
-        where.AND.push({ banned: true });
-      }
-      if (status === "active") {
-        where.AND.push({ OR: [{ banned: false }, { banned: null }] });
-      }
+      const where = buildUserFilter(filters);
 
       const [total, users] = await prisma.$transaction([
         prisma.user.count({ where }),
@@ -1090,12 +1211,14 @@ export const createAdminRouter = ({
       await logAdminAction(prisma, {
         adminId: req.session.user.id,
         action: "LIST_USERS",
-        details: { search, role, plan, status, limit, offset },
+        details: { ...filters, limit, offset },
         ipAddress: getIpAddress(req),
       });
 
       res.json({
         total,
+        limit,
+        offset,
         users: users.map((user) => ({
           ...serializeUser(user),
           documentCount: user._count?.documents || 0,
@@ -1107,6 +1230,97 @@ export const createAdminRouter = ({
       console.error("Error fetching users:", error);
       captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch users" });
+    }
+  });
+
+  router.post("/users/bulk-action", async (req, res) => {
+    try {
+      const action = typeof req.body?.action === "string"
+        ? req.body.action.trim().toLowerCase()
+        : "";
+      if (!new Set(["suspend", "delete"]).has(action)) {
+        return res.status(400).json({ error: "action must be suspend or delete" });
+      }
+
+      const matchedUsers = await resolveBulkUsers(prisma, req.body?.selection);
+      const { eligible, excluded } = getBulkEligibility(
+        matchedUsers,
+        action,
+        req.session.user.id,
+      );
+      const confirmationText = `${action.toUpperCase()} ${eligible.length}`;
+      const summary = {
+        action,
+        matched: matchedUsers.length,
+        affected: eligible.length,
+        excluded,
+        confirmationText,
+      };
+
+      if (req.body?.preview === true) {
+        return res.json({ preview: true, ...summary });
+      }
+
+      if (req.body?.confirmation !== confirmationText) {
+        return res.status(400).json({
+          error: `Type ${confirmationText} to confirm this bulk action`,
+          ...summary,
+        });
+      }
+
+      if (eligible.length === 0) {
+        return res.json({ success: true, ...summary });
+      }
+
+      if (action === "suspend") {
+        const ids = eligible.map((user) => user.id);
+        await transactWithAudit(prisma, buildAuditData(req, {
+          action: "BULK_SUSPEND_USERS",
+          details: {
+            userIds: ids,
+            matched: matchedUsers.length,
+            excluded,
+            reason: typeof req.body?.reason === "string"
+              ? req.body.reason.trim().slice(0, 500)
+              : "Bulk admin action",
+          },
+          previousValue: eligible.map((user) => ({ id: user.id, banned: Boolean(user.banned) })),
+          newValue: eligible.map((user) => ({ id: user.id, banned: true })),
+        }), async (tx) => {
+          await tx.user.updateMany({
+            where: { id: { in: ids } },
+            data: {
+              banned: true,
+              banReason: typeof req.body?.reason === "string" && req.body.reason.trim()
+                ? req.body.reason.trim().slice(0, 500)
+                : "Bulk admin action",
+              banExpires: null,
+            },
+          });
+          await tx.session.deleteMany({ where: { userId: { in: ids } } });
+        });
+      } else {
+        for (const user of eligible) {
+          await deleteAdminUserData({
+            prisma,
+            userId: user.id,
+            deleteStorageFile,
+            auditData: buildAuditData(req, {
+              action: "DELETE_USER",
+              targetId: user.id,
+              details: { email: user.email, source: "bulk" },
+              previousValue: { email: user.email, accountPresent: true },
+              newValue: { deleted: true },
+            }),
+          });
+        }
+      }
+
+      res.json({ success: true, ...summary });
+    } catch (error) {
+      console.error("Error applying bulk user action:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "users_bulk_action" } });
+      res.status(500).json({ error: "Failed to apply bulk user action" });
     }
   });
 
@@ -1179,6 +1393,42 @@ export const createAdminRouter = ({
         },
       };
 
+      const limitUpdates = {};
+      if (parsedDocumentCap.provided) {
+        limitUpdates.documentCapOverride = parsedDocumentCap.value;
+      }
+      if (parsedCostCap.provided) {
+        limitUpdates.costCapUsdOverride = parsedCostCap.value;
+      }
+      if (parsedTokenCap.provided) {
+        limitUpdates.tokenCapOverride = parsedTokenCap.value;
+      }
+
+      await prisma.auditLog.create({
+        data: buildAuditData(req, {
+          action: "CREATE_USER",
+          targetId: normalizedEmail,
+          details: {
+            email: normalizedEmail,
+            role: normalizedRole,
+            plan: normalizedPlan,
+            passwordCredentialRequested: true,
+            emailVerified: true,
+            capOverrides: limitUpdates,
+            legacyMonthlyLimitIgnored: monthlyLimit !== undefined,
+            ordering: "audit_before_auth_mutation",
+          },
+          previousValue: null,
+          newValue: {
+            email: normalizedEmail,
+            name: normalizedName,
+            role: normalizedRole,
+            plan: normalizedPlan,
+            capOverrides: limitUpdates,
+          },
+        }),
+      });
+
       const created = await unwrapAuthResult(
         await auth.api.createUser({
           headers: req.headers,
@@ -1196,17 +1446,6 @@ export const createAdminRouter = ({
         where: { id: created.user.id },
       });
 
-      const limitUpdates = {};
-      if (parsedDocumentCap.provided) {
-        limitUpdates.documentCapOverride = parsedDocumentCap.value;
-      }
-      if (parsedCostCap.provided) {
-        limitUpdates.costCapUsdOverride = parsedCostCap.value;
-      }
-      if (parsedTokenCap.provided) {
-        limitUpdates.tokenCapOverride = parsedTokenCap.value;
-      }
-
       if (Object.keys(limitUpdates).length > 0) {
         await prisma.userLimit.upsert({
           where: { userId: created.user.id },
@@ -1221,22 +1460,6 @@ export const createAdminRouter = ({
           },
         });
       }
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
-        action: "CREATE_USER",
-        targetId: created.user.id,
-        details: {
-          email: normalizedEmail,
-          role: normalizedRole,
-          plan: normalizedPlan,
-          passwordCredentialCreated: true,
-          emailVerified: true,
-          capOverrides: limitUpdates,
-          legacyMonthlyLimitIgnored: monthlyLimit !== undefined,
-        },
-        ipAddress: getIpAddress(req),
-      });
 
       res.json({ user: serializeUser(createdUser) });
     } catch (error) {
@@ -1260,9 +1483,15 @@ export const createAdminRouter = ({
         return res.status(404).json({ error: "User not found" });
       }
 
-      const [examAttempts, flashcardProgress] = await prisma.$transaction([
+      const [examAttempts, flashcardProgress, activeSessions] = await prisma.$transaction([
         prisma.examAttempt.count({ where: { userId: id } }),
         prisma.flashcardProgress.count({ where: { userId: id } }),
+        prisma.session.count({
+          where: {
+            userId: id,
+            expiresAt: { gt: new Date() },
+          },
+        }),
       ]);
       const telegramUsage = (await getTelegramUsageByUserIds(prisma, [id])).get(id);
 
@@ -1280,7 +1509,7 @@ export const createAdminRouter = ({
         },
         stats: {
           documents: user._count?.documents || 0,
-          sessions: user._count?.sessions || 0,
+          sessions: activeSessions,
           examAttempts,
           flashcardProgress,
           telegram: telegramUsage,
@@ -1290,6 +1519,175 @@ export const createAdminRouter = ({
       console.error("Error fetching user:", error);
       captureSentryException(error, { tags: { route: "admin" } });
       res.status(500).json({ error: "Failed to fetch user" });
+    }
+  });
+
+  router.get("/users/:id/export", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      const [
+        documents,
+        examAttempts,
+        flashcardProgress,
+        flashcardCardStates,
+        usageEvents,
+        modelUsageEvents,
+        exportArtifacts,
+        jobs,
+        sessions,
+        telegramConnection,
+        telegramDeliveryLogs,
+        userLimit,
+      ] = await Promise.all([
+        prisma.document.findMany({ where: { userId: id } }),
+        prisma.examAttempt.findMany({ where: { userId: id } }),
+        prisma.flashcardProgress.findMany({ where: { userId: id } }),
+        prisma.flashcardCardState.findMany({ where: { userId: id } }),
+        prisma.usageEvent.findMany({ where: { userId: id } }),
+        prisma.modelUsageEvent.findMany({ where: { userId: id } }),
+        prisma.exportArtifact.findMany({ where: { userId: id } }),
+        prisma.job.findMany({ where: { userId: id } }),
+        prisma.session.findMany({
+          where: { userId: id },
+          select: {
+            id: true,
+            createdAt: true,
+            updatedAt: true,
+            expiresAt: true,
+            ipAddress: true,
+            userAgent: true,
+            impersonatedBy: true,
+          },
+        }),
+        prisma.telegramConnection.findUnique({ where: { userId: id } }),
+        prisma.telegramDeliveryLog.findMany({ where: { userId: id } }),
+        prisma.userLimit.findUnique({ where: { userId: id } }),
+      ]);
+
+      await logAdminAction(prisma, buildAuditData(req, {
+        action: "EXPORT_USER_DATA",
+        targetId: id,
+        details: { email: user.email },
+      }));
+
+      const exportedAt = new Date().toISOString();
+      const filenameEmail = user.email.replace(/[^a-z0-9@._-]+/gi, "_");
+      res.setHeader("Content-Disposition", `attachment; filename=studymaxing-${filenameEmail}-${exportedAt.slice(0, 10)}.json`);
+      res.json({
+        schemaVersion: 1,
+        exportedAt,
+        user: serializeUser(user),
+        documents: documents.map(omitInternalStorageKey),
+        examAttempts,
+        flashcardProgress,
+        flashcardCardStates,
+        usageEvents,
+        modelUsageEvents,
+        exportArtifacts: exportArtifacts.map(omitInternalStorageKey),
+        jobs,
+        sessions,
+        telegramConnection,
+        telegramDeliveryLogs,
+        userLimit: userLimit ? serializeUserLimit(userLimit) : null,
+      });
+    } catch (error) {
+      console.error("Error exporting user data:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "user_export" } });
+      res.status(500).json({ error: "Failed to export user data" });
+    }
+  });
+
+  router.post("/users/:id/impersonate", async (req, res) => {
+    try {
+      const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+      if (!reason) return res.status(400).json({ error: "A support-login reason is required" });
+      if (!auth?.api?.impersonateUser) {
+        return res.status(500).json({ error: "Auth impersonation is not available" });
+      }
+
+      const target = await prisma.user.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, email: true, name: true, role: true },
+      });
+      if (!target) return res.status(404).json({ error: "User not found" });
+      if (target.id === req.session.user.id) {
+        return res.status(400).json({ error: "You cannot support-login as yourself" });
+      }
+
+      await prisma.auditLog.create({
+        data: buildAuditData(req, {
+          action: "IMPERSONATE_USER",
+          targetId: target.id,
+          details: {
+            actingAdminId: req.session.user.id,
+            targetUserId: target.id,
+            targetEmail: target.email,
+            reason: reason.slice(0, 1000),
+            maxDurationMinutes: 60,
+          },
+          previousValue: { impersonatingUserId: null },
+          newValue: { impersonatingUserId: target.id, maxDurationMinutes: 60 },
+        }),
+      });
+
+      const authResponse = await auth.api.impersonateUser({
+        headers: req.headers,
+        body: { userId: target.id },
+        asResponse: true,
+      });
+      const setCookies = typeof authResponse.headers.getSetCookie === "function"
+        ? authResponse.headers.getSetCookie()
+        : [authResponse.headers.get("set-cookie")].filter(Boolean);
+      if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);
+
+      const payload = await authResponse.text();
+      res.status(authResponse.status);
+      res.type(authResponse.headers.get("content-type") || "application/json");
+      res.send(payload);
+    } catch (error) {
+      console.error("Error starting support login:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "user_impersonate" } });
+      res.status(error?.statusCode || 500).json({
+        error: error?.body?.message || error?.message || "Failed to start support login",
+      });
+    }
+  });
+
+  router.post("/users/:id/erase", async (req, res) => {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, email: true },
+      });
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.id === req.session.user.id) {
+        return res.status(400).json({ error: "You cannot erase your own active admin account" });
+      }
+      if (req.body?.confirmation !== user.email) {
+        return res.status(400).json({ error: "Type the user's exact email address to erase their data" });
+      }
+
+      await deleteAdminUserData({
+        prisma,
+        userId: user.id,
+        deleteStorageFile,
+        auditData: buildAuditData(req, {
+          action: "ERASE_USER_DATA",
+          targetId: user.id,
+          details: { email: user.email },
+          previousValue: { email: user.email, dataPresent: true },
+          newValue: { deleted: true },
+        }),
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error erasing user data:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "user_erase" } });
+      res.status(500).json({ error: "Failed to erase user data" });
     }
   });
 
@@ -1332,22 +1730,18 @@ export const createAdminRouter = ({
         return res.status(404).json({ error: "User not found" });
       }
 
-      const updatedUser = await prisma.user.update({
-        where: { id },
-        data: updates,
-      });
-
       const action = updates.role && updates.role !== existing.role
         ? "SET_ROLE"
         : "UPDATE_USER";
 
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
+      const updatedUser = await transactWithAudit(prisma, buildAuditData(req, {
         action,
         targetId: id,
         details: { before: existing, after: updates },
-        ipAddress: getIpAddress(req),
-      });
+      }), (tx) => tx.user.update({
+        where: { id },
+        data: updates,
+      }));
 
       res.json({ user: serializeUser(updatedUser) });
     } catch (error) {
@@ -1370,17 +1764,25 @@ export const createAdminRouter = ({
         return res.status(404).json({ error: "User not found" });
       }
 
-      const storageKeys = await collectUserStorageKeys(prisma, id);
+      if (id === req.session.user.id) {
+        return res.status(400).json({ error: "You cannot delete your own active admin account" });
+      }
 
-      await prisma.user.delete({ where: { id } });
-      await Promise.all(storageKeys.map((key) => deleteFile(key)));
+      if (req.body?.confirmation !== "DELETE") {
+        return res.status(400).json({ error: "Type DELETE to confirm account deletion" });
+      }
 
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
-        action: "DELETE_USER",
-        targetId: id,
-        details: { email: user.email, storageObjectsDeleted: storageKeys.length },
-        ipAddress: getIpAddress(req),
+      await deleteAdminUserData({
+        prisma,
+        userId: id,
+        deleteStorageFile,
+        auditData: buildAuditData(req, {
+          action: "DELETE_USER",
+          targetId: id,
+          details: { email: user.email },
+          previousValue: { email: user.email, accountPresent: true },
+          newValue: { deleted: true },
+        }),
       });
 
       res.json({ success: true });
@@ -1398,30 +1800,32 @@ export const createAdminRouter = ({
 
       const existing = await prisma.user.findUnique({
         where: { id },
-        select: { id: true },
+        select: { id: true, banned: true, banReason: true, banExpires: true },
       });
 
       if (!existing) {
         return res.status(404).json({ error: "User not found" });
       }
 
-      const user = await prisma.user.update({
-        where: { id },
-        data: {
-          banned: true,
-          banReason: reason || "Admin action",
-          banExpires: banExpires ? new Date(banExpires) : null,
-        },
-      });
-
-      await prisma.session.deleteMany({ where: { userId: id } });
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
+      const user = await transactWithAudit(prisma, buildAuditData(req, {
         action: "BAN_USER",
         targetId: id,
-        details: { reason: reason || "Admin action" },
-        ipAddress: getIpAddress(req),
+        details: {
+          reason: reason || "Admin action",
+          before: existing,
+          after: { banned: true, banReason: reason || "Admin action", banExpires: banExpires || null },
+        },
+      }), async (tx) => {
+        const updated = await tx.user.update({
+          where: { id },
+          data: {
+            banned: true,
+            banReason: reason || "Admin action",
+            banExpires: banExpires ? new Date(banExpires) : null,
+          },
+        });
+        await tx.session.deleteMany({ where: { userId: id } });
+        return updated;
       });
 
       res.json({ user: serializeUser(user) });
@@ -1437,28 +1841,28 @@ export const createAdminRouter = ({
       const { id } = req.params;
       const existing = await prisma.user.findUnique({
         where: { id },
-        select: { id: true },
+        select: { id: true, banned: true, banReason: true, banExpires: true },
       });
 
       if (!existing) {
         return res.status(404).json({ error: "User not found" });
       }
 
-      const user = await prisma.user.update({
+      const user = await transactWithAudit(prisma, buildAuditData(req, {
+        action: "UNBAN_USER",
+        targetId: id,
+        details: {
+          before: existing,
+          after: { banned: false, banReason: null, banExpires: null },
+        },
+      }), (tx) => tx.user.update({
         where: { id },
         data: {
           banned: false,
           banReason: null,
           banExpires: null,
         },
-      });
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
-        action: "UNBAN_USER",
-        targetId: id,
-        ipAddress: getIpAddress(req),
-      });
+      }));
 
       res.json({ user: serializeUser(user) });
     } catch (error) {
@@ -1519,10 +1923,11 @@ export const createAdminRouter = ({
         return res.status(404).json({ error: "Document not found" });
       }
 
-      await prisma.document.delete({ where: { id: documentId } });
-
-      // Delete from R2
-      await deleteFile(document.storageKey);
+      // Storage deletion is the non-transactional precondition. If it fails,
+      // the database document and accounting remain unchanged.
+      if (document.storageKey) {
+        await deleteStorageFile(document.storageKey);
+      }
 
       const owner = await prisma.user.findUnique({
         where: { id },
@@ -1532,19 +1937,20 @@ export const createAdminRouter = ({
       const currentStorage = owner?.storageUsed ?? BigInt(0);
       const nextStorage = currentStorage - BigInt(document.fileSize);
 
-      await prisma.user.update({
-        where: { id },
-        data: {
-          storageUsed: nextStorage > 0 ? nextStorage : BigInt(0),
-        },
-      });
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
+      await transactWithAudit(prisma, buildAuditData(req, {
         action: "DELETE_USER_FILE",
         targetId: id,
         details: { documentId, originalName: document.originalName },
-        ipAddress: getIpAddress(req),
+        previousValue: { documentId, originalName: document.originalName, fileSize: document.fileSize },
+        newValue: { deleted: true },
+      }), async (tx) => {
+        await tx.document.delete({ where: { id: documentId } });
+        await tx.user.update({
+          where: { id },
+          data: {
+            storageUsed: nextStorage > 0 ? nextStorage : BigInt(0),
+          },
+        });
       });
 
       res.json({ success: true });
@@ -1568,7 +1974,10 @@ export const createAdminRouter = ({
       }
 
       const sessions = await prisma.session.findMany({
-        where: { userId: id },
+        where: {
+          userId: id,
+          expiresAt: { gt: new Date() },
+        },
         orderBy: { updatedAt: "desc" },
       });
 
@@ -1590,17 +1999,31 @@ export const createAdminRouter = ({
   router.delete("/users/:id/sessions", async (req, res) => {
     try {
       const { id } = req.params;
-      const result = await prisma.session.deleteMany({ where: { userId: id } });
+      const revokeAll = async (tx) => {
+        const activeBefore = await tx.session.count({
+          where: { userId: id, expiresAt: { gt: new Date() } },
+        });
+        const result = await tx.session.deleteMany({ where: { userId: id } });
+        await tx.auditLog.create({
+          data: buildAuditData(req, {
+            action: "REVOKE_USER_SESSIONS",
+            targetId: id,
+            details: {
+              scope: "all_active_and_expired",
+              revokedCount: result.count,
+              activeRevokedCount: activeBefore,
+            },
+            previousValue: { activeSessions: activeBefore },
+            newValue: { activeSessions: 0 },
+          }),
+        });
+        return { ...result, activeRevoked: activeBefore };
+      };
+      const result = typeof prisma.$transaction === "function"
+        ? await prisma.$transaction(revokeAll)
+        : await revokeAll(prisma);
 
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
-        action: "REVOKE_USER_SESSIONS",
-        targetId: id,
-        details: { revoked: result.count },
-        ipAddress: getIpAddress(req),
-      });
-
-      res.json({ success: true, revoked: result.count });
+      res.json({ success: true, revoked: result.count, activeRevoked: result.activeRevoked });
     } catch (error) {
       console.error("Error revoking sessions:", error);
       captureSentryException(error, { tags: { route: "admin" } });
@@ -1619,15 +2042,13 @@ export const createAdminRouter = ({
         return res.status(404).json({ error: "Session not found" });
       }
 
-      await prisma.session.delete({ where: { id: sessionId } });
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
+      await transactWithAudit(prisma, buildAuditData(req, {
         action: "REVOKE_SESSION",
         targetId: id,
-        details: { sessionId },
-        ipAddress: getIpAddress(req),
-      });
+        details: { sessionId, revokedCount: 1, activeRevokedCount: 1 },
+        previousValue: { sessionId, status: "active" },
+        newValue: { sessionId, status: "revoked" },
+      }), (tx) => tx.session.delete({ where: { id: sessionId } }));
 
       res.json({ success: true });
     } catch (error) {
@@ -1639,13 +2060,31 @@ export const createAdminRouter = ({
 
   router.get("/sessions", async (req, res) => {
     try {
-      const getQueryValue = (value) => (Array.isArray(value) ? value[0] : value);
       const limit = Math.min(parseNumber(getQueryValue(req.query.limit), 50), 200);
       const offset = Math.max(parseNumber(getQueryValue(req.query.offset), 0), 0);
+      const userId = getQueryValue(req.query.userId)?.trim() || "";
+      const now = new Date();
+      const todayStart = new Date(now);
+      todayStart.setUTCHours(0, 0, 0, 0);
+      const activeWhere = {
+        expiresAt: { gt: now },
+        ...(userId ? { userId } : {}),
+      };
+      const expiredWhere = {
+        expiresAt: { lte: now },
+        ...(userId ? { userId } : {}),
+      };
+      const revokeWhere = {
+        action: { in: ["REVOKE_SESSION", "REVOKE_USER_SESSIONS"] },
+        createdAt: { gte: todayStart },
+        ...(userId ? { targetId: userId } : {}),
+      };
 
-      const [total, sessions] = await prisma.$transaction([
-        prisma.session.count(),
+      const [total, expiredExcluded, sessions, revokeLogs] = await prisma.$transaction([
+        prisma.session.count({ where: activeWhere }),
+        prisma.session.count({ where: expiredWhere }),
         prisma.session.findMany({
+          where: activeWhere,
           orderBy: { updatedAt: "desc" },
           skip: offset,
           take: limit,
@@ -1655,16 +2094,30 @@ export const createAdminRouter = ({
             },
           },
         }),
+        prisma.auditLog.findMany({
+          where: revokeWhere,
+          select: { details: true },
+        }),
       ]);
+      const revokedToday = revokeLogs.reduce(
+        (sum, log) => sum + Math.max(Number(log.details?.activeRevokedCount ?? log.details?.revokedCount ?? 1), 0),
+        0,
+      );
 
       await logAdminAction(prisma, {
         adminId: req.session.user.id,
         action: "LIST_SESSIONS",
-        details: { limit, offset },
+        details: { limit, offset, userId: userId || null },
         ipAddress: getIpAddress(req),
       });
 
-      res.json({ total, sessions });
+      res.json({
+        total,
+        limit,
+        offset,
+        sessions,
+        kpis: { active: total, revokedToday, expiredExcluded },
+      });
     } catch (error) {
       console.error("Error fetching sessions:", error);
       captureSentryException(error, { tags: { route: "admin" } });
@@ -1677,21 +2130,20 @@ export const createAdminRouter = ({
       const { sessionId } = req.params;
       const existing = await prisma.session.findUnique({
         where: { id: sessionId },
-        select: { id: true },
+        select: { id: true, userId: true },
       });
 
       if (!existing) {
         return res.status(404).json({ error: "Session not found" });
       }
 
-      await prisma.session.delete({ where: { id: sessionId } });
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
+      await transactWithAudit(prisma, buildAuditData(req, {
         action: "REVOKE_SESSION",
-        targetId: sessionId,
-        ipAddress: getIpAddress(req),
-      });
+        targetId: existing.userId,
+        details: { sessionId, revokedCount: 1, activeRevokedCount: 1 },
+        previousValue: { sessionId, status: "active" },
+        newValue: { sessionId, status: "revoked" },
+      }), (tx) => tx.session.delete({ where: { id: sessionId } }));
 
       res.json({ success: true });
     } catch (error) {
@@ -2624,10 +3076,8 @@ export const createAdminRouter = ({
         return res.status(404).json({ error: "User not found" });
       }
 
-      const userLimit = await prisma.userLimit.upsert({
+      const userLimit = await prisma.userLimit.findUnique({
         where: { userId: id },
-        update: {},
-        create: { userId: id },
       });
 
       await logAdminAction(prisma, {
@@ -2640,7 +3090,7 @@ export const createAdminRouter = ({
       const allowance = await getUserAllowance(prisma, id);
 
       res.json({
-        userLimit: serializeUserLimit(userLimit),
+        userLimit: userLimit ? serializeUserLimit(userLimit) : null,
         allowance,
       });
     } catch (error) {
@@ -2726,7 +3176,14 @@ export const createAdminRouter = ({
         where: { userId: id },
       });
 
-      const userLimit = await prisma.userLimit.upsert({
+      const userLimit = await transactWithAudit(prisma, buildAuditData(req, {
+        action: "UPDATE_USER_LIMITS",
+        targetId: id,
+        details: {
+          before: existingLimit ? serializeUserLimit(existingLimit) : null,
+          updates,
+        },
+      }), (tx) => tx.userLimit.upsert({
         where: { userId: id },
         update: {
           ...updates,
@@ -2737,18 +3194,7 @@ export const createAdminRouter = ({
           ...updates,
           overrideBy: req.session.user.id,
         },
-      });
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
-        action: "UPDATE_USER_LIMITS",
-        targetId: id,
-        details: {
-          before: existingLimit ? serializeUserLimit(existingLimit) : null,
-          after: serializeUserLimit(userLimit),
-        },
-        ipAddress: getIpAddress(req),
-      });
+      }));
 
       const allowance = await getUserAllowance(prisma, id);
 
@@ -2808,7 +3254,15 @@ export const createAdminRouter = ({
       }
 
       const before = await prisma.userLimit.findUnique({ where: { userId: id } });
-      const userLimit = await prisma.userLimit.upsert({
+      const userLimit = await transactWithAudit(prisma, buildAuditData(req, {
+        action: "SET_USER_CAP_OVERRIDES",
+        targetId: id,
+        details: {
+          before: before ? serializeUserLimit(before) : null,
+          updates,
+          reason: typeof req.body?.reason === "string" ? req.body.reason.slice(0, 500) : null,
+        },
+      }), (tx) => tx.userLimit.upsert({
         where: { userId: id },
         update: {
           ...updates,
@@ -2819,22 +3273,8 @@ export const createAdminRouter = ({
           ...updates,
           overrideBy: req.session.user.id,
         },
-      });
+      }));
       const allowance = await getUserAllowance(prisma, id);
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
-        action: "SET_USER_CAP_OVERRIDES",
-        targetId: id,
-        details: {
-          before: before ? serializeUserLimit(before) : null,
-          after: serializeUserLimit(userLimit),
-          updates,
-          allowance,
-          reason: typeof req.body?.reason === "string" ? req.body.reason.slice(0, 500) : null,
-        },
-        ipAddress: getIpAddress(req),
-      });
 
       res.json({
         userLimit: serializeUserLimit(userLimit),
@@ -2878,7 +3318,15 @@ export const createAdminRouter = ({
       }
 
       const before = await prisma.userLimit.findUnique({ where: { userId: id } });
-      const userLimit = await prisma.userLimit.upsert({
+      const userLimit = await transactWithAudit(prisma, buildAuditData(req, {
+        action: "CLEAR_USER_CAP_OVERRIDES",
+        targetId: id,
+        details: {
+          fields,
+          before: before ? serializeUserLimit(before) : null,
+          reason: typeof req.body?.reason === "string" ? req.body.reason.slice(0, 500) : null,
+        },
+      }), (tx) => tx.userLimit.upsert({
         where: { userId: id },
         update: {
           ...updates,
@@ -2889,22 +3337,8 @@ export const createAdminRouter = ({
           ...updates,
           overrideBy: req.session.user.id,
         },
-      });
+      }));
       const allowance = await getUserAllowance(prisma, id);
-
-      await logAdminAction(prisma, {
-        adminId: req.session.user.id,
-        action: "CLEAR_USER_CAP_OVERRIDES",
-        targetId: id,
-        details: {
-          fields,
-          before: before ? serializeUserLimit(before) : null,
-          after: serializeUserLimit(userLimit),
-          allowance,
-          reason: typeof req.body?.reason === "string" ? req.body.reason.slice(0, 500) : null,
-        },
-        ipAddress: getIpAddress(req),
-      });
 
       res.json({
         userLimit: serializeUserLimit(userLimit),
@@ -3297,25 +3731,47 @@ export const createAdminRouter = ({
 
   router.get("/audit-logs", async (req, res) => {
     try {
-      const getQueryValue = (value) => (Array.isArray(value) ? value[0] : value);
       const action = getQueryValue(req.query.action);
       const adminId = getQueryValue(req.query.adminId);
+      const userId = getQueryValue(req.query.userId);
+      const adminActivity = getQueryValue(req.query.view) === "admin";
       const from = getQueryValue(req.query.from);
       const to = getQueryValue(req.query.to);
       const limit = Math.min(parseNumber(getQueryValue(req.query.limit), 50), 200);
       const offset = Math.max(parseNumber(getQueryValue(req.query.offset), 0), 0);
+      const parsedFrom = from ? parseDateInput(from) : null;
+      const parsedTo = to ? parseDateInput(to, { endOfDay: true }) : null;
+      if ((from && !parsedFrom) || (to && !parsedTo) || (parsedFrom && parsedTo && parsedFrom > parsedTo)) {
+        return res.status(400).json({ error: "Invalid audit log date range" });
+      }
+
+      const adminUsers = adminActivity
+        ? await prisma.user.findMany({
+          where: { role: "admin" },
+          select: { id: true, email: true, name: true },
+        })
+        : [];
+      const adminIds = adminUsers.map((user) => user.id);
 
       const where = {};
       if (action) where.action = action;
       if (adminId) where.adminId = adminId;
+      if (userId) where.OR = [{ adminId: userId }, { targetId: userId }];
+      if (adminActivity) where.adminId = { in: adminIds };
       if (from || to) {
         where.createdAt = {
-          ...(from ? { gte: new Date(from) } : {}),
-          ...(to ? { lte: new Date(to) } : {}),
+          ...(parsedFrom ? { gte: parsedFrom } : {}),
+          ...(parsedTo ? { lte: parsedTo } : {}),
         };
       }
+      const todayStart = new Date();
+      todayStart.setUTCHours(0, 0, 0, 0);
+      const todayWhere = {
+        createdAt: { gte: todayStart },
+        ...(adminActivity ? { adminId: { in: adminIds } } : {}),
+      };
 
-      const [total, logs] = await prisma.$transaction([
+      const [total, logs, actionRows, todayRows] = await prisma.$transaction([
         prisma.auditLog.count({ where }),
         prisma.auditLog.findMany({
           where,
@@ -3323,16 +3779,57 @@ export const createAdminRouter = ({
           skip: offset,
           take: limit,
         }),
+        prisma.auditLog.findMany({
+          distinct: ["action"],
+          select: { action: true },
+          orderBy: { action: "asc" },
+        }),
+        prisma.auditLog.findMany({
+          where: todayWhere,
+          select: { adminId: true },
+        }),
       ]);
+      const userIds = [...new Set(logs.flatMap((log) => [log.adminId, log.targetId]).filter(Boolean))];
+      const users = userIds.length > 0
+        ? await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, email: true, name: true, role: true },
+        })
+        : [];
+      const usersById = new Map(users.map((user) => [user.id, user]));
+      const actorCounts = new Map();
+      for (const row of todayRows) {
+        actorCounts.set(row.adminId, (actorCounts.get(row.adminId) || 0) + 1);
+      }
+      const mostActiveEntry = [...actorCounts.entries()].sort((left, right) => right[1] - left[1])[0];
+      const mostActiveUser = mostActiveEntry
+        ? usersById.get(mostActiveEntry[0]) || adminUsers.find((user) => user.id === mostActiveEntry[0])
+        : null;
 
       await logAdminAction(prisma, {
         adminId: req.session.user.id,
         action: "VIEW_AUDIT_LOGS",
-        details: { action, adminId, from, to, limit, offset },
+        details: { action, adminId, userId, view: adminActivity ? "admin" : "all", from, to, limit, offset },
         ipAddress: getIpAddress(req),
       });
 
-      res.json({ total, logs });
+      res.json({
+        total,
+        limit,
+        offset,
+        actions: actionRows.map((row) => row.action),
+        logs: logs.map((log) => ({
+          ...log,
+          actor: serializeAdminUserRef(usersById.get(log.adminId)),
+          targetUser: serializeAdminUserRef(usersById.get(log.targetId)),
+        })),
+        kpis: {
+          actionsToday: todayRows.length,
+          mostActiveAdmin: mostActiveEntry
+            ? { ...serializeAdminUserRef(mostActiveUser), id: mostActiveEntry[0], actions: mostActiveEntry[1] }
+            : null,
+        },
+      });
     } catch (error) {
       console.error("Error fetching audit logs:", error);
       captureSentryException(error, { tags: { route: "admin" } });

@@ -10,7 +10,7 @@ import {
 function makeFlashcards(count) {
   return Array.from({ length: count }, (_, index) => ({
     front: `Question ${index + 1}?`,
-    back: `Answer ${index + 1}`,
+    back: `Correct answer ${index + 1}`,
     sourceQuote: `Question ${index + 1} Answer ${index + 1} Correct ${index + 1} Explanation ${index + 1}`,
   }));
 }
@@ -402,6 +402,178 @@ test("numbered source citations resolve into exact supporting quotes without cop
   assert.equal(output.grounding.rejectedItems[1].reason, "missing_or_nonverbatim_source_quote");
 });
 
+test("grounding verifier rejects an unrelated citation that shares only a common stopword", () => {
+  const sourceText = [
+    "This is called a segmented approach to documenting the overall EA",
+    "The EA Management Plan guides implementation and management of enterprise architecture",
+  ].join(". ");
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [{
+      front: "What is the purpose of an EA Management Plan?",
+      back: "To guide the implementation and management of enterprise architecture.",
+      sourceId: "S001",
+    }],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 0);
+  assert.equal(output.grounding.rejectedCount, 1);
+  assert.equal(output.grounding.rejectedItems[0].sourceQuoteIsVerbatim, true);
+  assert.deepEqual(output.grounding.rejectedItems[0].sharedEvidenceTerms, []);
+  assert.deepEqual(output.grounding.rejectedItems[0].sharedAnswerEvidenceTerms, []);
+  assert.equal(output.grounding.rejectedItems[0].reason, "source_quote_does_not_support_item");
+});
+
+test("grounding verifier rejects heading-only citations for substantive flashcard answers", () => {
+  const sourceText = [
+    "Key Term: Change Management",
+    "The Organizational Network Model",
+    "Change management involves stakeholders to increase acceptance and control",
+    "Cooperative networks connect remote workers through semi-autonomous teams",
+  ].join(". ");
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [
+      {
+        front: "Define change management in enterprise architecture.",
+        back: "It is the process of involving stakeholders in changes to increase acceptance and control.",
+        sourceId: "S001",
+      },
+      {
+        front: "What is the Organizational Network Model?",
+        back: "Cooperative networks connect remote workers through semi-autonomous teams.",
+        sourceId: "S002",
+      },
+    ],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 0);
+  assert.equal(output.grounding.rejectedCount, 2);
+  assert.ok(output.grounding.rejectedItems.every((item) => item.sourceQuoteIsVerbatim));
+  assert.ok(output.grounding.rejectedItems.every((item) => item.sourceQuoteIsHeading));
+  assert.ok(output.grounding.rejectedItems.every((item) => item.reason === "source_quote_is_heading_only"));
+});
+
+test("grounding verifier requires factual support for the answer instead of question-topic overlap", () => {
+  const sourceText = [
+    "Enterprise architecture aligns business strategy and technology",
+    "Enterprise architecture stakeholders guide planning and governance",
+  ].join(". ");
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [{
+      front: "What role do enterprise architecture stakeholders have?",
+      back: "They guide planning and governance.",
+      sourceId: "S001",
+    }],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 0);
+  assert.equal(output.grounding.rejectedCount, 1);
+  assert.ok(output.grounding.rejectedItems[0].sharedEvidenceTerms.length >= 2);
+  assert.deepEqual(output.grounding.rejectedItems[0].sharedAnswerEvidenceTerms, []);
+  assert.equal(output.grounding.rejectedItems[0].reason, "source_quote_does_not_support_item");
+});
+
+test("grounding verifier rejects answer citations supported only by repeated topic variants", () => {
+  const sourceText = [
+    "The concepts of organizational theory apply to enterprises because they are types of social organizations",
+    "An organizational chart visually represents hierarchical structure and relationships within an organization",
+  ].join(". ");
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [{
+      front: "What does the term organizational chart represent?",
+      back: "An organizational chart visually represents the hierarchical structure and relationships within an organization.",
+      sourceId: "S001",
+    }],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 0);
+  assert.equal(output.grounding.rejectedCount, 1);
+  assert.ok(output.grounding.rejectedItems[0].sharedAnswerEvidenceTerms.length >= 2);
+  assert.ok(
+    output.grounding.rejectedItems[0].sharedAnswerSpecificEvidenceTerms.length
+      < output.grounding.rejectedItems[0].requiredAnswerSpecificEvidenceTerms,
+  );
+  assert.equal(output.grounding.rejectedItems[0].reason, "source_quote_does_not_support_item");
+});
+
+test("grounding verifier rejects a sentence fragment that ends before its factual claim", () => {
+  const sourceText = [
+    "Global telecommunications and the Internet have made location a",
+    "Global telecommunications make location less relevant by enabling remote work and collaboration",
+  ].join(". ");
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [{
+      front: "What is the impact of global telecommunications on organizational structure?",
+      back: "It has made location less relevant, enabling remote work and collaboration.",
+      sourceId: "S001",
+    }],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 0);
+  assert.equal(output.grounding.rejectedCount, 1);
+  assert.equal(output.grounding.rejectedItems[0].sourceQuoteIsIncomplete, true);
+  assert.equal(output.grounding.rejectedItems[0].reason, "source_quote_is_incomplete");
+});
+
+test("grounding verifier rejects answers that append mostly unsupported facts to a real citation", () => {
+  const sourceText = [
+    "Some organizations adapted significantly to shifting conditions and improved competitive standing",
+    "Many change efforts have disappointing results including wasted resources and frustrated employees",
+  ].join(". ");
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [{
+      front: "What did John Kotter say about major change efforts in organizations?",
+      back: "Some adapted and improved, but many had disappointing results, wasted resources, and frustrated employees.",
+      sourceId: "S001",
+    }],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 0);
+  assert.equal(output.grounding.rejectedCount, 1);
+  assert.ok(output.grounding.rejectedItems[0].sharedAnswerSpecificEvidenceTerms.length >= 2);
+  assert.ok(
+    output.grounding.rejectedItems[0].sharedAnswerSpecificEvidenceTerms.length
+      < output.grounding.rejectedItems[0].requiredAnswerSpecificEvidenceTerms,
+  );
+  assert.equal(output.grounding.rejectedItems[0].reason, "source_quote_does_not_support_item");
+});
+
+test("grounding verifier rejects a topic citation that omits the characteristics claimed in its answer", () => {
+  const sourceText = [
+    "These were some of the primary characteristics of the rational organization that Parsons and Thompson originally studied",
+    "Many organizations remain hierarchical, rule-based, and goal-oriented",
+  ].join(". ");
+  const output = __studyMaterialsTestables.normalizeGroundedQaOutput(
+    DOCUMENT_GENERATION_TYPES.flashcards,
+    [{
+      front: "What organizational characteristics did Parsons and Thompson originally study?",
+      back: "Hierarchical, rule-based, and goal-oriented rational organizations.",
+      sourceId: "S001",
+    }],
+    sourceText,
+  );
+
+  assert.equal(output.output.cards.length, 0);
+  assert.equal(output.grounding.rejectedCount, 1);
+  assert.ok(output.grounding.rejectedItems[0].sharedAnswerSpecificEvidenceTerms.length >= 2);
+  assert.ok(
+    output.grounding.rejectedItems[0].sharedAnswerSpecificEvidenceTerms.length
+      < output.grounding.rejectedItems[0].requiredAnswerSpecificEvidenceTerms,
+  );
+  assert.equal(output.grounding.rejectedItems[0].reason, "source_quote_does_not_support_item");
+});
+
 test("thin repeated source succeeds with five verified cards instead of fabricating the long-source target", async () => {
   const calls = [];
   const cards = makeThinGroundedFlashcards();
@@ -535,6 +707,8 @@ test("flashcard QA prompt requires source evidence and never invents to fill its
   assert.match(prompt, /"front":"question or prompt"/);
   assert.match(prompt, /"back":"clear, concise answer"/);
   assert.match(prompt, /Return at most 16 cards/);
+  assert.match(prompt, /directly supports the ANSWER itself/);
+  assert.match(prompt, /Never cite a section heading, label, bare title/);
   assert.match(prompt, /sourceId/);
   assert.match(prompt, /\[S001\]/);
   assert.match(prompt, /return the smaller supported set/);
@@ -657,6 +831,284 @@ test("flashcard QA performs bounded additive repairs using still-unused source s
   }
 });
 
+const RICH_FLASHCARD_REPAIR_SOURCE = [
+  "Enterprise architecture aligns organizational strategy with business operations and technology capabilities.",
+  "Governance frameworks establish accountability through documented decisions and formal management oversight.",
+  "Architecture roadmaps describe implementation priorities across coordinated enterprise transformation initiatives.",
+  "Stakeholder engagement improves adoption by collecting feedback throughout organizational change programs.",
+].join(" ");
+
+test("flashcard QA relinks a wrong source identifier only when the original strict verifier confirms the answer", async () => {
+  let callCount = 0;
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create() {
+          callCount += 1;
+          return makeQaResponse([{
+            front: "What does enterprise architecture align?",
+            back: "Organizational strategy with business operations and technology capabilities.",
+            sourceId: "S002",
+          }], 20);
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await __studyMaterialsTestables.validateAndImproveFlashcards({
+      cards: makeFlashcards(1),
+      language: "english",
+      sourceText: RICH_FLASHCARD_REPAIR_SOURCE,
+      targetCount: 1,
+      model: "gpt-4o-mini",
+    });
+
+    assert.equal(callCount, 1);
+    assert.equal(result.grounding.items[0].sourceId, "S001");
+    assert.equal(result.grounding.items[0].grounded, true);
+    assert.equal(result.grounding.items[0].repairMethod, "citation_relinked");
+    assert.equal(result.grounding.items[0].originalSourceId, "S002");
+    assert.equal(result.grounding.repairSummary.firstPassAccepted, 0);
+    assert.equal(result.grounding.repairSummary.firstPassAfterCitationRecovery, 1);
+    assert.equal(result.grounding.repairSummary.citationRecoveryCount, 1);
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("flashcard citation recovery never relinks an answer whose new citation omits any answer-specific fact", async () => {
+  const calls = [];
+  const responses = [
+    makeQaResponse([
+      {
+        front: "What does enterprise architecture align?",
+        back: "Organizational strategy with business operations and technology capabilities.",
+        sourceId: "S001",
+      },
+      {
+        front: "How do governance frameworks operate?",
+        back: "Accountability through documented decisions, formal oversight, and predictive surveillance.",
+        sourceId: "S004",
+      },
+    ], 20),
+    makeQaResponse([{
+      front: "What do architecture roadmaps describe?",
+      back: "Implementation priorities across coordinated enterprise transformation initiatives.",
+      sourceId: "S003",
+    }], 20),
+  ];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return responses.shift();
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await __studyMaterialsTestables.validateAndImproveFlashcards({
+      cards: makeFlashcards(2),
+      language: "english",
+      sourceText: RICH_FLASHCARD_REPAIR_SOURCE,
+      targetCount: 2,
+      model: "gpt-4o-mini",
+    });
+
+    assert.equal(calls.length, 2);
+    assert.equal(result.grounding.repairSummary.citationRecoveryCount, 0);
+    assert.ok(result.output.cards.every((card) => !card.answer.includes("predictive surveillance")));
+    assert.match(calls[1].messages[1].content, /predictive surveillance/);
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("extractive flashcard fallback stops at a complete source clause instead of truncating after a transitive verb", () => {
+  const card = __studyMaterialsTestables.buildExtractiveFlashcard({
+    id: "S084",
+    text: "some organizations adapt significantly to shifting conditions, have improved the competitive standing of others, and have positioned a few for a far better future",
+  });
+
+  assert.equal(card.front, "According to the source, what is stated about some organizations?");
+  assert.equal(card.back, "some organizations adapt significantly to shifting conditions, have improved the competitive standing of others");
+  assert.equal(card.sourceId, "S084");
+  assert.doesNotMatch(card.back, /have positioned$/);
+});
+
+test("flashcard QA completes stalled additive repairs with strictly verified extractive source cards", async () => {
+  const calls = [];
+  const supportedCard = {
+    front: "What does enterprise architecture align?",
+    back: "Organizational strategy with business operations and technology capabilities.",
+    sourceId: "S001",
+  };
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return makeQaResponse([supportedCard], 20);
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await __studyMaterialsTestables.validateAndImproveFlashcards({
+      cards: makeFlashcards(3),
+      language: "english",
+      sourceText: RICH_FLASHCARD_REPAIR_SOURCE,
+      targetCount: 3,
+      model: "gpt-4o-mini",
+    });
+
+    assert.equal(calls.length, 3);
+    assert.equal(result.output.cards.length, 3);
+    assert.equal(result.grounding.repairSummary.extractiveFallbackCount, 2);
+    assert.equal(result.grounding.repairSummary.modelRepairAttempts.length, 2);
+    assert.ok(result.grounding.items.every((item) => item.grounded));
+    assert.ok(result.grounding.items.slice(1).every(
+      (item) => item.repairMethod === "extractive_source_fallback",
+    ));
+    assert.equal(new Set(result.grounding.items.map((item) => item.sourceId)).size, 3);
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("adaptive flashcard repair receives exact rejected-answer diagnostics without repeating the complete source", async () => {
+  const calls = [];
+  const responses = [
+    makeQaResponse([
+      {
+        front: "What does enterprise architecture align?",
+        back: "Organizational strategy with business operations and technology capabilities.",
+        sourceId: "S001",
+      },
+      {
+        front: "How does telepathy improve organizational governance?",
+        back: "Telepathy transmits executive decisions between departments.",
+        sourceId: "S002",
+      },
+    ], 20),
+    makeQaResponse([{
+      front: "What do governance frameworks establish?",
+      back: "Accountability through documented decisions and formal management oversight.",
+      sourceId: "S002",
+    }], 20),
+  ];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create(params) {
+          calls.push(params);
+          return responses.shift();
+        },
+      },
+    },
+  });
+
+  try {
+    const result = await __studyMaterialsTestables.validateAndImproveFlashcards({
+      cards: makeFlashcards(2),
+      language: "english",
+      sourceText: RICH_FLASHCARD_REPAIR_SOURCE,
+      targetCount: 2,
+      model: "gpt-4.1-mini",
+    });
+
+    assert.equal(result.output.cards.length, 2);
+    assert.match(calls[1].messages[1].content, /source_quote_does_not_support_item/);
+    assert.match(calls[1].messages[1].content, /Telepathy transmits executive decisions/);
+    assert.doesNotMatch(calls[1].messages[1].content, /\[S001\] Enterprise architecture aligns/);
+    assert.equal(calls[1].max_tokens, 450);
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
+test("flashcard grounding diagnostics are snapshotted on the running job before completion", async () => {
+  const updates = [];
+  const diagnostics = {
+    acceptedCount: 39,
+    targetCount: 48,
+    rejectionReasons: { source_quote_does_not_support_item: 9 },
+  };
+
+  await __studyMaterialsTestables.persistFlashcardGroundingDiagnostics({
+    jobId: "flashcards-job-1",
+    prisma: {
+      job: {
+        async updateMany(args) {
+          updates.push(args);
+          return { count: 1 };
+        },
+      },
+    },
+  }, diagnostics);
+
+  assert.deepEqual(updates, [{
+    where: { id: "flashcards-job-1", status: "running" },
+    data: { result: { failureDiagnostics: diagnostics } },
+  }]);
+});
+
+test("flashcard QA snapshots source diagnostics before a provider request can time out", async () => {
+  const updates = [];
+  __studyMaterialsTestables.setOpenAiClientForTests({
+    chat: {
+      completions: {
+        async create() {
+          assert.equal(updates.length, 1);
+          throw new Error("provider QA request timed out");
+        },
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      () => __studyMaterialsTestables.validateAndImproveFlashcards({
+        cards: makeFlashcards(2),
+        language: "english",
+        sourceText: RICH_FLASHCARD_REPAIR_SOURCE,
+        targetCount: 2,
+        model: "gpt-4o-mini",
+        usageLedgerContext: {
+          jobId: "flashcards-timeout-job",
+          userId: "user_1",
+          featureKey: "flashcards",
+          prisma: {
+            job: {
+              async updateMany(args) {
+                updates.push(args);
+                return { count: 1 };
+              },
+            },
+            modelUsageEvent: {
+              async upsert() {
+                return { billable: false };
+              },
+            },
+          },
+        },
+      }),
+      /provider QA request timed out/,
+    );
+
+    assert.equal(updates[0].data.result.failureDiagnostics.targetCount, 2);
+    assert.equal(updates[0].data.result.failureDiagnostics.acceptedCount, 0);
+    assert.equal(updates[0].data.result.failureDiagnostics.firstPassAccepted, null);
+    assert.equal(updates[0].data.result.failureDiagnostics.sourceStatementCount, 4);
+  } finally {
+    __studyMaterialsTestables.setOpenAiClientForTests(null);
+  }
+});
+
 test("flashcard QA rejects wholly unverified output instead of persisting fabricated cards", async () => {
   __studyMaterialsTestables.setOpenAiClientForTests({
     chat: {
@@ -683,7 +1135,10 @@ test("flashcard QA rejects wholly unverified output instead of persisting fabric
         targetCount: 5,
         model: "gpt-4.1-mini",
       }),
-      (error) => error?.code === "ungrounded_generation_output" && error.rejectedCount === 1,
+      (error) => error?.code === "ungrounded_generation_output"
+        && error.rejectedCount === 1
+        && error.groundingDiagnostics.acceptedCount === 0
+        && error.groundingDiagnostics.rejectedItems.length === 1,
     );
   } finally {
     __studyMaterialsTestables.setOpenAiClientForTests(null);
@@ -775,6 +1230,8 @@ test("exam QA prompt requires fixing correctness, distractors, clarity, and cove
   assert.match(prompt, /definitions, models, comparisons, and key concepts/);
   assert.match(prompt, /Return ONLY the improved JSON object/);
   assert.match(prompt, /Return at most 10 questions/);
+  assert.match(prompt, /directly supports the correct ANSWER or true\/false explanation itself/);
+  assert.match(prompt, /Never cite a section heading, label, bare title/);
   assert.match(prompt, /sourceId/);
   assert.match(prompt, /\[S001\]/);
   assert.match(prompt, /return the smaller supported set/);

@@ -23,7 +23,7 @@ const expectedPricing = Object.freeze({
 });
 
 test("pricing table covers every current allow-list model at the verified rates", () => {
-  assert.equal(MODEL_PRICING_VERSION, "openai-text-pricing-2026-08-23-v2");
+  assert.equal(MODEL_PRICING_VERSION, "openai-text-pricing-2026-08-31-v3");
   assert.deepEqual(ALLOWED_MODELS.map(({ id }) => id).sort(), Object.keys(expectedPricing).sort());
   assert.deepEqual(Object.keys(MODEL_TOKEN_PRICING_USD_PER_1M).sort(), Object.keys(expectedPricing).sort());
   for (const [model, pricing] of Object.entries(expectedPricing)) {

@@ -136,17 +136,11 @@ export async function getUsageCapConfig(prismaClient = prisma, plan = "free") {
     return fallback;
   }
 
-  const config = await prismaClient.usageCapConfig.upsert({
+  const config = await prismaClient.usageCapConfig.findUnique({
     where: { plan: normalizedPlan },
-    update: {},
-    create: {
-      plan: normalizedPlan,
-      documentCap: fallback.documentCap,
-      costCapUsd: fallback.costCapUsd,
-      tokenCap: fallback.tokenCap,
-      featureCaps: fallback.featureCaps,
-    },
   });
+
+  if (!config) return fallback;
 
   return {
     plan: normalizedPlan,

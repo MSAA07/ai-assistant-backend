@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   calculateRetryBackoffMs,
   claimNextQueuedJob,
+  failJob,
   requeueJob,
   RETRY_BACKOFF_MAX_MS,
 } from "./jobQueue.js";
@@ -90,6 +91,30 @@ test("requeueJob schedules retry in the future using queuedAt", async () => {
   assert.ok(update.data.queuedAt instanceof Date);
   assert.ok(update.data.queuedAt.getTime() - before >= 5_000);
   assert.ok(decision.retryDelayMs >= 5_000);
+});
+
+test("failJob preserves grounding rejection diagnostics on a permanently failed job", async () => {
+  const prisma = createRequeueMockPrisma();
+  const error = new Error("flashcards QA returned 39 source-verified items; expected 48");
+  error.groundingDiagnostics = {
+    targetCount: 48,
+    acceptedCount: 39,
+    rejectionReasons: { source_quote_does_not_support_item: 9 },
+  };
+
+  await failJob(prisma, {
+    id: "flashcards-job-1",
+    userId: "user_1",
+    jobType: "noop",
+    status: "running",
+    retryCount: 0,
+    maxRetries: 1,
+  }, error);
+
+  assert.equal(prisma.updates[0].data.status, "failed");
+  assert.deepEqual(prisma.updates[0].data.result, {
+    failureDiagnostics: error.groundingDiagnostics,
+  });
 });
 
 test("claimNextQueuedJob does not claim delayed retry jobs early", async () => {

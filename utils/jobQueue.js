@@ -434,6 +434,9 @@ export async function failJob(prisma, job, error) {
         status: "failed",
         retryCount: retryDecision.nextRetryCount,
         errorMessage: retryDecision.errorMessage,
+        ...(error?.groundingDiagnostics
+          ? { result: { failureDiagnostics: error.groundingDiagnostics } }
+          : {}),
         completedAt,
         workerId: null,
         leaseExpiresAt: null,

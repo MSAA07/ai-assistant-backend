@@ -35,14 +35,15 @@ function createMockPrisma({
       },
     },
     usageCapConfig: {
-      async upsert(args) {
+      async findUnique(args) {
+        if (!capConfig) return null;
         return {
           id: `cap_${args.where.plan}`,
           plan: args.where.plan,
-          documentCap: capConfig?.documentCap ?? args.create.documentCap,
-          costCapUsd: capConfig?.costCapUsd === undefined ? args.create.costCapUsd : capConfig.costCapUsd,
-          tokenCap: capConfig?.tokenCap ?? args.create.tokenCap,
-          featureCaps: capConfig?.featureCaps ?? args.create.featureCaps,
+          documentCap: capConfig.documentCap ?? 5,
+          costCapUsd: capConfig.costCapUsd === undefined ? 1.5 : capConfig.costCapUsd,
+          tokenCap: capConfig.tokenCap ?? null,
+          featureCaps: capConfig.featureCaps ?? {},
           createdAt: new Date("2026-04-27T00:00:00.000Z"),
           updatedAt: new Date("2026-04-27T00:00:00.000Z"),
         };

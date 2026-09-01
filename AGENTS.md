@@ -1,3 +1,14 @@
+> [!WARNING]
+> # PRODUCTION IS OFF LIMITS BY DEFAULT
+>
+> This project's staging and production environments are distinguished purely by Railway service naming: `studymaxing-backend-staging` and `studymaxing-worker-staging` are staging; `studymaxing-production` and `studymaxing-worker-production` are production. This is **not** Railway's “Environments” feature—do not rely on that UI concept when determining which service you are touching.
+>
+> Unless a task's instructions explicitly contain the exact phrase **"production readiness"**, never deploy to, run migrations against, run scripts against, or otherwise write to any production-named service or its database. Never select or default to a production URL or target in any admin, QA, or configuration UI you build or modify. Do not read secrets or environment variables scoped to a production service unless explicitly told to.
+>
+> If a task is ambiguous about which environment it targets, stop and ask rather than guessing. Do not assume staging is safe to extrapolate to production, and do not infer that the user probably means production from context alone.
+>
+> This rule applies to every task in this repo, regardless of other task instructions, unless the task instructions contain **"production readiness"**.
+
 # BACKEND SPECIALIST - AI Assistant Backend
 
 Role: Express API, Prisma/PostgreSQL, worker lifecycle, OpenAI generation pipeline, Railway deployment.
