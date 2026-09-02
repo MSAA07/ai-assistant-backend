@@ -240,6 +240,10 @@ Admin coverage:
 - `GET /api/admin/audit-logs` returns `limit`/`offset`/`total`, distinct stored action types, date/actor-or-target/admin-activity filters, actor/target user references, and the Admin Activity scorecard
 - `AuditLog.previousValue` and `AuditLog.newValue` store nullable JSON before/after state for new mutations; legacy rows require no backfill and render as uncaptured
 - support login delegates to Better Auth impersonation, requires an audited reason with acting-admin and target-user identities, and is hard-capped at 3,600 seconds
+- Operations merges staging-filtered Sentry issues, failed jobs, cost anomalies, and non-job admin alerts into a severity-first incident feed; linked job-failure `AdminAlert` rows are excluded so one failure renders once
+- Sentry issues are pulled server-side with an `event:read` token, a 90-second cache constrained to 60–120 seconds, and stale-if-error metadata; each source degrades independently instead of failing the full feed
+- `IncidentState` stores the local Open → In Progress → Resolved lifecycle across all sources; resolved incidents can reopen to Open, and Copy for Codex acknowledges selected incidents as In Progress
+- Jobs APIs support query-level pagination/search/filtering and audited manual requeue of failed or stuck jobs with a refreshed retry budget
 - user JSON export omits credential/session tokens; delete and erase share a storage-first deletion path whose audit and database deletion are atomic
 - anomaly resolution
 - feature flags and flag audit
@@ -276,6 +280,7 @@ Current schema models:
 - `UsageCapConfig`
 - `CostAnomalyAlert`
 - `AdminAlert`
+- `IncidentState`
 - `UsageEvent`
 - `ModelUsageEvent`
 - `TelegramConnection`
@@ -301,6 +306,8 @@ Current migration folders:
 - `20260606000000_add_qa_run_history`
 - `20260607000000_add_qa_tier`
 - `20260831000000_add_session_impersonation`
+- `20260901000000_add_audit_log_diff`
+- `20260902000000_add_incident_lifecycle`
 
 ## Environment Variables
 
@@ -308,6 +315,8 @@ Required:
 
 - `DATABASE_URL`
 - `BETTER_AUTH_SECRET`
+- `SENTRY_ISSUES_AUTH_TOKEN` on `studymaxing-backend-staging` only, scoped to `event:read`
+- `SENTRY_ORG` and `SENTRY_PROJECT` for the Sentry issues REST endpoint
 - `BETTER_AUTH_BASE_URL` or `BETTER_AUTH_URL`
 - `OPENAI_API_KEY`
 - `RESEND_API_KEY`

@@ -19,11 +19,12 @@ import {
   invalidateRoutingCache,
 } from "../utils/modelRoutingPolicy.js";
 import { sendTelegramAdminNotification } from "../utils/telegramNotify.js";
+import { requeueJobFromAdmin } from "../utils/jobQueue.js";
 import {
   TELEGRAM_DELIVERY_STATUS,
   TELEGRAM_DELIVERY_TYPES,
 } from "../utils/telegramDelivery.js";
-import { getIssuesFeed } from "../utils/issuesFeed.js";
+import { getIssuesFeed, setIncidentStatuses } from "../utils/issuesFeed.js";
 
 const getIpAddress = (req) => {
   const forwarded = req.headers["x-forwarded-for"];
@@ -543,9 +544,9 @@ const validateModelRoutingUpdate = ({ feature, plan, model, reasoningEffort }) =
 };
 
 const buildIssuesFeedFilters = (query) => {
-  const type = getQueryValue(query.type);
+  const source = getQueryValue(query.source) || getQueryValue(query.type);
   const severity = getQueryValue(query.severity);
-  const resolvedValue = getQueryValue(query.resolved);
+  const includeResolvedValue = getQueryValue(query.includeResolved);
   const startDateValue = getQueryValue(query.startDate);
   const endDateValue = getQueryValue(query.endDate);
   const startDate = parseDateInput(startDateValue);
@@ -556,15 +557,15 @@ const buildIssuesFeedFilters = (query) => {
   if (startDate && endDate && startDate > endDate) {
     return { error: "startDate must be before or equal to endDate" };
   }
-  if (resolvedValue && resolvedValue !== "true" && resolvedValue !== "false") {
-    return { error: "resolved must be true or false" };
+  if (includeResolvedValue && includeResolvedValue !== "true" && includeResolvedValue !== "false") {
+    return { error: "includeResolved must be true or false" };
   }
 
   return {
     filters: {
-      types: type && type !== "all" ? type : undefined,
+      source: source || "all",
       severity: severity && severity !== "all" ? severity : undefined,
-      resolved: resolvedValue === "true" ? true : resolvedValue === "false" ? false : undefined,
+      includeResolved: includeResolvedValue === "true",
       startDate,
       endDate,
     },
@@ -574,15 +575,15 @@ const buildIssuesFeedFilters = (query) => {
 const escapeCsvField = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
 
 const issuesToCsv = (items) => {
-  const header = ["id", "type", "severity", "title", "message", "createdAt", "resolved", "relatedId"];
+  const header = ["id", "source", "severity", "title", "message", "status", "createdAt", "relatedId"];
   const rows = items.map((issue) => [
     issue.id,
-    issue.type,
+    issue.sourceGroup,
     issue.severity,
     issue.title,
     issue.message,
+    issue.status,
     issue.createdAt.toISOString(),
-    issue.resolved,
     issue.relatedId,
   ].map(escapeCsvField).join(","));
 
@@ -2710,6 +2711,44 @@ export const createAdminRouter = ({
     }
   });
 
+  router.post("/jobs/:id/retry", async (req, res) => {
+    try {
+      const job = await prisma.job.findUnique({ where: { id: req.params.id } });
+      if (!job) return res.status(404).json({ error: "Job not found" });
+
+      const now = new Date();
+      if (job.status !== "failed" && !isJobStuck(job, now)) {
+        return res.status(409).json({ error: "Only failed or stuck jobs can be requeued" });
+      }
+
+      const result = await requeueJobFromAdmin(prisma, job, { now });
+      await setIncidentStatuses(
+        prisma,
+        [{ source: "job", sourceId: job.id }],
+        "in_progress",
+        req.session.user.id,
+        { now },
+      );
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "REQUEUE_JOB",
+        targetId: job.id,
+        details: {
+          before: { status: job.status, retryCount: job.retryCount },
+          after: { status: "queued", retryCount: 0 },
+        },
+        ipAddress: getIpAddress(req),
+      });
+
+      res.json({ result });
+    } catch (error) {
+      if (error instanceof RangeError) return res.status(400).json({ error: error.message });
+      console.error("Error requeueing job:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "job_retry" } });
+      res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to requeue job" });
+    }
+  });
+
   router.get("/jobs/:id", async (req, res) => {
     try {
       const job = await prisma.job.findUnique({
@@ -2780,11 +2819,12 @@ export const createAdminRouter = ({
       const jobType = getQueryValue(req.query.jobType);
       const userId = getQueryValue(req.query.userId);
       const documentId = getQueryValue(req.query.documentId);
+      const search = getQueryValue(req.query.search);
       const failedOnly = getQueryValue(req.query.failedOnly) === "true";
       const stuckOnly = getQueryValue(req.query.stuckOnly) === "true";
       const now = new Date();
       const staleCutoff = new Date(now.getTime() - 120_000);
-      const where = {};
+      const where = { AND: [] };
 
       if (failedOnly) {
         where.status = "failed";
@@ -2794,17 +2834,35 @@ export const createAdminRouter = ({
       if (jobType && jobType !== "all") where.jobType = jobType;
       if (userId) where.userId = userId;
       if (documentId) where.documentId = documentId;
+      if (search) {
+        where.AND.push({
+          OR: [
+            { id: { contains: search, mode: "insensitive" } },
+            { jobType: { contains: search, mode: "insensitive" } },
+            { errorMessage: { contains: search, mode: "insensitive" } },
+            { userId: { contains: search, mode: "insensitive" } },
+            { documentId: { contains: search, mode: "insensitive" } },
+            { user: { is: { OR: [
+              { name: { contains: search, mode: "insensitive" } },
+              { email: { contains: search, mode: "insensitive" } },
+            ] } } },
+          ],
+        });
+      }
       if (dateRange.filter) where.queuedAt = dateRange.filter;
       if (stuckOnly) {
         where.status = "running";
-        where.OR = [
-          { leaseExpiresAt: { lt: now } },
-          {
-            leaseExpiresAt: null,
-            startedAt: { lt: staleCutoff },
-          },
-        ];
+        where.AND.push({
+          OR: [
+            { leaseExpiresAt: { lt: now } },
+            {
+              leaseExpiresAt: null,
+              startedAt: { lt: staleCutoff },
+            },
+          ],
+        });
       }
+      if (where.AND.length === 0) delete where.AND;
 
       const [total, jobs] = await prisma.$transaction([
         prisma.job.count({ where }),
@@ -2845,6 +2903,7 @@ export const createAdminRouter = ({
           jobType: jobType || null,
           userId: userId || null,
           documentId: documentId || null,
+          search: search || null,
           failedOnly,
           stuckOnly,
           page: pagination.page,
@@ -3456,9 +3515,11 @@ export const createAdminRouter = ({
       }
 
       const feed = await getIssuesFeed({
+        prismaClient: prisma,
         ...parsedFilters.filters,
         page: pagination.page,
         limit: pagination.limit,
+        forceSentryRefresh: getQueryValue(req.query.refresh) === "true",
       });
 
       await logAdminAction(prisma, {
@@ -3467,9 +3528,9 @@ export const createAdminRouter = ({
         details: {
           page: feed.page,
           limit: feed.limit,
-          type: parsedFilters.filters.types || null,
+          source: parsedFilters.filters.source,
           severity: parsedFilters.filters.severity || null,
-          resolved: parsedFilters.filters.resolved ?? null,
+          includeResolved: parsedFilters.filters.includeResolved,
           startDate: parsedFilters.filters.startDate?.toISOString() || null,
           endDate: parsedFilters.filters.endDate?.toISOString() || null,
           total: feed.total,
@@ -3489,6 +3550,53 @@ export const createAdminRouter = ({
     }
   });
 
+  router.patch("/incidents/:source/:sourceId/status", async (req, res) => {
+    try {
+      const status = typeof req.body?.status === "string" ? req.body.status.trim() : "";
+      const incident = { source: req.params.source, sourceId: req.params.sourceId };
+      const states = await setIncidentStatuses(prisma, [incident], status, req.session.user.id);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "UPDATE_INCIDENT_STATUS",
+        targetId: `${incident.source}:${incident.sourceId}`,
+        details: { status },
+        ipAddress: getIpAddress(req),
+      });
+      res.json({ incident: states[0] });
+    } catch (error) {
+      if (error instanceof RangeError) return res.status(400).json({ error: error.message });
+      console.error("Error updating incident status:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "incident_status" } });
+      res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to update incident" });
+    }
+  });
+
+  router.post("/incidents/bulk/status", async (req, res) => {
+    try {
+      const status = typeof req.body?.status === "string" ? req.body.status.trim() : "";
+      const incidents = Array.isArray(req.body?.incidents) ? req.body.incidents : [];
+      const states = await setIncidentStatuses(prisma, incidents, status, req.session.user.id);
+
+      await logAdminAction(prisma, {
+        adminId: req.session.user.id,
+        action: "BULK_UPDATE_INCIDENT_STATUS",
+        details: {
+          status,
+          count: states.length,
+          incidents: incidents.map((incident) => `${incident.source}:${incident.sourceId}`),
+        },
+        ipAddress: getIpAddress(req),
+      });
+      res.json({ incidents: states, count: states.length });
+    } catch (error) {
+      if (error instanceof RangeError) return res.status(400).json({ error: error.message });
+      console.error("Error bulk updating incidents:", error);
+      captureSentryException(error, { tags: { route: "admin", endpoint: "incidents_bulk_status" } });
+      res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to update incidents" });
+    }
+  });
+
   router.get("/issues/export", async (req, res) => {
     try {
       const parsedFilters = buildIssuesFeedFilters(req.query);
@@ -3497,13 +3605,14 @@ export const createAdminRouter = ({
       }
 
       const feed = await getIssuesFeed({
+        prismaClient: prisma,
         ...parsedFilters.filters,
         page: 1,
-        limit: 5000,
+        limit: 100,
       });
-      if (feed.total > 5000) {
+      if (feed.total > 100) {
         return res.status(400).json({
-          error: "Export exceeds 5000 rows; narrow the filters and try again",
+          error: "Export exceeds 100 rows; narrow the filters and try again",
         });
       }
 
@@ -3511,9 +3620,9 @@ export const createAdminRouter = ({
         adminId: req.session.user.id,
         action: "EXPORT_ISSUES_FEED",
         details: {
-          type: parsedFilters.filters.types || null,
+          source: parsedFilters.filters.source,
           severity: parsedFilters.filters.severity || null,
-          resolved: parsedFilters.filters.resolved ?? null,
+          includeResolved: parsedFilters.filters.includeResolved,
           startDate: parsedFilters.filters.startDate?.toISOString() || null,
           endDate: parsedFilters.filters.endDate?.toISOString() || null,
           total: feed.total,

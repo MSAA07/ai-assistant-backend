@@ -790,3 +790,87 @@ test("user deletion cleans storage, then atomically audits before deleting the r
   assert.deepEqual(events.slice(0, 2).sort(), ["storage:document-key", "storage:export-key"]);
   assert.deepEqual(events.slice(2), ["audit", "db-delete"]);
 });
+
+test("incident lifecycle endpoint acknowledges, resolves, and reopens an alert", async () => {
+  const sourceUpdates = [];
+  const stateWrites = [];
+  const prisma = {
+    adminAlert: { async update(args) { sourceUpdates.push(args.data.resolved); } },
+    costAnomalyAlert: { async update() {} },
+    incidentState: {
+      async upsert(args) {
+        stateWrites.push(args);
+        return { source: "alert", sourceId: "alert_1", status: args.update.status };
+      },
+    },
+    auditLog: { async create() {} },
+    async $transaction(callback) { return callback(this); },
+  };
+  const app = createTestApp({ prisma, auth: {} });
+
+  for (const status of ["in_progress", "resolved", "open"]) {
+    const response = await request(app, "/api/admin/incidents/alert/alert_1/status", { status }, { method: "PATCH" });
+    assert.equal(response.status, 200);
+    assert.equal(response.data.incident.status, status);
+  }
+
+  assert.deepEqual(sourceUpdates, [false, true, false]);
+  assert.equal(stateWrites.length, 3);
+});
+
+test("bulk incident resolve updates all selected sources", async () => {
+  let writes = 0;
+  const prisma = {
+    adminAlert: { async update() {} },
+    costAnomalyAlert: { async update() {} },
+    incidentState: {
+      async upsert(args) { writes += 1; return args.create; },
+    },
+    auditLog: { async create() {} },
+    async $transaction(callback) { return callback(this); },
+  };
+  const app = createTestApp({ prisma, auth: {} });
+  const response = await request(app, "/api/admin/incidents/bulk/status", {
+    status: "resolved",
+    incidents: [
+      { source: "sentry", sourceId: "sentry_1" },
+      { source: "cost", sourceId: "cost_1" },
+    ],
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.data.count, 2);
+  assert.equal(writes, 2);
+});
+
+test("failed job retry requeues the job and marks its incident in progress", async () => {
+  const updates = [];
+  const incidentWrites = [];
+  const job = {
+    id: "job_failed",
+    userId: "user_1",
+    jobType: "noop",
+    status: "failed",
+    retryCount: 3,
+    maxRetries: 3,
+    queuedAt: new Date("2026-09-02T10:00:00.000Z"),
+  };
+  const prisma = {
+    job: {
+      async findUnique() { return job; },
+      async update(args) { updates.push(args); return { ...job, ...args.data }; },
+    },
+    incidentState: {
+      async upsert(args) { incidentWrites.push(args); return args.create; },
+    },
+    auditLog: { async create() {} },
+    async $transaction(callback) { return callback(this); },
+  };
+  const app = createTestApp({ prisma, auth: {} });
+  const response = await request(app, "/api/admin/jobs/job_failed/retry", {});
+
+  assert.equal(response.status, 200);
+  assert.equal(updates[0].data.status, "queued");
+  assert.equal(updates[0].data.retryCount, 0);
+  assert.equal(incidentWrites[0].create.status, "in_progress");
+});

@@ -507,6 +507,22 @@ model AdminAlert {
   @@index([jobId])
 }
 
+model IncidentState {
+  id               String    @id @default(cuid())
+  source           String
+  sourceId         String
+  status           String    @default("open") // 'open' | 'in_progress' | 'resolved'
+  updatedByAdminId String?
+  acknowledgedAt   DateTime?
+  resolvedAt       DateTime?
+  reopenedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([source, sourceId])
+  @@index([status, updatedAt])
+}
+
 model UsageEvent {
   id               String   @id @default(cuid())
   userId           String

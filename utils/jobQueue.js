@@ -414,6 +414,64 @@ export async function requeueJob(prisma, job, error, shouldRetry = true) {
   return retryDecision;
 }
 
+export async function requeueJobFromAdmin(prisma, job, { now = new Date() } = {}) {
+  if (!job || !["failed", "running"].includes(job.status)) {
+    throw new RangeError("Only failed or stuck running jobs can be requeued");
+  }
+
+  const previousRetryCount = job.retryCount || 0;
+  await prisma.$transaction(async (tx) => {
+    if (job.status === "running") {
+      await finishRunningJobStages(tx, job.id, {
+        status: JOB_STAGE_STATUS.failed,
+        error: "Manually requeued by an administrator",
+        endedAt: now,
+      });
+    }
+
+    await tx.job.update({
+      where: { id: job.id },
+      data: {
+        status: "queued",
+        progressPct: 0,
+        retryCount: 0,
+        errorMessage: null,
+        queuedAt: now,
+        startedAt: null,
+        completedAt: null,
+        workerId: null,
+        leaseExpiresAt: null,
+        lastHeartbeatAt: null,
+      },
+    });
+
+    await startJobStage(tx, {
+      jobId: job.id,
+      stageName: "queued",
+      attemptNumber: previousRetryCount + 2,
+      startedAt: now,
+      metadata: {
+        manualRequeue: true,
+        previousRetryCount,
+      },
+    });
+
+    if (isExtractionJob(job)) {
+      await requeueExtractionJob(tx, job, null);
+    } else if (isGenerationJobType(job.jobType)) {
+      await requeueGenerationJob(tx, job, null);
+    }
+  });
+
+  return {
+    jobId: job.id,
+    status: "queued",
+    previousRetryCount,
+    retryCount: 0,
+    queuedAt: now,
+  };
+}
+
 export async function failJob(prisma, job, error) {
   const retryDecision = getRetryDecision(job, error, true);
   const completedAt = new Date();

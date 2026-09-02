@@ -6,6 +6,7 @@ import {
   claimNextQueuedJob,
   failJob,
   requeueJob,
+  requeueJobFromAdmin,
   RETRY_BACKOFF_MAX_MS,
 } from "./jobQueue.js";
 
@@ -91,6 +92,32 @@ test("requeueJob schedules retry in the future using queuedAt", async () => {
   assert.ok(update.data.queuedAt instanceof Date);
   assert.ok(update.data.queuedAt.getTime() - before >= 5_000);
   assert.ok(decision.retryDelayMs >= 5_000);
+});
+
+test("admin retry requeues a failed job with a fresh retry budget", async () => {
+  const prisma = createRequeueMockPrisma();
+  const now = new Date("2026-09-02T12:00:00.000Z");
+
+  const result = await requeueJobFromAdmin(prisma, {
+    id: "job_failed",
+    userId: "user_1",
+    jobType: "noop",
+    status: "failed",
+    retryCount: 3,
+    maxRetries: 3,
+  }, { now });
+
+  assert.equal(prisma.updates[0].data.status, "queued");
+  assert.equal(prisma.updates[0].data.retryCount, 0);
+  assert.equal(prisma.updates[0].data.errorMessage, null);
+  assert.equal(prisma.updates[0].data.queuedAt, now);
+  assert.deepEqual(result, {
+    jobId: "job_failed",
+    status: "queued",
+    previousRetryCount: 3,
+    retryCount: 0,
+    queuedAt: now,
+  });
 });
 
 test("failJob preserves grounding rejection diagnostics on a permanently failed job", async () => {

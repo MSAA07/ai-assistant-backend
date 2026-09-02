@@ -54,7 +54,7 @@ ai-assistant-backend/
 - `routes/exams.js`: legacy exam attempt plus canonical exam and attempt routes
 - `routes/exports.js`: export artifact routes
 - `routes/telegram.js`: Telegram account linking, webhook handling, and study-material delivery routes
-- `routes/admin.js`: admin APIs for paginated/bulk users, support login, user export/erasure, active-session KPIs/filtering/revocation, paginated audit activity/diffs, analytics, usage, costs, limits, anomalies, feature flags, and generation evaluation annotation
+- `routes/admin.js`: admin APIs for paginated/bulk users, support login, user export/erasure, Security & Access, unified Operations incidents, job retry/queue inspection, analytics, usage, costs, limits, anomalies, feature flags, and generation evaluation annotation
 - `routes/qa.js`: admin-only QA tiers, active progress, persisted history, per-tier cooldowns, and automatic health-monitor scheduling
 
 ## Middleware
@@ -100,6 +100,8 @@ Operational support:
 - `utils/authEmailTemplates.js`
 - `utils/auditLog.js`
 - `utils/sentry.js`
+- `utils/sentryIssues.js`: staging-filtered Sentry REST polling with a bounded TTL cache and stale-if-error behavior
+- `utils/issuesFeed.js`: source-isolated incident aggregation, linked job-alert deduplication, query-bounded pagination, KPIs, and lifecycle persistence
 - `utils/serializers.js`
 - `utils/telegramDelivery.js`: Telegram Bot API delivery helpers, deep-link token helpers, message/poll formatting, and env validation
 
@@ -126,6 +128,7 @@ Current migration folders:
 - `20260607000000_add_qa_tier`
 - `20260831000000_add_session_impersonation`: adds Better Auth's acting-admin identity field to impersonated sessions.
 - `20260901000000_add_audit_log_diff`: adds nullable JSON `previousValue` and `newValue` columns to admin audit entries; no legacy backfill is required.
+- `20260902000000_add_incident_lifecycle`: adds source-agnostic local incident lifecycle state for Sentry, jobs, admin alerts, and cost anomalies.
 
 ## Scripts
 
